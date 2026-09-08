@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local market data and human annotations
+data/raw/*
+data/interim/*
+data/processed/*
+data/annotations/*
+
+# Keep the empty directory structure in Git
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+!data/annotations/.gitkeep

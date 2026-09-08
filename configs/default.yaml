@@ -1,0 +1,23 @@
+project:
+  name: pricesanity
+  random_seed: 42
+
+data:
+  instrument: CHANGE_ME
+  source_timezone: UTC
+  market_timezone: America/New_York
+  timestamp_column: ts_event
+  window_size: 81
+  input_frequency: 1min
+  output_frequency: 5min
+  require_complete_output_candlesticks: true
+
+session:
+  rth_enabled: true
+  start: "09:30"
+  end: "16:00"
+  weekdays: [0, 1, 2, 3, 4]
+
+normalization:
+  name: relative_ohlc_v1
+  first_row_value: 0.0
