@@ -35,7 +35,6 @@ class SessionConfig:
 @dataclass(frozen=True)
 class NormalizationConfig:
     name: str
-    first_row_value: float
 
 
 @dataclass(frozen=True)

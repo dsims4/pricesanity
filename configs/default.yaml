@@ -20,4 +20,3 @@ session:
 
 normalization:
   name: relative_ohlc_v1
-  first_row_value: 0.0
