@@ -5,18 +5,16 @@ project:
 data:
   instrument: CHANGE_ME
   source_timezone: UTC
-  market_timezone: America/New_York
+  session_timezone: America/New_York
   timestamp_column: ts_event
-  window_size: 81
-  input_frequency: 1min
-  output_frequency: 5min
-  require_complete_output_candlesticks: true
+  source_interval: 1min
+  target_interval: 5min
+  require_complete_candlesticks: true
 
 session:
-  rth_enabled: true
-  start: "09:30"
-  end: "16:00"
-  weekdays: [0, 1, 2, 3, 4]
+  start_time: "09:30"
+  end_time: "16:00"
+  trading_weekdays: [0, 1, 2, 3, 4]
 
 normalization:
-  name: relative_ohlc_v1
+  scheme: relative_ohlc_v1

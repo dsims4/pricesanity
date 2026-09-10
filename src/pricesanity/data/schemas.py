@@ -17,27 +17,48 @@ class RawCandlestick:
     close: float
 
     def __post_init__(self) -> None:
-        """Validate timestamp and OHLC geometry."""
+        """Validate raw candlestick fields.
+
+        Raises:
+            ValueError: If the timestamp, instrument, or OHLC prices are
+                invalid.
+        """
+        # Reject a timestamp that cannot identify one absolute moment in time.
         if self.timestamp.tzinfo is None or self.timestamp.utcoffset() is None:
             raise ValueError("Raw candlestick timestamps must be timezone-aware.")
 
+        # Reject an empty or whitespace-only instrument name.
         if not self.instrument.strip():
             raise ValueError("Instrument cannot be empty.")
 
-        prices = (self.open, self.high, self.low, self.close)
-        if not all(isfinite(price) for price in prices):
+        # Collect OHLC prices into one tuple so one finite-value check covers all
+        # four fields.
+        ohlc_prices = (self.open, self.high, self.low, self.close)
+
+        # Reject any OHLC price that is infinite or not a number.
+        if not all(isfinite(price) for price in ohlc_prices):
             raise ValueError("OHLC prices must be finite numbers.")
 
+        # Reject a high below the greater of the open and close.
         if self.high < max(self.open, self.close):
             raise ValueError("High cannot be below the open or close.")
 
+        # Reject a low above the lesser of the open and close.
         if self.low > min(self.open, self.close):
             raise ValueError("Low cannot be above the open or close.")
 
     @property
     def candlestick_id(self) -> str:
-        """Return a deterministic identifier based on instrument and time."""
+        """Build a stable identifier from the instrument and UTC timestamp.
+
+        Returns:
+            The candlestick identifier.
+        """
+        # Convert to UTC so equal moments written in different timezones produce
+        # the same identifier.
         utc_timestamp = self.timestamp.astimezone(timezone.utc)
+
+        # Join the instrument and ISO-formatted UTC timestamp with a colon.
         return f"{self.instrument}:{utc_timestamp.isoformat()}"
 
 
@@ -53,26 +74,45 @@ class NormalizedCandlestick:
     low_from_close: float
 
     def __post_init__(self) -> None:
-        """Validate normalized candlestick metadata and features."""
+        """Validate normalized candlestick fields.
+
+        Raises:
+            ValueError: If the timestamp, instrument, or normalized features
+                are invalid.
+        """
+        # Reject a timestamp that cannot identify one absolute moment in time.
         if self.timestamp.tzinfo is None or self.timestamp.utcoffset() is None:
             raise ValueError(
                 "Normalized candlestick timestamps must be timezone-aware."
             )
 
+        # Reject an empty or whitespace-only instrument name.
         if not self.instrument.strip():
             raise ValueError("Instrument cannot be empty.")
 
-        features = (
+        # Collect normalized ratios into one tuple so one finite-value check
+        # covers all four model features.
+        normalized_features = (
             self.open_gap,
             self.body,
             self.high_from_close,
             self.low_from_close,
         )
-        if not all(isfinite(feature) for feature in features):
+
+        # Reject any normalized ratio that is infinite or not a number.
+        if not all(isfinite(feature) for feature in normalized_features):
             raise ValueError("Normalized OHLC features must be finite numbers.")
 
     @property
     def candlestick_id(self) -> str:
-        """Return the stable identifier used by the raw candlestick."""
+        """Build a stable identifier from the instrument and UTC timestamp.
+
+        Returns:
+            The candlestick identifier.
+        """
+        # Convert to UTC so matching raw and normalized candles share one
+        # identifier regardless of their displayed timezone.
         utc_timestamp = self.timestamp.astimezone(timezone.utc)
+
+        # Join the instrument and ISO-formatted UTC timestamp with a colon.
         return f"{self.instrument}:{utc_timestamp.isoformat()}"

@@ -4,7 +4,8 @@ from pricesanity.data.clean import filter_regular_trading_hours
 
 
 def test_filter_regular_trading_hours_respects_boundaries() -> None:
-    frame = pd.DataFrame(
+    # Build rows immediately before, at, and after the RTH boundaries.
+    candlestick_data = pd.DataFrame(
         {
             "ts_event": pd.to_datetime(
                 [
@@ -19,14 +20,15 @@ def test_filter_regular_trading_hours_respects_boundaries() -> None:
         }
     )
 
-    result = filter_regular_trading_hours(
-        frame,
+    # Filter the UTC rows using their corresponding New York session times.
+    filtered_candlestick_data = filter_regular_trading_hours(
+        candlestick_data,
         timestamp_column="ts_event",
-        market_timezone="America/New_York",
-        session_start="09:30",
-        session_end="16:00",
-        weekdays=(0, 1, 2, 3, 4),
+        session_timezone="America/New_York",
+        session_start_time="09:30",
+        session_end_time="16:00",
+        trading_weekdays=(0, 1, 2, 3, 4),
     )
 
-    assert result["marker"].tolist() == ["open", "last"]
-    
+    # Keep the opening minute and final in-session minute only.
+    assert filtered_candlestick_data["marker"].tolist() == ["open", "last"]

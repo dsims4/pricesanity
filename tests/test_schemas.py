@@ -6,7 +6,8 @@ from pricesanity.data.schemas import RawCandlestick
 
 
 def test_raw_candlestick_accepts_valid_ohlc() -> None:
-    candlestick = RawCandlestick(
+    # Create a valid timezone-aware candlestick.
+    raw_candlestick = RawCandlestick(
         timestamp=datetime(2026, 9, 9, 13, 30, tzinfo=timezone.utc),
         instrument="ES",
         open=6500.0,
@@ -15,12 +16,14 @@ def test_raw_candlestick_accepts_valid_ohlc() -> None:
         close=6501.0,
     )
 
-    assert candlestick.candlestick_id == (
+    # Verify its ID combines the instrument with the exact UTC timestamp.
+    assert raw_candlestick.candlestick_id == (
         "ES:2026-09-09T13:30:00+00:00"
     )
 
 
 def test_raw_candlestick_rejects_invalid_high() -> None:
+    # Verify a high below the open and close violates OHLC geometry.
     with pytest.raises(ValueError, match="High cannot be below"):
         RawCandlestick(
             timestamp=datetime(2026, 9, 9, 13, 30, tzinfo=timezone.utc),
@@ -33,6 +36,7 @@ def test_raw_candlestick_rejects_invalid_high() -> None:
 
 
 def test_raw_candlestick_rejects_naive_timestamp() -> None:
+    # Verify a timestamp without timezone information is rejected.
     with pytest.raises(ValueError, match="timezone-aware"):
         RawCandlestick(
             timestamp=datetime(2026, 9, 9, 13, 30),
