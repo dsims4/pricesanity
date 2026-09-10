@@ -5,7 +5,8 @@ from pathlib import Path
 import pandas as pd
 
 
-# List the four vendor price columns required by later candle processing.
+# Exclude volume and vendor metadata because later price-action processing uses
+# only the four values that define OHLC candlestick geometry.
 REQUIRED_OHLC_COLUMNS = ("open", "high", "low", "close")
 
 
@@ -28,26 +29,29 @@ def load_ohlc_csv(
         ValueError: If required columns, timestamps, prices, or row order are
             invalid.
     """
-    # Convert the location to a Path so string and Path arguments use the same
-    # file operations.
+    # Treat string and Path inputs alike so validation and loading use one path
+    # representation.
     csv_path = Path(csv_path)
 
-    # Combine the timestamp and OHLC names for header validation and selective
-    # CSV loading.
+    # The timestamp places each candle in sequence, while all four prices are
+    # needed to preserve its complete OHLC shape.
     required_csv_columns = (timestamp_column, *REQUIRED_OHLC_COLUMNS)
 
-    # Read zero data rows so an invalid header can be rejected before loading
-    # the full dataset.
+    # Read only the header first so a large source file is not loaded when its
+    # columns cannot support the rest of the pipeline.
     csv_header = pd.read_csv(csv_path, nrows=0)
 
-    # Compare required names with the header to collect every missing column.
+    # Find every absent field at once so the source schema can be corrected
+    # before any candlestick data is processed.
     missing_required_columns = set(required_csv_columns) - set(
         csv_header.columns
     )
 
-    # Reject the CSV before loading its rows when required columns are missing.
+    # Without every required field, the file cannot identify and reconstruct
+    # complete OHLC candlesticks.
     if missing_required_columns:
-        # Sort and join the missing names so the error is stable and readable.
+        # Include every missing field in one stable message so repeated runs are
+        # not needed to discover separate schema problems.
         missing_column_names = ", ".join(
             sorted(missing_required_columns)
         )
@@ -55,52 +59,57 @@ def load_ohlc_csv(
             f"CSV is missing required columns: {missing_column_names}"
         )
 
-    # Load only columns used later, leaving volume and other vendor data out.
+    # Load only timestamp and OHLC data because volume and other vendor fields
+    # are intentionally outside this model's price-action representation.
     candlestick_data = pd.read_csv(
         csv_path,
         usecols=list(required_csv_columns),
     )
 
-    # Parse timestamps and replace failures with NaT for one validation check.
+    # Convert every timestamp together and mark parsing failures as NaT so one
+    # check can reject all unusable time values.
     parsed_timestamps = pd.to_datetime(
         candlestick_data[timestamp_column],
         errors="coerce",
     )
 
-    # Reject the CSV when at least one parsed timestamp is NaT.
+    # A candle without a valid timestamp cannot be ordered, assigned to a
+    # session, or protected from future-data leakage.
     if parsed_timestamps.isna().any():
         raise ValueError("CSV contains invalid timestamps.")
 
-    # Attach the source timezone so naive timestamps represent absolute moments
-    # before UTC conversion.
+    # If the file omits timezone information, apply the configured source
+    # timezone before treating each timestamp as an absolute moment.
     if parsed_timestamps.dt.tz is None:
         parsed_timestamps = parsed_timestamps.dt.tz_localize(source_timezone)
 
-    # Store all timestamps in UTC so later ordering and session conversions use
-    # one shared reference timezone.
+    # Store all timestamps in UTC so ordering, resampling, and session matching
+    # compare one shared time reference.
     candlestick_data[timestamp_column] = parsed_timestamps.dt.tz_convert(
         "UTC"
     )
 
-    # Convert OHLC values to numbers and replace failures with NaN for one
-    # validation check.
+    # Convert every OHLC field to numbers and mark failures as NaN so malformed
+    # prices cannot silently enter normalization.
     for column in REQUIRED_OHLC_COLUMNS:
         candlestick_data[column] = pd.to_numeric(
             candlestick_data[column],
             errors="coerce",
         )
 
-    # Reject the CSV when any converted OHLC value is NaN.
+    # Every candle needs four valid prices to preserve its body and range.
     if candlestick_data[list(REQUIRED_OHLC_COLUMNS)].isna().any().any():
         raise ValueError("CSV contains invalid OHLC values.")
 
-    # Reject duplicate timestamps so each source interval has one candlestick.
+    # More than one candle at the same timestamp would make the source interval
+    # and later resampling groups ambiguous.
     if candlestick_data[timestamp_column].duplicated().any():
         raise ValueError("CSV contains duplicate timestamps.")
 
-    # Reject unordered rows so later causal operations cannot use future data.
+    # Chronological input is required so normalization and later model features
+    # cannot accidentally use future prices.
     if not candlestick_data[timestamp_column].is_monotonic_increasing:
         raise ValueError("CSV timestamps must be in chronological order.")
 
-    # Return the validated timestamp and OHLC columns as candlestick data.
+    # Return the isolated, validated fields without changing the source file.
     return candlestick_data
