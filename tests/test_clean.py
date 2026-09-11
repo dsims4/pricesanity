@@ -11,8 +11,8 @@ def test_filter_regular_trading_hours_respects_boundaries() -> None:
                 [
                     "2026-09-09T13:29:00Z",  # 09:29 New York
                     "2026-09-09T13:30:00Z",  # 09:30 New York
-                    "2026-09-09T19:59:00Z",  # 15:59 New York
-                    "2026-09-09T20:00:00Z",  # 16:00 New York
+                    "2026-09-09T20:14:00Z",  # 16:14 New York
+                    "2026-09-09T20:15:00Z",  # 16:15 New York
                 ],
                 utc=True,
             ),
@@ -26,7 +26,7 @@ def test_filter_regular_trading_hours_respects_boundaries() -> None:
         timestamp_column="ts_event",
         session_timezone="America/New_York",
         session_start_time="09:30",
-        session_end_time="16:00",
+        session_end_time="16:15",
         trading_weekdays=(0, 1, 2, 3, 4),
     )
 

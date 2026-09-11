@@ -2,7 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from pricesanity.data.databento_ingest import load_ohlc_csv
+from pricesanity.data.databento_ingest import (
+    load_dataset_conditions_json,
+    load_ohlc_csv,
+    load_status_csv,
+)
 
 
 def test_load_ohlc_csv_loads_ohlc_and_converts_to_utc(
@@ -138,3 +142,101 @@ def test_load_ohlc_csv_rejects_invalid_price(
             csv_path,
             source_timezone="America/New_York",
         )
+
+
+def test_load_status_csv_keeps_transition_fields(tmp_path: Path) -> None:
+    # Create a vendor-style status export with one field the pipeline does not
+    # need after downloading the data.
+    csv_path = tmp_path / "status.csv"
+    csv_path.write_text(
+        "ts_event,reason,trading_event,is_trading,symbol\n"
+        "2026-09-09T13:30:00Z,scheduled,none,Y,ES.c.0\n"
+        "2026-09-09T20:15:00Z,scheduled,none,N,ES.c.0\n",
+        encoding="utf-8",
+    )
+
+    # Load only the evidence later used to identify scheduled RTH transitions.
+    status_data = load_status_csv(csv_path)
+
+    # Confirm unused vendor metadata was excluded without changing raw states.
+    assert list(status_data.columns) == [
+        "ts_event",
+        "reason",
+        "trading_event",
+        "is_trading",
+    ]
+    assert status_data.loc[0, "is_trading"] == "Y"
+    assert "symbol" not in status_data.columns
+
+
+def test_load_status_csv_rejects_missing_required_field(
+    tmp_path: Path,
+) -> None:
+    # Omit the reason because the remaining values cannot prove that a status
+    # transition was scheduled.
+    csv_path = tmp_path / "status_missing_reason.csv"
+    csv_path.write_text(
+        "ts_event,trading_event,is_trading\n"
+        "2026-09-09T13:30:00Z,none,Y\n",
+        encoding="utf-8",
+    )
+
+    # Verify the loader identifies the missing transition context.
+    with pytest.raises(ValueError, match="reason"):
+        load_status_csv(csv_path)
+
+
+def test_load_dataset_conditions_json_keeps_daily_quality_fields(
+    tmp_path: Path,
+) -> None:
+    # Reproduce Databento's list of daily condition records, including delivery
+    # metadata that the model pipeline does not need.
+    json_path = tmp_path / "condition.json"
+    json_path.write_text(
+        '[{"date":"2026-09-08","condition":"available",'
+        '"last_modified_date":"2026-09-09"},'
+        '{"date":"2026-09-09","condition":"degraded",'
+        '"last_modified_date":"2026-09-10"}]',
+        encoding="utf-8",
+    )
+
+    # Load the two values needed to attach quality to each session schedule.
+    condition_data = load_dataset_conditions_json(json_path)
+
+    # Confirm delivery metadata was excluded while both quality decisions were
+    # preserved for downstream validation.
+    assert list(condition_data.columns) == ["date", "condition"]
+    assert condition_data.to_dict("records") == [
+        {"date": "2026-09-08", "condition": "available"},
+        {"date": "2026-09-09", "condition": "degraded"},
+    ]
+
+
+def test_load_dataset_conditions_json_rejects_invalid_structure(
+    tmp_path: Path,
+) -> None:
+    # Use a single object instead of Databento's expected list of daily records.
+    json_path = tmp_path / "invalid_condition.json"
+    json_path.write_text(
+        '{"date":"2026-09-09","condition":"available"}',
+        encoding="utf-8",
+    )
+
+    # Verify ambiguous top-level metadata cannot enter schedule construction.
+    with pytest.raises(ValueError, match="list of records"):
+        load_dataset_conditions_json(json_path)
+
+
+def test_load_dataset_conditions_json_rejects_missing_field(
+    tmp_path: Path,
+) -> None:
+    # Omit condition so the date has no trustworthy quality decision.
+    json_path = tmp_path / "condition_missing_quality.json"
+    json_path.write_text(
+        '[{"date":"2026-09-09"}]',
+        encoding="utf-8",
+    )
+
+    # Verify the loader identifies the missing daily condition.
+    with pytest.raises(ValueError, match="condition"):
+        load_dataset_conditions_json(json_path)

@@ -15,14 +15,14 @@ def test_prepare_candlestick_sessions_preserves_opening_gap_reference() -> None:
     # the second opening candle can be checked against the first session's close.
     reference_timestamps = pd.date_range(
         "2026-01-05 09:30:00",
-        "2026-01-05 16:00:00",
+        "2026-01-05 16:15:00",
         freq="1min",
         inclusive="left",
         tz="America/New_York",
     )
     eligible_timestamps = pd.date_range(
         "2026-01-06 09:30:00",
-        "2026-01-06 16:00:00",
+        "2026-01-06 16:15:00",
         freq="1min",
         inclusive="left",
         tz="America/New_York",
@@ -94,7 +94,7 @@ def test_prepare_candlestick_sessions_preserves_opening_gap_reference() -> None:
         ),
         session=SessionConfig(
             start_time="09:30",
-            end_time="16:00",
+            end_time="16:15",
             trading_weekdays=(0, 1, 2, 3, 4),
         ),
         normalization=NormalizationConfig(scheme="relative_ohlc_v1"),
@@ -109,9 +109,9 @@ def test_prepare_candlestick_sessions_preserves_opening_gap_reference() -> None:
         config=config,
     )
 
-    # One RTH session contains seventy-eight five-minute candles, and its first
+    # One RTH session contains eighty-one five-minute candles, and its first
     # normalized row must preserve the two-percent move from the prior close.
-    assert len(prepared_candlestick_data) == 78
+    assert len(prepared_candlestick_data) == 81
     assert prepared_candlestick_data.loc[0, "ts_event"] == pd.Timestamp(
         "2026-01-06 14:30:00Z"
     )

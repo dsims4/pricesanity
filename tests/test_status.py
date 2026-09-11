@@ -100,7 +100,7 @@ def test_build_session_schedule_preserves_scheduled_early_close() -> None:
         timestamp_column="ts_event",
         session_timezone="America/New_York",
         session_start_time="09:30",
-        session_end_time="16:00",
+        session_end_time="16:15",
     )
 
     # Create the UTC boundaries expected for one regular and one early close.
@@ -113,13 +113,13 @@ def test_build_session_schedule_preserves_scheduled_early_close() -> None:
     )
     expected_session_closes = pd.to_datetime(
         [
-            "2024-12-23 21:00:00Z",
+            "2024-12-23 21:15:00Z",
             "2024-12-24 18:15:00Z",
         ],
         utc=True,
     )
 
-    # Clip the regular close to 16:00 while retaining the scheduled early close.
+    # Clip the regular close to 16:15 while retaining the scheduled early close.
     assert session_schedule["session_open"].tolist() == list(
         expected_session_opens
     )
@@ -159,7 +159,7 @@ def test_build_session_schedule_preserves_degraded_condition() -> None:
         timestamp_column="ts_event",
         session_timezone="America/New_York",
         session_start_time="09:30",
-        session_end_time="16:00",
+        session_end_time="16:15",
     )
 
     # Retain the degraded label rather than treating the date as unavailable.
@@ -193,7 +193,7 @@ def test_build_session_schedule_omits_close_before_rth() -> None:
         timestamp_column="ts_event",
         session_timezone="America/New_York",
         session_start_time="09:30",
-        session_end_time="16:00",
+        session_end_time="16:15",
     )
 
     # Omit the date because its market close occurred before RTH began.
@@ -228,5 +228,5 @@ def test_build_session_schedule_rejects_nonboolean_trading_state() -> None:
             timestamp_column="ts_event",
             session_timezone="America/New_York",
             session_start_time="09:30",
-            session_end_time="16:00",
+            session_end_time="16:15",
         )

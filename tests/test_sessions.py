@@ -9,7 +9,7 @@ def test_filter_complete_sessions_keeps_regular_and_half_sessions() -> None:
     # retained session with a trustworthy normalization reference.
     reference_session_timestamps = pd.date_range(
         "2026-09-08 09:30:00",
-        "2026-09-08 16:00:00",
+        "2026-09-08 16:15:00",
         freq="5min",
         inclusive="left",
         tz="America/New_York",
@@ -18,7 +18,7 @@ def test_filter_complete_sessions_keeps_regular_and_half_sessions() -> None:
     # Generate the timestamps expected for one regular RTH session.
     regular_session_timestamps = pd.date_range(
         "2026-09-09 09:30:00",
-        "2026-09-09 16:00:00",
+        "2026-09-09 16:15:00",
         freq="5min",
         inclusive="left",
         tz="America/New_York",
@@ -27,7 +27,7 @@ def test_filter_complete_sessions_keeps_regular_and_half_sessions() -> None:
     # Generate the timestamps expected for one scheduled early-close session.
     half_session_timestamps = pd.date_range(
         "2026-09-10 09:30:00",
-        "2026-09-10 13:00:00",
+        "2026-09-10 13:15:00",
         freq="5min",
         inclusive="left",
         tz="America/New_York",
@@ -62,9 +62,9 @@ def test_filter_complete_sessions_keeps_regular_and_half_sessions() -> None:
             ),
             "session_close": pd.to_datetime(
                 [
-                    "2026-09-08 16:00:00-04:00",
-                    "2026-09-09 16:00:00-04:00",
-                    "2026-09-10 13:00:00-04:00",
+                    "2026-09-08 16:15:00-04:00",
+                    "2026-09-09 16:15:00-04:00",
+                    "2026-09-10 13:15:00-04:00",
                 ],
                 utc=True,
             ),
@@ -95,7 +95,7 @@ def test_filter_complete_sessions_discards_incomplete_and_degraded() -> None:
     # Remove the final timestamp from an otherwise normal scheduled session.
     incomplete_session_timestamps = pd.date_range(
         "2026-09-11 09:30:00",
-        "2026-09-11 16:00:00",
+        "2026-09-11 16:15:00",
         freq="5min",
         inclusive="left",
         tz="America/New_York",
@@ -104,7 +104,7 @@ def test_filter_complete_sessions_discards_incomplete_and_degraded() -> None:
     # Generate a complete session whose date is marked degraded by Databento.
     degraded_session_timestamps = pd.date_range(
         "2026-09-14 09:30:00",
-        "2026-09-14 16:00:00",
+        "2026-09-14 16:15:00",
         freq="5min",
         inclusive="left",
         tz="America/New_York",
@@ -135,8 +135,8 @@ def test_filter_complete_sessions_discards_incomplete_and_degraded() -> None:
             ),
             "session_close": pd.to_datetime(
                 [
-                    "2026-09-11 16:00:00-04:00",
-                    "2026-09-14 16:00:00-04:00",
+                    "2026-09-11 16:15:00-04:00",
+                    "2026-09-14 16:15:00-04:00",
                 ],
                 utc=True,
             ),
@@ -201,7 +201,7 @@ def test_filter_complete_sessions_requires_trustworthy_predecessor() -> None:
     session_timestamps = [
         pd.date_range(
             date + pd.Timedelta(hours=9, minutes=30),
-            date + pd.Timedelta(hours=16),
+            date + pd.Timedelta(hours=16, minutes=15),
             freq="5min",
             inclusive="left",
             tz="America/New_York",

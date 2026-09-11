@@ -14,7 +14,12 @@ dependencies = [
     "pyarrow>=16",
     "PyYAML>=6.0",
     "python-dotenv>=1.0",
+    "databento>=0.86,<0.87",
 ]
+
+[project.scripts]
+pricesanity-prepare = "pricesanity.data.build_dataset:main"
+pricesanity-estimate = "pricesanity.data.databento_fetch:main"
 
 [project.optional-dependencies]
 dev = [

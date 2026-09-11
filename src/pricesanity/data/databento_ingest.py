@@ -1,5 +1,7 @@
-"""Load OHLC data exported from Databento without modifying the source file."""
+"""Load Databento exports without modifying their source files."""
 
+import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pandas as pd
@@ -8,6 +10,14 @@ import pandas as pd
 # Exclude volume and vendor metadata because later price-action processing uses
 # only the four values that define OHLC candlestick geometry.
 REQUIRED_OHLC_COLUMNS = ("open", "high", "low", "close")
+
+# Scheduled status extraction needs these three vendor fields to distinguish
+# ordinary RTH boundaries from unrelated market-state records.
+REQUIRED_STATUS_COLUMNS = ("reason", "trading_event", "is_trading")
+
+# Daily condition metadata connects each trading date with Databento's quality
+# assessment so degraded or unavailable sessions can be rejected later.
+REQUIRED_CONDITION_COLUMNS = ("date", "condition")
 
 
 def load_ohlc_csv(
@@ -113,3 +123,122 @@ def load_ohlc_csv(
 
     # Return the isolated, validated fields without changing the source file.
     return candlestick_data
+
+
+def load_status_csv(
+    csv_path: str | Path,
+    timestamp_column: str = "ts_event",
+) -> pd.DataFrame:
+    """Load the Databento fields needed to extract session transitions.
+
+    Args:
+        csv_path: Path to the status CSV file.
+        timestamp_column: Column containing status timestamps.
+
+    Returns:
+        Status timestamps and the fields needed for transition extraction.
+
+    Raises:
+        ValueError: If the CSV is missing a required field.
+    """
+    # Treat string and Path inputs alike so header validation and loading use
+    # the same path representation.
+    csv_path = Path(csv_path)
+
+    # A transition needs its timestamp, cause, event, and resulting trading
+    # state before later logic can decide whether it marks an RTH boundary.
+    required_csv_columns = (timestamp_column, *REQUIRED_STATUS_COLUMNS)
+
+    # Read only the header first so an unsuitable status export is rejected
+    # before its full contents consume memory.
+    csv_header = pd.read_csv(csv_path, nrows=0)
+
+    # Report every absent field together so the correct Databento export can be
+    # supplied without discovering schema problems one at a time.
+    missing_required_columns = set(required_csv_columns) - set(
+        csv_header.columns
+    )
+
+    # Missing context could cause an unrelated or unscheduled state change to
+    # be mistaken for a valid session boundary.
+    if missing_required_columns:
+        # Sort the names to keep the error stable across repeated runs.
+        missing_column_names = ", ".join(
+            sorted(missing_required_columns)
+        )
+        raise ValueError(
+            f"Status CSV is missing required columns: {missing_column_names}"
+        )
+
+    # Load only the fields used by transition extraction because symbol and
+    # delivery metadata do not help determine session opening or closing times.
+    status_data = pd.read_csv(
+        csv_path,
+        usecols=list(required_csv_columns),
+    )
+
+    # Preserve Databento's raw values here because the status transformation is
+    # responsible for parsing timestamps and normalizing vendor state labels.
+    return status_data
+
+
+def load_dataset_conditions_json(json_path: str | Path) -> pd.DataFrame:
+    """Load Databento's daily dataset conditions from a JSON file.
+
+    Args:
+        json_path: Path to the condition JSON file.
+
+    Returns:
+        Trading dates and their Databento data conditions.
+
+    Raises:
+        ValueError: If the JSON structure or required fields are invalid.
+    """
+    # Treat string and Path inputs alike so reading and error reporting use one
+    # path representation.
+    json_path = Path(json_path)
+
+    # Decode the file with the standard library because the batch condition
+    # artifact is a small collection of metadata records, not tabular prices.
+    with json_path.open(encoding="utf-8") as condition_file:
+        condition_records = json.load(condition_file)
+
+    # Databento returns one mapping per date, so any other top-level structure
+    # cannot establish an ordered collection of daily quality decisions.
+    if not isinstance(condition_records, list):
+        raise ValueError("Condition JSON must contain a list of records.")
+
+    # An empty date range is valid and still needs stable columns so downstream
+    # schedule validation can handle it predictably.
+    if not condition_records:
+        return pd.DataFrame(columns=list(REQUIRED_CONDITION_COLUMNS))
+
+    # Validate each item before creating a table because a scalar or nested list
+    # would otherwise produce unclear columns or missing quality information.
+    if not all(isinstance(record, Mapping) for record in condition_records):
+        raise ValueError("Each condition record must be a JSON object.")
+
+    # Convert the records together so their common fields can be validated and
+    # selected with the same tabular operations used by the rest of the pipeline.
+    condition_data = pd.DataFrame(condition_records)
+
+    # Both fields are needed to attach one quality decision to a trading date.
+    missing_required_columns = set(REQUIRED_CONDITION_COLUMNS) - set(
+        condition_data.columns
+    )
+
+    # Without a date or condition, later filtering could accidentally accept a
+    # session whose data quality Databento did not confirm.
+    if missing_required_columns:
+        # Sort the names to keep the error stable across repeated runs.
+        missing_column_names = ", ".join(
+            sorted(missing_required_columns)
+        )
+        raise ValueError(
+            f"Condition JSON is missing required fields: "
+            f"{missing_column_names}"
+        )
+
+    # Keep only pipeline inputs because last-modified and other delivery
+    # metadata do not affect session boundaries or the quality decision.
+    return condition_data.loc[:, list(REQUIRED_CONDITION_COLUMNS)].copy()
