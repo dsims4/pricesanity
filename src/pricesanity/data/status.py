@@ -287,3 +287,97 @@ def extract_session_transitions(
     extracted_status_data = status_data.loc[
         :, list(required_status_columns)
     ].copy()
+
+    # Every transition needs one shared timezone so midnight snapshots can be
+    # identified and the remaining status changes can be placed in exact order.
+    # Invalid timestamps become NaT so they can all be rejected in the next check.
+    extracted_status_data[timestamp_column] = pd.to_datetime(
+        extracted_status_data[timestamp_column],
+        errors="coerce",
+        utc=True,
+    )
+
+    # A status record without a valid timestamp cannot be ordered or used
+    # to define when a trading session opened or closed.
+    if extracted_status_data[timestamp_column].isna().any():
+        raise ValueError("Status data contains invalid timestamps.")
+
+    # Trading states must be read in chronological order because each
+    # transition is identified by comparing a record with the state
+    # immediately before it.
+    extracted_status_data = extracted_status_data.sort_values(
+        timestamp_column,
+        kind="stable",
+    )
+
+    # Databento repeats the current state at midnight so requests crossing UTC
+    # dates still know the active state. These snapshots are not new session
+    # transitions and must be removed before comparing changes.
+    is_not_midnight_snapshot = (
+        extracted_status_data[timestamp_column].dt.time != time.min
+    )
+    extracted_status_data = extracted_status_data.loc[
+        is_not_midnight_snapshot
+    ].copy()
+
+    # Databento may provide reason and event codes as enum objects, names, or
+    # numbers. Converting each form to lowercase text gives the filters below
+    # one consistent representation.
+    normalized_reasons = extracted_status_data["reason"].map(
+        lambda value: getattr(value, "name", value)
+    ).astype(str).str.strip().str.lower()
+    normalized_trading_events = extracted_status_data["trading_event"].map(
+        lambda value: getattr(value, "name", value)
+    ).astype(str).str.strip().str.lower()
+
+    # Only scheduled changes describe normal session boundaries. Unscheduled
+    # changes, such as operational halts, must not shorten a planned session.
+    is_scheduled_transition = normalized_reasons.isin(("scheduled", "1"))
+
+    # A separate trading event describes another exchange action instead of a
+    # direct change between trading and not trading, so it cannot define the
+    # opening or closing boundary used by this project.
+    has_no_trading_event = normalized_trading_events.isin(("none", "0"))
+
+    # Apply both requirements together so only potential scheduled session
+    # openings and closings remain for trading-state normalization.
+    extracted_status_data = extracted_status_data.loc[
+        is_scheduled_transition & has_no_trading_event
+    ].copy()
+
+    # Databento represents active and inactive trading with Y and N, while a
+    # caller may supply booleans that have already been normalized. Both valid
+    # forms are converted into one boolean type for schedule construction.
+    normalized_trading_states = extracted_status_data["is_trading"].map(
+        {
+            "Y": True,
+            "N": False,
+            True: True,
+            False: False,
+        }
+    )
+
+    # Databento uses '~' when the state is unknown. An unknown or unsupported
+    # value cannot prove whether a scheduled session opened or closed.
+    if normalized_trading_states.isna().any():
+        raise ValueError("Status is_trading values must be Y, N, or booleans.")
+
+    # Store every accepted state as a boolean so the next record can be compared
+    # directly with the trading state immediately before it.
+    extracted_status_data["is_trading"] = normalized_trading_states.astype(
+        bool
+    )
+
+    # Repeated records describe a market that remained in the same state rather
+    # than a new opening or closing, so only changes from the prior state remain.
+    is_new_trading_state = extracted_status_data["is_trading"].ne(
+        extracted_status_data["is_trading"].shift()
+    )
+    extracted_status_data = extracted_status_data.loc[
+        is_new_trading_state,
+        [timestamp_column, "is_trading"],
+    ]
+
+    # Reset the row labels so the extracted transitions form a clean table for
+    # build_session_schedule without retaining gaps from filtered status rows.
+    return extracted_status_data.reset_index(drop=True)

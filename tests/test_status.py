@@ -1,7 +1,71 @@
 import pandas as pd
 import pytest
 
-from pricesanity.data.status import build_session_schedule
+from pricesanity.data.status import (
+    build_session_schedule,
+    extract_session_transitions,
+)
+
+
+def test_extract_session_transitions_keeps_scheduled_state_changes() -> None:
+    # Mix valid boundaries with a midnight snapshot, a repeated state, an
+    # unscheduled halt, and an unrelated trading event.
+    status_data = pd.DataFrame(
+        {
+            "ts_event": [
+                "2024-12-23 00:00:00Z",
+                "2024-12-23 22:00:00Z",
+                "2024-12-23 22:01:00Z",
+                "2024-12-23 22:02:00Z",
+                "2024-12-23 22:03:00Z",
+                "2024-12-23 23:00:00Z",
+            ],
+            "reason": [
+                "scheduled",
+                "scheduled",
+                "scheduled",
+                "operational",
+                "scheduled",
+                "scheduled",
+            ],
+            "trading_event": ["none", "none", "none", "none", 2, 0],
+            "is_trading": ["Y", "N", "N", "Y", "Y", "Y"],
+        }
+    )
+
+    # Extract the only two records that prove a scheduled close and later open.
+    session_transitions = extract_session_transitions(
+        status_data,
+        timestamp_column="ts_event",
+    )
+
+    # The result must preserve both transition times and normalize their states.
+    assert session_transitions["ts_event"].tolist() == list(
+        pd.to_datetime(
+            ["2024-12-23 22:00:00Z", "2024-12-23 23:00:00Z"],
+            utc=True,
+        )
+    )
+    assert session_transitions["is_trading"].tolist() == [False, True]
+
+
+def test_extract_session_transitions_rejects_unknown_trading_state() -> None:
+    # An unknown state cannot prove which side of a session boundary is active.
+    status_data = pd.DataFrame(
+        {
+            "ts_event": ["2024-12-23 22:00:00Z"],
+            "reason": [1],
+            "trading_event": [0],
+            "is_trading": ["~"],
+        }
+    )
+
+    # Reject the ambiguous state before it can enter session construction.
+    with pytest.raises(ValueError, match="must be Y, N, or booleans"):
+        extract_session_transitions(
+            status_data,
+            timestamp_column="ts_event",
+        )
 
 
 def test_build_session_schedule_preserves_scheduled_early_close() -> None:
