@@ -1,5 +1,10 @@
 """Causal normalization for OHLC candlesticks."""
 
+from math import isfinite
+
+import pandas as pd
+
+from pricesanity.data.databento_ingest import REQUIRED_OHLC_COLUMNS
 from pricesanity.data.schemas import (
     NormalizedCandlestick,
     RawCandlestick,
@@ -60,3 +65,185 @@ def normalize_candlestick(
             current_candlestick.low - current_candlestick.close
         ) / previous_close,
     )
+
+
+def normalize_candlestick_data(
+    candlestick_data: pd.DataFrame,
+    *,
+    timestamp_column: str,
+    instrument: str,
+) -> pd.DataFrame:
+    """Normalize each candlestick against the previous chronological close.
+
+    Args:
+        candlestick_data: Chronological OHLC candlestick data.
+        timestamp_column: Column containing candlestick timestamps.
+        instrument: Instrument shared by every candlestick.
+
+    Returns:
+        Timestamps, instrument names, and normalized OHLC geometry for every
+        candlestick that has a previous close.
+
+    Raises:
+        ValueError: If required fields, timestamps, prices, ordering, the
+            instrument, or previous closes are invalid.
+    """
+    # Each output candle needs its timestamp and complete OHLC geometry before
+    # it can be measured against the preceding close.
+    required_candlestick_columns = (
+        timestamp_column,
+        *REQUIRED_OHLC_COLUMNS,
+    )
+
+    # Find all missing fields before normalization because partial candle
+    # geometry cannot produce the four model features reliably.
+    missing_candlestick_columns = set(required_candlestick_columns) - set(
+        candlestick_data.columns
+    )
+
+    # Stop before changing any values when the input cannot identify and
+    # reconstruct complete OHLC candlesticks.
+    if missing_candlestick_columns:
+        # Include every missing field in one stable message so the input can be
+        # corrected without repeated validation attempts.
+        missing_column_names = ", ".join(
+            sorted(missing_candlestick_columns)
+        )
+        raise ValueError(
+            f"Candlestick data is missing required columns: "
+            f"{missing_column_names}"
+        )
+
+    # Every output row needs a stable instrument identity for later alignment
+    # with annotations, predictions, and the original market data.
+    if not instrument.strip():
+        raise ValueError("Instrument cannot be empty.")
+
+    # Copy only the required source fields because parsing and numeric conversion
+    # must not alter the validated candlestick data supplied by the caller.
+    parsed_candlestick_data = candlestick_data.loc[
+        :, list(required_candlestick_columns)
+    ].copy()
+
+    # Parse timestamps without assuming a timezone because a missing timezone
+    # must be rejected instead of silently interpreting local time as UTC.
+    parsed_timestamps = pd.to_datetime(
+        parsed_candlestick_data[timestamp_column],
+        errors="coerce",
+    )
+
+    # Invalid timestamps cannot be ordered or aligned with sessions,
+    # annotations, and later candle-by-candle predictions.
+    if parsed_timestamps.isna().any():
+        raise ValueError("Candlestick data contains invalid timestamps.")
+
+    # Causal calculations need absolute moments, so timestamps without timezone
+    # information cannot establish a reliable chronological order.
+    if parsed_timestamps.dt.tz is None:
+        raise ValueError("Candlestick timestamps must be timezone-aware.")
+
+    # Store timestamps in UTC so session filtering and annotation alignment use
+    # the same absolute time representation.
+    parsed_candlestick_data[timestamp_column] = (
+        parsed_timestamps.dt.tz_convert("UTC")
+    )
+
+    # Convert all OHLC fields to numbers so text or malformed prices cannot
+    # produce misleading normalized ratios.
+    for price_column in REQUIRED_OHLC_COLUMNS:
+        parsed_candlestick_data[price_column] = pd.to_numeric(
+            parsed_candlestick_data[price_column],
+            errors="coerce",
+        )
+
+    # Every price must be finite because missing or infinite values would pass
+    # undefined geometry into the model.
+    has_only_finite_prices = parsed_candlestick_data[
+        list(REQUIRED_OHLC_COLUMNS)
+    ].map(isfinite).all().all()
+    if not has_only_finite_prices:
+        raise ValueError("OHLC prices must be finite numbers.")
+
+    # More than one candle at the same time would make the previous-close
+    # reference ambiguous.
+    if parsed_candlestick_data[timestamp_column].duplicated().any():
+        raise ValueError("Candlestick data contains duplicate timestamps.")
+
+    # Strict chronological order guarantees that every denominator comes only
+    # from information available before the candle being normalized.
+    if not parsed_candlestick_data[
+        timestamp_column
+    ].is_monotonic_increasing:
+        raise ValueError("Candlestick timestamps must be in chronological order.")
+
+    # A high below the open or close cannot describe valid OHLC geometry and
+    # would give the model a physically inconsistent upper range.
+    has_invalid_high = parsed_candlestick_data["high"] < (
+        parsed_candlestick_data[["open", "close"]].max(axis="columns")
+    )
+    if has_invalid_high.any():
+        raise ValueError("High cannot be below the open or close.")
+
+    # A low above the open or close would likewise create an impossible lower
+    # candlestick range.
+    has_invalid_low = parsed_candlestick_data["low"] > (
+        parsed_candlestick_data[["open", "close"]].min(axis="columns")
+    )
+    if has_invalid_low.any():
+        raise ValueError("Low cannot be above the open or close.")
+
+    # Shift closes down one row so each candle is paired only with the close
+    # known immediately before its own timestamp.
+    previous_closes = parsed_candlestick_data["close"].shift(1)
+
+    # The first candle has no earlier row, so normalization begins with the
+    # second candle and preserves the first close only as its causal reference.
+    has_previous_close = previous_closes.notna()
+
+    # A zero previous close cannot provide the shared scale required by any of
+    # the four relative geometry calculations.
+    if (previous_closes.loc[has_previous_close] == 0).any():
+        raise ValueError("Previous closes cannot be zero.")
+
+    # Isolate rows with a causal reference so every output feature has a valid
+    # denominator and remains aligned with its original timestamp.
+    current_candlestick_data = parsed_candlestick_data.loc[
+        has_previous_close
+    ]
+    previous_closes = previous_closes.loc[has_previous_close]
+
+    # Build one model-ready row per current candle while retaining timestamp and
+    # instrument fields for session, annotation, and prediction alignment.
+    normalized_candlestick_data = pd.DataFrame(
+        {
+            timestamp_column: current_candlestick_data[timestamp_column],
+            "instrument": instrument,
+            # Measure the opening move from the preceding close so the first
+            # candle of a session preserves its overnight gap.
+            "open_gap": (
+                current_candlestick_data["open"] - previous_closes
+            ) / previous_closes,
+            # Measure the signed body on the same scale so positive and negative
+            # values preserve bullish and bearish candle direction.
+            "body": (
+                current_candlestick_data["close"]
+                - current_candlestick_data["open"]
+            ) / previous_closes,
+            # Measure the high above or below the current close to preserve the
+            # candle's upper price geometry.
+            "high_from_close": (
+                current_candlestick_data["high"]
+                - current_candlestick_data["close"]
+            ) / previous_closes,
+            # Measure the low from the current close on the same scale to
+            # preserve the candle's lower price geometry.
+            "low_from_close": (
+                current_candlestick_data["low"]
+                - current_candlestick_data["close"]
+            ) / previous_closes,
+        }
+    )
+
+    # Replace inherited row labels with a continuous index while timestamps
+    # continue to preserve exact links to the original candlesticks.
+    return normalized_candlestick_data.reset_index(drop=True)

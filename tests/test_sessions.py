@@ -5,6 +5,16 @@ from pricesanity.data.sessions import filter_complete_sessions
 
 
 def test_filter_complete_sessions_keeps_regular_and_half_sessions() -> None:
+    # Generate a complete earlier session whose close provides the first
+    # retained session with a trustworthy normalization reference.
+    reference_session_timestamps = pd.date_range(
+        "2026-09-08 09:30:00",
+        "2026-09-08 16:00:00",
+        freq="5min",
+        inclusive="left",
+        tz="America/New_York",
+    )
+
     # Generate the timestamps expected for one regular RTH session.
     regular_session_timestamps = pd.date_range(
         "2026-09-09 09:30:00",
@@ -23,24 +33,28 @@ def test_filter_complete_sessions_keeps_regular_and_half_sessions() -> None:
         tz="America/New_York",
     )
 
-    # Combine both valid sessions into one UTC candlestick dataset.
+    # Combine the reference, regular, and half-day sessions into one UTC
+    # candlestick dataset.
     candlestick_data = pd.DataFrame(
         {
-            "ts_event": regular_session_timestamps.append(
-                half_session_timestamps
-            ).tz_convert("UTC"),
+            "ts_event": reference_session_timestamps.append(
+                regular_session_timestamps
+            ).append(half_session_timestamps).tz_convert("UTC"),
             "session_marker": (
-                ["regular"] * len(regular_session_timestamps)
+                ["reference"] * len(reference_session_timestamps)
+                + ["regular"] * len(regular_session_timestamps)
                 + ["half"] * len(half_session_timestamps)
             ),
         }
     )
 
-    # Describe each session using boundaries derived from scheduled status data.
+    # Describe all three sessions using boundaries derived from scheduled status
+    # data.
     session_schedule = pd.DataFrame(
         {
             "session_open": pd.to_datetime(
                 [
+                    "2026-09-08 09:30:00-04:00",
                     "2026-09-09 09:30:00-04:00",
                     "2026-09-10 09:30:00-04:00",
                 ],
@@ -48,16 +62,17 @@ def test_filter_complete_sessions_keeps_regular_and_half_sessions() -> None:
             ),
             "session_close": pd.to_datetime(
                 [
+                    "2026-09-08 16:00:00-04:00",
                     "2026-09-09 16:00:00-04:00",
                     "2026-09-10 13:00:00-04:00",
                 ],
                 utc=True,
             ),
-            "data_condition": ["available", "available"],
+            "data_condition": ["available", "available", "available"],
         }
     )
 
-    # Validate both dates against their own scheduled session boundaries.
+    # Validate every date and its preceding closing reference.
     complete_session_data = filter_complete_sessions(
         candlestick_data,
         session_schedule,
@@ -65,8 +80,11 @@ def test_filter_complete_sessions_keeps_regular_and_half_sessions() -> None:
         target_interval="5min",
     )
 
-    # Keep every candle from both the regular and scheduled half-session.
-    assert len(complete_session_data) == len(candlestick_data)
+    # Use the first date only as a reference, then keep the regular and
+    # scheduled half-session because both have trustworthy predecessors.
+    assert len(complete_session_data) == (
+        len(regular_session_timestamps) + len(half_session_timestamps)
+    )
     assert complete_session_data["session_marker"].unique().tolist() == [
         "regular",
         "half",
@@ -172,3 +190,78 @@ def test_filter_complete_sessions_rejects_misaligned_boundaries() -> None:
             timestamp_column="ts_event",
             target_interval="5min",
         )
+
+
+def test_filter_complete_sessions_requires_trustworthy_predecessor() -> None:
+    # Give four complete dates different quality roles so the test can separate
+    # a session's own trustworthiness from its eligibility as model input.
+    session_dates = pd.to_datetime(
+        ["2026-09-08", "2026-09-09", "2026-09-10", "2026-09-11"]
+    )
+    session_timestamps = [
+        pd.date_range(
+            date + pd.Timedelta(hours=9, minutes=30),
+            date + pd.Timedelta(hours=16),
+            freq="5min",
+            inclusive="left",
+            tz="America/New_York",
+        )
+        for date in session_dates
+    ]
+
+    # Preserve each date's role so the returned sessions can be identified
+    # without inferring their dates from timestamps.
+    session_markers = ("reference", "degraded", "recovery", "eligible")
+    candlestick_data = pd.DataFrame(
+        {
+            "ts_event": session_timestamps[0]
+            .append(session_timestamps[1])
+            .append(session_timestamps[2])
+            .append(session_timestamps[3])
+            .tz_convert("UTC"),
+            "session_marker": [
+                marker
+                for marker, timestamps in zip(
+                    session_markers,
+                    session_timestamps,
+                    strict=True,
+                )
+                for _ in timestamps
+            ],
+        }
+    )
+
+    # Mark only the second date degraded while leaving all timestamp sequences
+    # complete.
+    session_schedule = pd.DataFrame(
+        {
+            "session_open": [
+                timestamps[0] for timestamps in session_timestamps
+            ],
+            "session_close": [
+                timestamps[-1] + pd.Timedelta(minutes=5)
+                for timestamps in session_timestamps
+            ],
+            "data_condition": [
+                "available",
+                "degraded",
+                "available",
+                "available",
+            ],
+        }
+    )
+
+    # Require each retained date to have its own trustworthy data and a
+    # trustworthy close from the scheduled date immediately before it.
+    complete_session_data = filter_complete_sessions(
+        candlestick_data,
+        session_schedule,
+        timestamp_column="ts_event",
+        target_interval="5min",
+    )
+
+    # The recovery date repairs the causal reference chain but cannot use the
+    # degraded close itself; only the following date becomes eligible.
+    assert complete_session_data["session_marker"].unique().tolist() == [
+        "eligible"
+    ]
