@@ -8,15 +8,19 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from PySide6.QtCore import QDate, Qt
-from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
+from PySide6.QtGui import QColor, QCloseEvent, QKeySequence, QShortcut, QTextCharFormat
 from PySide6.QtWidgets import (
+    QCalendarWidget,
     QDateEdit,
     QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QPushButton,
     QSizePolicy,
+    QSpinBox,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -201,10 +205,13 @@ class AnnotationWindow(QMainWindow):
         self.start_date_input.setDisplayFormat("yyyy-MM-dd")
         self.start_date_input.setReadOnly(False)
         self.start_date_input.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.start_date_input.setDateRange(minimum_qdate, maximum_qdate)
-        self.start_date_input.calendarWidget().setStyleSheet(
-            "QCalendarWidget QAbstractItemView:disabled { color: red; }"
+        self.start_date_input.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Fixed,
         )
+        self.start_date_input.setFixedWidth(150)
+        self.start_date_input.setDateRange(minimum_qdate, maximum_qdate)
+        self._configure_date_calendar(self.start_date_input)
         date_range_layout.addWidget(self.start_date_input)
 
         date_range_layout.addWidget(QLabel("Ending date:"))
@@ -213,10 +220,13 @@ class AnnotationWindow(QMainWindow):
         self.end_date_input.setDisplayFormat("yyyy-MM-dd")
         self.end_date_input.setReadOnly(False)
         self.end_date_input.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.end_date_input.setDateRange(minimum_qdate, maximum_qdate)
-        self.end_date_input.calendarWidget().setStyleSheet(
-            "QCalendarWidget QAbstractItemView:disabled { color: red; }"
+        self.end_date_input.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Fixed,
         )
+        self.end_date_input.setFixedWidth(150)
+        self.end_date_input.setDateRange(minimum_qdate, maximum_qdate)
+        self._configure_date_calendar(self.end_date_input)
         date_range_layout.addWidget(self.end_date_input)
 
         # Apply a new range from the already loaded data instead of reopening
@@ -225,6 +235,13 @@ class AnnotationWindow(QMainWindow):
         self.apply_date_range_button.clicked.connect(self.apply_date_range)
         date_range_layout.addWidget(self.apply_date_range_button)
         date_range_layout.addStretch()
+
+        # Let the user end an annotation run explicitly without relying on the
+        # operating system's window controls. Placing it after the stretch
+        # keeps this terminating action separate at the top-right corner.
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.clicked.connect(self.close)
+        date_range_layout.addWidget(self.stop_button)
 
         # Show which trading date is active while the arrow identifies its
         # active candlestick below.
@@ -263,32 +280,49 @@ class AnnotationWindow(QMainWindow):
         chart_layout.addWidget(self.chart)
         window_layout.addWidget(self.chart_frame, stretch=1)
 
-        # Put the two scalar values side by side so saved choices remain easy
-        # to compare while revisiting a candlestick.
+        # Keep both targets together at the lower-left so the chart retains
+        # most of the horizontal space and the paired judgment reads naturally.
         regime_layout = QHBoxLayout()
+        regime_layout.setSpacing(16)
         window_layout.addLayout(regime_layout)
 
-        # Show an empty framed value until a current-regime choice is loaded or
-        # entered for the active candle.
-        regime_layout.addWidget(QLabel("Current regime:"))
+        # Place each value below its label so their left edges remain aligned.
+        current_regime_layout = QVBoxLayout()
+        current_regime_layout.setSpacing(3)
+        self.current_regime_label = QLabel("Current regime:")
+        current_regime_layout.addWidget(self.current_regime_label)
         self.current_regime_value = QLabel(UNSELECTED_REGIME_TEXT)
         self.current_regime_value.setFrameStyle(
             QFrame.Shape.Panel | QFrame.Shadow.Sunken
         )
-        self.current_regime_value.setMinimumWidth(80)
-        regime_layout.addWidget(self.current_regime_value)
+        self.current_regime_value.setFixedWidth(130)
+        self.current_regime_value.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        current_regime_layout.addWidget(self.current_regime_value)
+        regime_layout.addLayout(current_regime_layout)
 
         # A separate classification head is planned for this future target.
-        regime_layout.addWidget(QLabel("Anticipated regime:"))
+        anticipated_regime_layout = QVBoxLayout()
+        anticipated_regime_layout.setSpacing(3)
+        self.anticipated_regime_label = QLabel("Anticipated regime:")
+        anticipated_regime_layout.addWidget(self.anticipated_regime_label)
         self.anticipated_regime_value = QLabel(UNSELECTED_REGIME_TEXT)
         self.anticipated_regime_value.setFrameStyle(
             QFrame.Shape.Panel | QFrame.Shadow.Sunken
         )
-        self.anticipated_regime_value.setMinimumWidth(80)
-        regime_layout.addWidget(self.anticipated_regime_value)
+        self.anticipated_regime_value.setFixedWidth(130)
+        self.anticipated_regime_value.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        anticipated_regime_layout.addWidget(self.anticipated_regime_value)
+        regime_layout.addLayout(anticipated_regime_layout)
+        regime_layout.addStretch()
 
-        # Explain which scalar the next number key will fill.
+        # Explain the complete keyboard workflow while identifying which of the
+        # two choices the next number key will fill.
         self.selection_prompt = QLabel("")
+        self.selection_prompt.setWordWrap(True)
         window_layout.addWidget(self.selection_prompt)
 
         self.setCentralWidget(central_widget)
@@ -342,6 +376,118 @@ class AnnotationWindow(QMainWindow):
                 partial(self.select_regime, regime)
             )
             self.regime_shortcuts[number_key] = regime_shortcut
+
+    @staticmethod
+    def _configure_date_calendar(date_input: QDateEdit) -> None:
+        """Make corpus boundaries clear in an editable calendar control.
+
+        Args:
+            date_input: Date field whose minimum and maximum dates are set.
+        """
+        calendar = date_input.calendarWidget()
+        calendar.setMinimumWidth(300)
+
+        # Keep the calendar's navigation bar visible so the month and year can
+        # be selected through the field's dropdown instead of typed manually.
+        calendar.setNavigationBarVisible(True)
+
+        # Qt already presents the month as a non-editable menu. Give the year
+        # the same interaction so neither calendar heading turns into a text
+        # field that can accept an invalid partial value.
+        month_button = calendar.findChild(
+            QToolButton,
+            "qt_calendar_monthbutton",
+        )
+        year_button = calendar.findChild(
+            QToolButton,
+            "qt_calendar_yearbutton",
+        )
+        year_editor = calendar.findChild(QSpinBox, "qt_calendar_yearedit")
+        if month_button is None or year_button is None or year_editor is None:
+            raise RuntimeError("Qt calendar navigation controls are unavailable.")
+
+        month_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        month_button.setFixedWidth(105)
+        year_menu = QMenu(year_button)
+        for year in range(
+            date_input.minimumDate().year(),
+            date_input.maximumDate().year() + 1,
+        ):
+            year_action = year_menu.addAction(str(year))
+            year_action.triggered.connect(
+                lambda checked=False, selected_year=year: calendar.setCurrentPage(
+                    selected_year,
+                    calendar.monthShown(),
+                )
+            )
+        year_button.setMenu(year_menu)
+        year_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        year_button.setFixedWidth(75)
+        year_editor.hide()
+
+        # The complete month and year button surfaces open their menus, so an
+        # extra indicator is unnecessary. Centering the text keeps both compact
+        # controls balanced in the calendar heading.
+        calendar.setStyleSheet(
+            """
+            QToolButton#qt_calendar_monthbutton,
+            QToolButton#qt_calendar_yearbutton {
+                padding: 0px;
+                text-align: center;
+            }
+            QToolButton#qt_calendar_monthbutton::menu-indicator,
+            QToolButton#qt_calendar_yearbutton::menu-indicator {
+                image: none;
+                width: 0px;
+            }
+            """
+        )
+
+        # QDateEdit's date range prevents out-of-corpus cells from being
+        # selected. Qt's disabled palette does not reliably color calendar
+        # cells, so format the dates shown on every visited page explicitly.
+        format_boundaries = partial(
+            AnnotationWindow._format_calendar_boundaries,
+            calendar,
+            date_input.minimumDate(),
+            date_input.maximumDate(),
+        )
+        calendar.currentPageChanged.connect(format_boundaries)
+        format_boundaries(calendar.yearShown(), calendar.monthShown())
+
+    @staticmethod
+    def _format_calendar_boundaries(
+        calendar: QCalendarWidget,
+        minimum_date: QDate,
+        maximum_date: QDate,
+        visible_year: int,
+        visible_month: int,
+    ) -> None:
+        """Color visible dates outside the corpus red.
+
+        Args:
+            calendar: Qt calendar receiving per-date text formats.
+            minimum_date: First selectable corpus date.
+            maximum_date: Last selectable corpus date.
+            visible_year: Year currently displayed by the calendar.
+            visible_month: Month currently displayed by the calendar.
+        """
+        # Include neighboring-month cells because Qt displays them in the same
+        # six-week grid as the selected month.
+        first_visible_date = QDate(visible_year, visible_month, 1).addDays(-7)
+        last_visible_date = QDate(
+            visible_year,
+            visible_month,
+            QDate(visible_year, visible_month, 1).daysInMonth(),
+        ).addDays(7)
+        red_date_format = QTextCharFormat()
+        red_date_format.setForeground(QColor("red"))
+
+        visible_date = first_visible_date
+        while visible_date <= last_visible_date:
+            if visible_date < minimum_date or visible_date > maximum_date:
+                calendar.setDateTextFormat(visible_date, red_date_format)
+            visible_date = visible_date.addDays(1)
 
     def apply_date_range(self) -> None:
         """Use the selected inclusive dates without reopening the GUI."""
@@ -570,16 +716,20 @@ class AnnotationWindow(QMainWindow):
 
     def _update_selection_prompt(self) -> None:
         """Show which scalar the next number key will fill."""
-        # Keep the identical number mapping visible while changing only the
-        # scalar requested by the two-step workflow.
-        scalar_name = (
-            "current regime"
-            if self.is_selecting_current_regime
-            else "anticipated regime"
-        )
-        self.selection_prompt.setText(
-            f"Choose {scalar_name}: 1 Bull, 2 Bear, 3 Range"
-        )
+        # State the physical action, key meanings, save point, and automatic
+        # movement so a first-time annotator can complete the workflow unaided.
+        if self.is_selecting_current_regime:
+            instruction = (
+                "Step 1 of 2: Click the chart, then press 1 for Bull, "
+                "2 for Bear, or 3 for Range to choose the current regime."
+            )
+        else:
+            instruction = (
+                "Step 2 of 2: Press 1 for Bull, 2 for Bear, or 3 for Range "
+                "to choose the anticipated regime. This saves both choices "
+                "and moves to the next candle."
+            )
+        self.selection_prompt.setText(instruction)
 
     def move_to_next_candlestick(self) -> None:
         """Select the next candlestick when one exists."""

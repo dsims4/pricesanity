@@ -9,8 +9,15 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QDate, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QFrame
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QSizePolicy,
+    QSpinBox,
+    QToolButton,
+)
 
 from pricesanity.annotation.schema import MarketRegime
 from pricesanity.annotation.store import load_annotation
@@ -86,11 +93,15 @@ def test_regime_hotkeys_save_then_restore_both_choices(
     # Untouched candles begin without labels or implied defaults.
     assert window.current_regime_value.text() == "Not selected"
     assert window.anticipated_regime_value.text() == "Not selected"
+    assert window.selection_prompt.text().startswith("Step 1 of 2")
+    assert "press 1 for Bull" in window.selection_prompt.text()
 
     # The first key fills only the current-regime scalar.
     window.regime_shortcuts["1"].activated.emit()
     assert window.current_regime_value.text() == "1 - Bull"
     assert window.anticipated_regime_value.text() == "Not selected"
+    assert window.selection_prompt.text().startswith("Step 2 of 2")
+    assert "saves both choices" in window.selection_prompt.text()
     assert load_annotation(database_path, "candle-1") is None
 
     # The second key completes, saves, and advances the annotation.
@@ -164,7 +175,99 @@ def test_chart_and_date_inputs_receive_click_focus(
     assert not window.chart.hasFocus()
     assert window.chart_frame.frameShape() == QFrame.Shape.Box
 
+    # Each lower value begins directly below its label, and the two compact
+    # columns stay together at the left edge instead of spanning the window.
+    assert window.current_regime_label.x() == window.current_regime_value.x()
+    assert (
+        window.anticipated_regime_label.x()
+        == window.anticipated_regime_value.x()
+    )
+    assert (
+        window.anticipated_regime_value.x()
+        - window.current_regime_value.x()
+        < 180
+    )
+
     window.close()
+
+
+def test_date_inputs_are_compact_and_enforce_corpus_boundaries(
+    qt_application: QApplication,
+    candlestick_data: pd.DataFrame,
+    tmp_path,
+) -> None:
+    """Compact date dropdowns reject dates beyond the named corpus."""
+    corpus_start = QDate(2026, 9, 8)
+    corpus_end = QDate(2026, 9, 10)
+    window = AnnotationWindow(
+        candlestick_data,
+        tmp_path / "annotations.db",
+        corpus_start_date=corpus_start.toPython(),
+        corpus_end_date=corpus_end.toPython(),
+    )
+
+    for date_input in (window.start_date_input, window.end_date_input):
+        calendar = date_input.calendarWidget()
+        assert (
+            date_input.sizePolicy().horizontalPolicy()
+            == QSizePolicy.Policy.Fixed
+        )
+        assert date_input.width() == 150
+        assert calendar.isNavigationBarVisible()
+        assert date_input.minimumDate() == corpus_start
+        assert date_input.maximumDate() == corpus_end
+        assert calendar.minimumDate() == corpus_start
+        assert calendar.maximumDate() == corpus_end
+        assert calendar.dateTextFormat(QDate(2026, 9, 7)).foreground().color() == QColor(
+            "red"
+        )
+        assert calendar.dateTextFormat(QDate(2026, 9, 11)).foreground().color() == QColor(
+            "red"
+        )
+
+        month_button = calendar.findChild(
+            QToolButton,
+            "qt_calendar_monthbutton",
+        )
+        year_button = calendar.findChild(
+            QToolButton,
+            "qt_calendar_yearbutton",
+        )
+        year_editor = calendar.findChild(QSpinBox, "qt_calendar_yearedit")
+        assert month_button is not None and month_button.menu() is not None
+        assert year_button is not None and year_button.menu() is not None
+        assert year_editor is not None and year_editor.isHidden()
+        assert calendar.minimumWidth() == 300
+        assert month_button.width() == 105
+        assert year_button.width() == 75
+
+        # Qt clamps programmatic and typed values to the same hard range used
+        # by the popup, proving dates outside the filename cannot be selected.
+        date_input.setDate(QDate(2026, 9, 7))
+        assert date_input.date() == corpus_start
+        date_input.setDate(QDate(2026, 9, 11))
+        assert date_input.date() == corpus_end
+
+    window.close()
+
+
+def test_stop_button_closes_annotation_window(
+    qt_application: QApplication,
+    candlestick_data: pd.DataFrame,
+    tmp_path,
+) -> None:
+    """The Stop button closes the annotation run and its database store."""
+    window = AnnotationWindow(candlestick_data, tmp_path / "annotations.db")
+    window.resize(1000, 700)
+    window.show()
+    qt_application.processEvents()
+
+    assert window.stop_button.x() > window.width() // 2
+
+    QTest.mouseClick(window.stop_button, Qt.MouseButton.LeftButton)
+    qt_application.processEvents()
+
+    assert not window.isVisible()
 
 
 def test_date_range_stays_open_while_navigation_crosses_sessions(
