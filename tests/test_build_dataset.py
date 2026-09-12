@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from pricesanity.data import build_dataset
+from pricesanity.data.pipeline import PreparedCandlestickSessions
 
 
 def test_build_dataset_from_exports_saves_pipeline_output(
@@ -23,6 +24,15 @@ def test_build_dataset_from_exports_saves_pipeline_output(
             "body": [0.0],
             "high_from_close": [0.01],
             "low_from_close": [-0.01],
+        }
+    )
+    prepared_ohlc_data = pd.DataFrame(
+        {
+            "ts_event": [pd.Timestamp("2026-09-09 13:30:00Z")],
+            "open": [6500.0],
+            "high": [6501.0],
+            "low": [6499.0],
+            "close": [6500.5],
         }
     )
 
@@ -63,13 +73,13 @@ def test_build_dataset_from_exports_saves_pipeline_output(
     # the Parquet write that follows.
     received_pipeline_inputs: dict[str, object] = {}
 
-    def fake_prepare_candlestick_sessions(
+    def fake_prepare_candlestick_session_tables(
         received_candlestick_data: pd.DataFrame,
         received_status_data: pd.DataFrame,
         received_data_conditions: pd.DataFrame,
         *,
         config: object,
-    ) -> pd.DataFrame:
+    ) -> PreparedCandlestickSessions:
         # Save object identities because the orchestration should pass each
         # loader's exact result directly into the preparation pipeline.
         received_pipeline_inputs.update(
@@ -80,23 +90,28 @@ def test_build_dataset_from_exports_saves_pipeline_output(
                 "config": config,
             }
         )
-        return prepared_candlestick_data
+        return PreparedCandlestickSessions(
+            ohlc=prepared_ohlc_data,
+            normalized=prepared_candlestick_data,
+        )
 
     monkeypatch.setattr(
         build_dataset,
-        "prepare_candlestick_sessions",
-        fake_prepare_candlestick_sessions,
+        "prepare_candlestick_session_tables",
+        fake_prepare_candlestick_session_tables,
     )
 
     # Use a missing nested directory to confirm the command creates only its
     # requested processed-data destination.
     output_path = tmp_path / "processed" / "candlesticks.parquet"
+    interim_output_path = tmp_path / "interim" / "candlesticks.parquet"
     returned_candlestick_data = build_dataset.build_dataset_from_exports(
         tmp_path / "ohlc.csv",
         tmp_path / "status.csv",
         tmp_path / "condition.json",
         output_path,
         config_path=tmp_path / "config.yaml",
+        interim_output_path=interim_output_path,
     )
 
     # Confirm every source reached its intended argument without copying or
@@ -117,6 +132,11 @@ def test_build_dataset_from_exports_saves_pipeline_output(
         prepared_candlestick_data,
     )
 
+    # The second artifact preserves the validated real prices needed to draw
+    # the annotation chart without exposing normalized values to the annotator.
+    saved_ohlc_data = pd.read_parquet(interim_output_path)
+    pd.testing.assert_frame_equal(saved_ohlc_data, prepared_ohlc_data)
+
 
 def test_build_dataset_from_exports_protects_existing_output(
     tmp_path: Path,
@@ -133,6 +153,7 @@ def test_build_dataset_from_exports_protects_existing_output(
             tmp_path / "condition.json",
             output_path,
             config_path=tmp_path / "config.yaml",
+            interim_output_path=tmp_path / "interim.parquet",
         )
 
     # Confirm the refusal left the previous dataset unchanged.
@@ -153,4 +174,5 @@ def test_build_dataset_from_exports_requires_parquet_output(
             tmp_path / "condition.json",
             output_path,
             config_path=tmp_path / "config.yaml",
+            interim_output_path=tmp_path / "interim.parquet",
         )

@@ -1,5 +1,7 @@
 """Prepare trustworthy intraday candlesticks for model dataset construction."""
 
+from dataclasses import dataclass
+
 import pandas as pd
 
 from pricesanity.config import AppConfig
@@ -17,14 +19,22 @@ from pricesanity.data.status import (
 SUPPORTED_NORMALIZATION_SCHEME = "relative_ohlc_v1"
 
 
-def prepare_candlestick_sessions(
+@dataclass(frozen=True)
+class PreparedCandlestickSessions:
+    """Validated OHLC candles and their aligned normalized features."""
+
+    ohlc: pd.DataFrame
+    normalized: pd.DataFrame
+
+
+def prepare_candlestick_session_tables(
     candlestick_data: pd.DataFrame,
     status_data: pd.DataFrame,
     data_conditions: pd.DataFrame,
     *,
     config: AppConfig,
-) -> pd.DataFrame:
-    """Prepare normalized candlesticks from trustworthy intraday sessions.
+) -> PreparedCandlestickSessions:
+    """Prepare aligned OHLC and normalized trustworthy intraday sessions.
 
     Args:
         candlestick_data: Chronological OHLC candlesticks from Databento.
@@ -33,8 +43,7 @@ def prepare_candlestick_sessions(
         config: Project data, session, and normalization settings.
 
     Returns:
-        Normalized candlesticks from complete sessions with trustworthy
-        preceding closes.
+        Validated OHLC candles and their aligned normalized features.
 
     Raises:
         ValueError: If price data, status data, session schedules, or
@@ -115,8 +124,41 @@ def prepare_candlestick_sessions(
         config.data.timestamp_column
     ].isin(eligible_timestamps)
 
-    # Return only normalized model candidates while preserving a separate table
-    # that later sequence construction can group into complete sessions.
-    return normalized_candlestick_data.loc[
-        is_eligible_candlestick
-    ].reset_index(drop=True)
+    # Keep the human-readable OHLC candles separate from normalized model
+    # features while preserving identical row and timestamp alignment.
+    return PreparedCandlestickSessions(
+        ohlc=eligible_candlestick_data.reset_index(drop=True),
+        normalized=normalized_candlestick_data.loc[
+            is_eligible_candlestick
+        ].reset_index(drop=True),
+    )
+
+
+def prepare_candlestick_sessions(
+    candlestick_data: pd.DataFrame,
+    status_data: pd.DataFrame,
+    data_conditions: pd.DataFrame,
+    *,
+    config: AppConfig,
+) -> pd.DataFrame:
+    """Prepare normalized candlesticks from trustworthy intraday sessions.
+
+    Args:
+        candlestick_data: Chronological OHLC candlesticks from Databento.
+        status_data: Raw Databento status records.
+        data_conditions: Databento data condition for each trading date.
+        config: Project data, session, and normalization settings.
+
+    Returns:
+        Normalized candlesticks from complete sessions with trustworthy
+        preceding closes.
+    """
+    # Preserve the original normalized-only interface for callers that do not
+    # need to render the validated OHLC candles used during annotation.
+    prepared_sessions = prepare_candlestick_session_tables(
+        candlestick_data,
+        status_data,
+        data_conditions,
+        config=config,
+    )
+    return prepared_sessions.normalized

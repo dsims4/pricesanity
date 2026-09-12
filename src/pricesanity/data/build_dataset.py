@@ -12,7 +12,7 @@ from pricesanity.data.databento_ingest import (
     load_ohlc_csv,
     load_status_csv,
 )
-from pricesanity.data.pipeline import prepare_candlestick_sessions
+from pricesanity.data.pipeline import prepare_candlestick_session_tables
 
 
 def build_dataset_from_exports(
@@ -22,6 +22,7 @@ def build_dataset_from_exports(
     output_path: str | Path,
     *,
     config_path: str | Path,
+    interim_output_path: str | Path,
     overwrite: bool = False,
 ) -> pd.DataFrame:
     """Prepare and save model-ready data from Databento export files.
@@ -32,6 +33,7 @@ def build_dataset_from_exports(
         condition_json_path: Path to the daily condition JSON file.
         output_path: Path for the processed Parquet file.
         config_path: Path to the project configuration file.
+        interim_output_path: Path for validated 5-minute OHLC data.
         overwrite: Whether an existing output file may be replaced.
 
     Returns:
@@ -48,11 +50,17 @@ def build_dataset_from_exports(
     condition_json_path = Path(condition_json_path)
     output_path = Path(output_path)
     config_path = Path(config_path)
+    interim_output_path = Path(interim_output_path)
 
     # Parquet preserves timestamp and numeric types, preventing the processed
     # dataset from losing schema information during a CSV round trip.
     if output_path.suffix.lower() != ".parquet":
         raise ValueError("The processed output path must end in .parquet.")
+
+    # The chart-ready OHLC table also uses Parquet so timestamps and prices
+    # retain their types without additional parsing in the annotation GUI.
+    if interim_output_path.suffix.lower() != ".parquet":
+        raise ValueError("The interim output path must end in .parquet.")
 
     # Resolve paths before comparison so alternate spellings of the same file
     # cannot allow processed data to replace a raw input export.
@@ -64,16 +72,35 @@ def build_dataset_from_exports(
         config_path.resolve(),
     }
 
+    # Resolve the OHLC destination so it can be checked against every source
+    # and the separate normalized output.
+    resolved_interim_output_path = interim_output_path.resolve()
+
     # Raw data and configuration remain immutable because reproducing or
     # auditing a dataset requires their original contents.
     if resolved_output_path in resolved_input_paths:
         raise ValueError("The output path cannot match an input path.")
+
+    # Keep the two derived representations in distinct files and prevent the
+    # interim artifact from replacing any raw input or configuration file.
+    if resolved_interim_output_path in resolved_input_paths:
+        raise ValueError("The interim output path cannot match an input path.")
+    if resolved_interim_output_path == resolved_output_path:
+        raise ValueError("The interim and processed outputs must differ.")
 
     # Require deliberate permission before replacing a processed artifact so a
     # previous reproducible dataset is not erased by an accidental rerun.
     if output_path.exists() and not overwrite:
         raise FileExistsError(
             f"Output already exists: {output_path}. Use --overwrite to replace it."
+        )
+
+    # Apply the same overwrite protection to chart-ready OHLC data so one run
+    # cannot silently replace only half of an aligned artifact pair.
+    if interim_output_path.exists() and not overwrite:
+        raise FileExistsError(
+            f"Output already exists: {interim_output_path}. "
+            "Use --overwrite to replace it."
         )
 
     # Load the typed settings first because the timestamp field, source
@@ -101,24 +128,29 @@ def build_dataset_from_exports(
 
     # Apply the established filtering, resampling, schedule validation, and
     # causal price normalization in one shared pipeline.
-    prepared_candlestick_data = prepare_candlestick_sessions(
+    prepared_sessions = prepare_candlestick_session_tables(
         candlestick_data,
         status_data,
         data_conditions,
         config=config,
     )
 
-    # Create only the requested processed-data directory; the raw input
-    # locations remain untouched.
+    # Create only the requested processed-data directory; raw input locations
+    # remain untouched.
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Omit the dataframe index because row numbers are storage details rather
     # than timestamps, identifiers, or model features.
-    prepared_candlestick_data.to_parquet(output_path, index=False)
+    prepared_sessions.normalized.to_parquet(output_path, index=False)
+
+    # Save validated real-price candles separately because the annotation chart
+    # must not reconstruct OHLC prices from model features.
+    interim_output_path.parent.mkdir(parents=True, exist_ok=True)
+    prepared_sessions.ohlc.to_parquet(interim_output_path, index=False)
 
     # Return the same table for notebooks, tests, or later Python orchestration
     # without requiring the newly written Parquet file to be read again.
-    return prepared_candlestick_data
+    return prepared_sessions.normalized
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -174,6 +206,15 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Path for the processed Parquet file.",
     )
 
+    # The interim artifact contains the exact OHLC candles viewed by the
+    # annotator while the processed output remains model-only.
+    argument_parser.add_argument(
+        "--interim-output",
+        required=True,
+        type=Path,
+        help="Path for validated 5-minute OHLC candlesticks.",
+    )
+
     # Make replacement opt-in because rebuilding an artifact can change the
     # training set even when its destination name stays the same.
     argument_parser.add_argument(
@@ -208,6 +249,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         parsed_arguments.conditions,
         parsed_arguments.output,
         config_path=parsed_arguments.config,
+        interim_output_path=parsed_arguments.interim_output,
         overwrite=parsed_arguments.overwrite,
     )
 
@@ -217,6 +259,13 @@ def main(arguments: Sequence[str] | None = None) -> int:
         f"Saved {len(prepared_candlestick_data)} candlesticks to "
         f"{parsed_arguments.output}."
     )
+
+    # Confirm the separate chart artifact when the caller requested one.
+    if parsed_arguments.interim_output is not None:
+        print(
+            f"Saved {len(prepared_candlestick_data)} OHLC candlesticks to "
+            f"{parsed_arguments.interim_output}."
+        )
 
     # A zero exit status allows shells and automated jobs to recognize success.
     return 0
