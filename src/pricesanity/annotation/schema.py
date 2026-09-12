@@ -12,26 +12,19 @@ class MarketRegime(StrEnum):
     RANGE = "range"
 
 
-class DirectionalOutlook(StrEnum):
-    """Price-action directions expected after each candlestick."""
-
-    BULLISH = "bullish"
-    BEARISH = "bearish"
-
-
 @dataclass(frozen=True)
 class CandlestickAnnotation:
-    """Human interpretation recorded after viewing one candlestick.
+    """Current and future regime targets aligned to one candlestick.
 
     Args:
         candlestick_id: Stable identifier connecting the annotation to price data.
         current_regime: Market regime after the current candle.
-        directional_outlook: Expected direction after the current candle.
+        anticipated_regime: Regime the current candle is most likely to produce.
     """
 
     candlestick_id: str
     current_regime: MarketRegime
-    directional_outlook: DirectionalOutlook
+    anticipated_regime: MarketRegime
 
     def __post_init__(self) -> None:
         """Validate the annotation fields.

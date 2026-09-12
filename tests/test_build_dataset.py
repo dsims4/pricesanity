@@ -176,3 +176,63 @@ def test_build_dataset_from_exports_requires_parquet_output(
             config_path=tmp_path / "config.yaml",
             interim_output_path=tmp_path / "interim.parquet",
         )
+
+
+@pytest.mark.parametrize("failed_write", [1, 2, None])
+@pytest.mark.parametrize("existing_outputs", [False, True])
+def test_artifact_pair_is_staged_before_publication(
+    tmp_path, monkeypatch, failed_write, existing_outputs
+):
+    prepared = PreparedCandlestickSessions(
+        ohlc=pd.DataFrame({"open": [100.]}),
+        normalized=pd.DataFrame({"open_gap": [0.01]}),
+    )
+    monkeypatch.setattr(build_dataset, "load_ohlc_csv", lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(build_dataset, "load_status_csv", lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(build_dataset, "load_dataset_conditions_json", lambda *a: pd.DataFrame())
+    monkeypatch.setattr(build_dataset, "prepare_candlestick_session_tables", lambda *a, **k: prepared)
+    output = tmp_path / "processed" / "data.parquet"
+    interim = tmp_path / "interim" / "data.parquet"
+    for path in (output, interim):
+        path.parent.mkdir()
+        if existing_outputs:
+            path.write_bytes(b"original")
+
+    def assert_unpublished():
+        for path in (output, interim):
+            if existing_outputs:
+                assert path.read_bytes() == b"original"
+            else:
+                assert not path.exists()
+
+    original_write = pd.DataFrame.to_parquet
+    write_count = 0
+
+    def write(table, path, **kwargs):
+        nonlocal write_count
+        write_count += 1
+        assert_unpublished()
+        assert Path(path).parent.parent in (output.parent, interim.parent)
+        if write_count == failed_write:
+            Path(path).write_bytes(b"partial")
+            raise OSError("simulated disk failure")
+        return original_write(table, path, **kwargs)
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", write)
+
+    def build():
+        return build_dataset.build_dataset_from_exports(
+            tmp_path / "source.csv", tmp_path / "status.csv", tmp_path / "conditions.json",
+            output, config_path="configs/default.yaml", interim_output_path=interim,
+            overwrite=existing_outputs,
+        )
+
+    if failed_write is not None:
+        with pytest.raises(OSError, match="simulated disk failure"):
+            build()
+        assert_unpublished()
+    else:
+        assert build() is prepared.normalized
+        pd.testing.assert_frame_equal(pd.read_parquet(output), prepared.normalized)
+        pd.testing.assert_frame_equal(pd.read_parquet(interim), prepared.ohlc)
+    assert not list(tmp_path.rglob(".pricesanity-*"))

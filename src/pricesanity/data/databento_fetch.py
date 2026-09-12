@@ -1,13 +1,12 @@
 """Define Databento requests and estimate their cost before downloading."""
 
 import argparse
-from encodings.punycode import T
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
+from math import isfinite
 from pathlib import Path
-import re
 from typing import Literal, Protocol
 
 import databento as db
@@ -181,6 +180,15 @@ class DatabentoCostEstimate:
     candlestick_cost_usd: float
     status_cost_usd: float
 
+    def __post_init__(self) -> None:
+        """Reject unusable estimates before the spending comparison."""
+        costs = (self.candlestick_cost_usd, self.status_cost_usd)
+        if (
+            not all(isfinite(cost) and cost >= 0 for cost in costs)
+            or not isfinite(sum(costs))
+        ):
+            raise ValueError("Cost estimates must be finite and nonnegative.")
+
     @property
     def total_cost_usd(self) -> float:
         """Return the estimated total cost in US dollars.
@@ -274,7 +282,6 @@ def build_estimate_argument_parser() -> argparse.ArgumentParser:
         help="Exclusive ending date in YYYY-MM-DD format.",
     )
 
-    # Return the completed parser for both terminal execution and unit tests.
     return argument_parser
 
 
@@ -323,7 +330,6 @@ def build_download_argument_parser() -> argparse.ArgumentParser:
         help="Ignored parent directory for raw files (default: data/raw).",
     )
 
-    # Return the parser without authenticating or making any API request.
     return argument_parser
 
 
@@ -379,9 +385,11 @@ def download_main(arguments: Sequence[str] | None = None) -> int:
     argument_parser = build_download_argument_parser()
     parsed_arguments = argument_parser.parse_args(arguments)
 
-    # A negative ceiling cannot represent meaningful spending authorization.
-    if parsed_arguments.max_cost_usd < 0:
-        argument_parser.error("--max-cost-usd cannot be negative.")
+    if (
+        not isfinite(parsed_arguments.max_cost_usd)
+        or parsed_arguments.max_cost_usd < 0
+    ):
+        argument_parser.error("--max-cost-usd must be finite and nonnegative.")
 
     # Rebuild the same fixed ES request used by the standalone estimator.
     request = DatabentoFetchRequest(

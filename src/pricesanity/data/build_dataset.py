@@ -2,7 +2,9 @@
 
 import argparse
 from collections.abc import Sequence
+from contextlib import ExitStack
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pandas as pd
 
@@ -135,18 +137,35 @@ def build_dataset_from_exports(
         config=config,
     )
 
-    # Create only the requested processed-data directory; raw input locations
-    # remain untouched.
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Stage on each destination's filesystem so its final replacement is atomic.
+    # Both writes must finish before either existing artifact is touched.
+    artifacts = (
+        (prepared_sessions.normalized, output_path),
+        (prepared_sessions.ohlc, interim_output_path),
+    )
+    with ExitStack() as staging:
+        staged_paths = []
+        for table, destination in artifacts:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            directory = staging.enter_context(TemporaryDirectory(
+                prefix=".pricesanity-", dir=destination.parent
+            ))
+            temporary_path = Path(directory) / destination.name
+            table.to_parquet(temporary_path, index=False)
+            staged_paths.append((temporary_path, destination))
 
-    # Omit the dataframe index because row numbers are storage details rather
-    # than timestamps, identifiers, or model features.
-    prepared_sessions.normalized.to_parquet(output_path, index=False)
-
-    # Save validated real-price candles separately because the annotation chart
-    # must not reconstruct OHLC prices from model features.
-    interim_output_path.parent.mkdir(parents=True, exist_ok=True)
-    prepared_sessions.ohlc.to_parquet(interim_output_path, index=False)
+        # Recheck before publication in case an output appeared during staging.
+        if not overwrite:
+            for _, destination in staged_paths:
+                if destination.exists():
+                    raise FileExistsError(
+                        f"Output already exists: {destination}. "
+                        "Use --overwrite to replace it."
+                    )
+        # These replacements are individually atomic, not a transaction across
+        # both files. A failure here can still leave a partially published pair.
+        for temporary_path, destination in staged_paths:
+            temporary_path.replace(destination)
 
     # Return the same table for notebooks, tests, or later Python orchestration
     # without requiring the newly written Parquet file to be read again.
@@ -260,14 +279,11 @@ def main(arguments: Sequence[str] | None = None) -> int:
         f"{parsed_arguments.output}."
     )
 
-    # Confirm the separate chart artifact when the caller requested one.
-    if parsed_arguments.interim_output is not None:
-        print(
-            f"Saved {len(prepared_candlestick_data)} OHLC candlesticks to "
-            f"{parsed_arguments.interim_output}."
-        )
+    print(
+        f"Saved {len(prepared_candlestick_data)} OHLC candlesticks to "
+        f"{parsed_arguments.interim_output}."
+    )
 
-    # A zero exit status allows shells and automated jobs to recognize success.
     return 0
 
 

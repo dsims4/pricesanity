@@ -39,8 +39,6 @@ def load_ohlc_csv(
         ValueError: If required columns, timestamps, prices, or row order are
             invalid.
     """
-    # Treat string and Path inputs alike so validation and loading use one path
-    # representation.
     csv_path = Path(csv_path)
 
     # The timestamp places each candle in sequence, while all four prices are
@@ -141,8 +139,6 @@ def load_status_csv(
     Raises:
         ValueError: If the CSV is missing a required field.
     """
-    # Treat string and Path inputs alike so header validation and loading use
-    # the same path representation.
     csv_path = Path(csv_path)
 
     # A transition needs its timestamp, cause, event, and resulting trading
@@ -194,8 +190,6 @@ def load_dataset_conditions_json(json_path: str | Path) -> pd.DataFrame:
     Raises:
         ValueError: If the JSON structure or required fields are invalid.
     """
-    # Treat string and Path inputs alike so reading and error reporting use one
-    # path representation.
     json_path = Path(json_path)
 
     # Decode the file with the standard library because the batch condition

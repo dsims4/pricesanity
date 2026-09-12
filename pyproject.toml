@@ -21,6 +21,7 @@ dependencies = [
 pricesanity-prepare = "pricesanity.data.build_dataset:main"
 pricesanity-estimate = "pricesanity.data.databento_fetch:main"
 pricesanity-download = "pricesanity.data.databento_fetch:download_main"
+pricesanity-annotate = "pricesanity.gui.annotation_launcher:main"
 
 [project.optional-dependencies]
 dev = [

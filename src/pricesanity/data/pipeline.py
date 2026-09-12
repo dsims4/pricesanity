@@ -8,7 +8,7 @@ from pricesanity.config import AppConfig
 from pricesanity.data.clean import filter_regular_trading_hours
 from pricesanity.data.normalize import normalize_candlestick_data
 from pricesanity.data.resample import resample_ohlc
-from pricesanity.data.sessions import filter_complete_sessions
+from pricesanity.data.sessions import validate_sessions
 from pricesanity.data.status import (
     build_session_schedule,
     extract_session_transitions,
@@ -98,19 +98,32 @@ def prepare_candlestick_session_tables(
         session_end_time=config.session.end_time,
     )
 
-    # Validate raw OHLC timestamps before normalization so each accepted session
-    # and its preceding closing reference are known to be complete.
-    eligible_candlestick_data = filter_complete_sessions(
+    # Preserve date evidence before resampling can discard every incomplete bar
+    # of a date. Adverse conditions also break the chain without price records.
+    observed_dates = set(
+        candidate_candlestick_data[config.data.timestamp_column]
+        .dt.tz_convert(config.data.session_timezone).dt.date
+    )
+    adverse_conditions = ~(
+        data_conditions["condition"].astype(str).str.lower().eq("available")
+    )
+    observed_dates.update(
+        pd.to_datetime(data_conditions.loc[adverse_conditions, "date"]).dt.date
+    )
+    validated_sessions = validate_sessions(
         resampled_candlestick_data,
         session_schedule,
         timestamp_column=config.data.timestamp_column,
         target_interval=config.data.target_interval,
+        session_timezone=config.data.session_timezone,
+        observed_session_dates=observed_dates,
     )
+    eligible_candlestick_data = validated_sessions.eligible
 
-    # Normalize the complete resampled history before removing reference-only
-    # sessions, allowing each eligible opening candle to use the preceding close.
+    # Shift only within trustworthy scheduled history. Reference-only days stay
+    # available for the next eligible opening; after-close candles never do.
     normalized_candlestick_data = normalize_candlestick_data(
-        resampled_candlestick_data,
+        validated_sessions.reference_history,
         timestamp_column=config.data.timestamp_column,
         instrument=config.data.instrument,
     )

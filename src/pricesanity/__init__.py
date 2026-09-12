@@ -1,1 +1,1 @@
-"""PriceSanity market-behavior research package."""
+"""Price Sanity market-behavior research package."""

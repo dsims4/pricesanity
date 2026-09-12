@@ -488,3 +488,27 @@ def test_download_main_saves_below_approved_cost(
     assert (request_directory / "status.csv").exists()
     assert (request_directory / "condition.json").exists()
     assert "Estimated cost at download: $1.350000" in terminal_output
+
+
+@pytest.mark.parametrize("ceiling", ["nan", "inf", "-inf", "-1"])
+def test_download_rejects_invalid_ceiling_before_authentication(ceiling, monkeypatch) -> None:
+    def unexpected_client():
+        pytest.fail("Invalid approval reached authentication")
+
+    monkeypatch.setattr(databento_fetch, "create_historical_client", unexpected_client)
+    with pytest.raises(SystemExit):
+        databento_fetch.download_main([
+            "--start", "2026-09-08", "--end", "2026-09-09",
+            "--max-cost-usd=" + ceiling,
+        ])
+
+
+@pytest.mark.parametrize("cost", [float("nan"), float("inf"), -1.0])
+def test_estimate_rejects_invalid_component(cost) -> None:
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        databento_fetch.DatabentoCostEstimate(cost, 0.1)
+
+
+def test_estimate_rejects_overflowing_total() -> None:
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        databento_fetch.DatabentoCostEstimate(1.7e308, 1.7e308)

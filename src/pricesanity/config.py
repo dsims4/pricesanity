@@ -1,4 +1,4 @@
-"""Typed configuration structures for PriceSanity."""
+"""Typed configuration structures for Price Sanity."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,8 +66,6 @@ def load_config(path: str | Path) -> AppConfig:
         ValueError: If the YAML structure is invalid or a required key is
             missing.
     """
-    # Treat string and Path inputs alike so the remaining file operations need
-    # only one path representation.
     config_path = Path(path)
 
     # Parse the UTF-8 YAML into Python data before building the typed settings

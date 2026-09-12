@@ -1,8 +1,14 @@
 """Typed data structures for price-action candlesticks."""
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from math import isfinite
+
+from pricesanity.data.identifiers import (
+    DEFAULT_CANDLE_INTERVAL,
+    build_candlestick_id,
+    canonical_interval,
+)
 
 
 @dataclass(frozen=True)
@@ -15,6 +21,7 @@ class RawCandlestick:
     high: float
     low: float
     close: float
+    interval: str = DEFAULT_CANDLE_INTERVAL
 
     def __post_init__(self) -> None:
         """Validate raw candlestick fields.
@@ -23,6 +30,8 @@ class RawCandlestick:
             ValueError: If the timestamp, instrument, or OHLC prices are
                 invalid.
         """
+        object.__setattr__(self, "interval", canonical_interval(self.interval))
+
         # Reject a timestamp that cannot identify one absolute moment in time.
         if self.timestamp.tzinfo is None or self.timestamp.utcoffset() is None:
             raise ValueError("Raw candlestick timestamps must be timezone-aware.")
@@ -49,17 +58,9 @@ class RawCandlestick:
 
     @property
     def candlestick_id(self) -> str:
-        """Build a stable identifier from the instrument and UTC timestamp.
+        """Return the interval-qualified string identifier."""
+        return build_candlestick_id(self.instrument, self.timestamp, self.interval)
 
-        Returns:
-            The candlestick identifier.
-        """
-        # Convert to UTC so equal moments written in different timezones produce
-        # the same identifier.
-        utc_timestamp = self.timestamp.astimezone(timezone.utc)
-
-        # Join the instrument and ISO-formatted UTC timestamp with a colon.
-        return f"{self.instrument}:{utc_timestamp.isoformat()}"
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,7 @@ class NormalizedCandlestick:
     body: float
     high_from_close: float
     low_from_close: float
+    interval: str = DEFAULT_CANDLE_INTERVAL
 
     def __post_init__(self) -> None:
         """Validate normalized candlestick fields.
@@ -80,6 +82,8 @@ class NormalizedCandlestick:
             ValueError: If the timestamp, instrument, or normalized features
                 are invalid.
         """
+        object.__setattr__(self, "interval", canonical_interval(self.interval))
+
         # Reject a timestamp that cannot identify one absolute moment in time.
         if self.timestamp.tzinfo is None or self.timestamp.utcoffset() is None:
             raise ValueError(
@@ -105,14 +109,5 @@ class NormalizedCandlestick:
 
     @property
     def candlestick_id(self) -> str:
-        """Build a stable identifier from the instrument and UTC timestamp.
-
-        Returns:
-            The candlestick identifier.
-        """
-        # Convert to UTC so matching raw and normalized candles share one
-        # identifier regardless of their displayed timezone.
-        utc_timestamp = self.timestamp.astimezone(timezone.utc)
-
-        # Join the instrument and ISO-formatted UTC timestamp with a colon.
-        return f"{self.instrument}:{utc_timestamp.isoformat()}"
+        """Return the interval-qualified string identifier."""
+        return build_candlestick_id(self.instrument, self.timestamp, self.interval)

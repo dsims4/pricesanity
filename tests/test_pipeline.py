@@ -82,7 +82,7 @@ def test_prepare_candlestick_sessions_preserves_opening_gap_reference() -> None:
     # Keep every pipeline setting explicit so the integration test documents
     # the exact one-minute to five-minute RTH transformation.
     config = AppConfig(
-        project=ProjectConfig(name="pricesanity", random_seed=42),
+        project=ProjectConfig(name="Price Sanity", random_seed=42),
         data=DataConfig(
             instrument="ES",
             source_timezone="UTC",
@@ -117,3 +117,62 @@ def test_prepare_candlestick_sessions_preserves_opening_gap_reference() -> None:
     )
     assert prepared_candlestick_data.loc[0, "open_gap"] == 0.02
     assert prepared_candlestick_data["body"].eq(0.0).all()
+
+
+def _prepare_reference_case(*, missing_middle_status=False, middle_rows=None,
+                            middle_condition="available", early_close=False):
+    from pricesanity.config import load_config
+    from pricesanity.data.pipeline import prepare_candlestick_session_tables
+
+    dates = ["2026-09-08", "2026-09-09", "2026-09-10"]
+    prices = [100., 102., 104.]
+    frames = []
+    status_rows = []
+    for position, (day, price) in enumerate(zip(dates, prices, strict=True)):
+        times = pd.date_range(day + " 09:30", day + " 16:15", freq="1min",
+                              inclusive="left", tz="America/New_York").tz_convert("UTC")
+        frame = pd.DataFrame({"ts_event": times, "open": price, "high": price,
+                              "low": price, "close": price})
+        if early_close and position == 0:
+            # Valid prices after the official close must never replace its 100 reference.
+            frame.loc[frame.ts_event >= pd.Timestamp(day + "T17:15:00Z"),
+                      ["open", "high", "low", "close"]] = 200.
+        if position == 1 and middle_rows is not None:
+            frame = frame.iloc[:middle_rows]
+        frames.append(frame)
+        if position == 1 and missing_middle_status:
+            continue
+        close = "17:15" if early_close and position == 0 else "21:00"
+        status_rows.extend([
+            {"ts_event": day + "T13:00:00Z", "reason": "scheduled", "trading_event": "none", "is_trading": "Y"},
+            {"ts_event": day + "T" + close + ":00Z", "reason": "scheduled", "trading_event": "none", "is_trading": "N"},
+        ])
+    return prepare_candlestick_session_tables(
+        pd.concat(frames, ignore_index=True), pd.DataFrame(status_rows),
+        pd.DataFrame({"date": dates, "condition": ["available", middle_condition, "available"]}),
+        config=load_config("configs/default.yaml"),
+    )
+
+
+def test_missing_status_breaks_reference_chain() -> None:
+    result = _prepare_reference_case(missing_middle_status=True, middle_condition="degraded")
+    assert result.ohlc.empty
+    assert result.normalized.empty
+
+
+def test_incomplete_bars_cannot_erase_missing_session_evidence() -> None:
+    result = _prepare_reference_case(missing_middle_status=True, middle_rows=1)
+    assert result.normalized.empty
+
+
+def test_adverse_condition_breaks_chain_without_prices_or_status() -> None:
+    result = _prepare_reference_case(missing_middle_status=True, middle_rows=0,
+                                     middle_condition="degraded")
+    assert result.normalized.empty
+
+
+def test_opening_gap_uses_official_early_close() -> None:
+    result = _prepare_reference_case(early_close=True)
+    assert len(result.ohlc) == len(result.normalized) == 162
+    assert result.normalized.iloc[0].open_gap == 0.02
+    assert result.ohlc.ts_event.tolist() == result.normalized.ts_event.tolist()

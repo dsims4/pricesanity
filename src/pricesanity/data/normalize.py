@@ -1,7 +1,6 @@
 """Causal normalization for OHLC candlesticks."""
 
-from math import isfinite
-
+import numpy as np
 import pandas as pd
 
 from pricesanity.data.databento_ingest import REQUIRED_OHLC_COLUMNS
@@ -25,12 +24,15 @@ def normalize_candlestick(
         The current candlestick as normalized OHLC geometry.
 
     Raises:
-        ValueError: If the instruments differ, timestamps are out of order, or
+        ValueError: If instruments or intervals differ, timestamps are out of order, or
             the previous close is zero.
     """
     # Require one instrument so both candlesticks share the same price scale.
     if previous_candlestick.instrument != current_candlestick.instrument:
         raise ValueError("Candlesticks must belong to the same instrument.")
+
+    if previous_candlestick.interval != current_candlestick.interval:
+        raise ValueError("Candlesticks must use the same interval.")
 
     # Require chronological order so normalization cannot use future prices.
     if previous_candlestick.timestamp >= current_candlestick.timestamp:
@@ -50,6 +52,7 @@ def normalize_candlestick(
     return NormalizedCandlestick(
         timestamp=current_candlestick.timestamp,
         instrument=current_candlestick.instrument,
+        interval=current_candlestick.interval,
         # Preserve the overnight move by measuring open from previous close.
         open_gap=(current_candlestick.open - previous_close) / previous_close,
         # Preserve candle direction by measuring the signed open-to-close body.
@@ -158,9 +161,9 @@ def normalize_candlestick_data(
 
     # Every price must be finite because missing or infinite values would pass
     # undefined geometry into the model.
-    has_only_finite_prices = parsed_candlestick_data[
-        list(REQUIRED_OHLC_COLUMNS)
-    ].map(isfinite).all().all()
+    has_only_finite_prices = np.isfinite(
+        parsed_candlestick_data[list(REQUIRED_OHLC_COLUMNS)].to_numpy(dtype=float)
+    ).all()
     if not has_only_finite_prices:
         raise ValueError("OHLC prices must be finite numbers.")
 
