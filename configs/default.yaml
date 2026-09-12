@@ -3,7 +3,7 @@ project:
   random_seed: 42
 
 data:
-  instrument: CHANGE_ME
+  instrument: ES.v.0
   source_timezone: UTC
   session_timezone: America/New_York
   timestamp_column: ts_event
