@@ -205,7 +205,7 @@ def test_date_inputs_are_compact_and_enforce_corpus_boundaries(
     candlestick_data: pd.DataFrame,
     tmp_path,
 ) -> None:
-    """Compact date dropdowns reject dates beyond the named corpus."""
+    """Compact date dropdowns reject dates without validated sessions."""
 
     corpus_start = QDate(2026, 9, 8)
     corpus_end = QDate(2026, 9, 10)
@@ -228,6 +228,9 @@ def test_date_inputs_are_compact_and_enforce_corpus_boundaries(
         assert calendar.minimumDate() == corpus_start
         assert calendar.maximumDate() == corpus_end
         assert calendar.dateTextFormat(QDate(2026, 9, 7)).foreground().color() == QColor("red")
+        assert calendar.dateTextFormat(QDate(2026, 9, 8)).foreground().color() == QColor("red")
+        assert calendar.dateTextFormat(QDate(2026, 9, 9)).foreground().color() != QColor("red")
+        assert calendar.dateTextFormat(QDate(2026, 9, 10)).foreground().color() == QColor("red")
         assert calendar.dateTextFormat(QDate(2026, 9, 11)).foreground().color() == QColor("red")
 
         month_button = calendar.findChild(
@@ -247,14 +250,14 @@ def test_date_inputs_are_compact_and_enforce_corpus_boundaries(
         assert month_button.width() == 105
         assert year_button.width() == 75
 
-        # Qt clamps programmatic and typed values to the same hard range used
-        # by the popup, proving dates outside the filename cannot be selected.
+        # Dates outside the corpus are first clamped by Qt, then unavailable
+        # dates inside it are returned to the last validated session.
         date_input.setDate(QDate(2026, 9, 7))
 
-        assert date_input.date() == corpus_start
+        assert date_input.date() == QDate(2026, 9, 9)
         date_input.setDate(QDate(2026, 9, 11))
 
-        assert date_input.date() == corpus_end
+        assert date_input.date() == QDate(2026, 9, 9)
 
     window.close()
 

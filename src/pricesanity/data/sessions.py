@@ -35,7 +35,8 @@ def validate_sessions(
     """Select sessions using one trust chain for eligibility and normalization.
 
     ``observed_session_dates`` includes dates seen before incomplete bars were
-    discarded, and dates with adverse quality evidence. A date with evidence
+    discarded, configured weekdays with quality metadata, and dates with adverse
+    quality evidence. A date with evidence
     but no schedule breaks the chain. Calendar gaps with no evidence are not
     guessed to be trading days (weekends and holidays can be legitimate gaps).
 

@@ -214,6 +214,15 @@ configured normal RTH open and close. The exact full five-minute grid is still
 required. Degraded, unavailable, unknown, or missing condition evidence remains
 untrustworthy and breaks the normal reference chain.
 
+An `available` dataset condition does not prove that this instrument's candles
+exist. Condition records on configured trading weekdays remain date evidence
+even if that date has no candles or scheduled status. Such a missing date breaks
+the reference chain: Monday cannot borrow an older close when Friday is missing.
+Available weekend metadata alone does not interrupt a valid Friday-to-Monday
+reference. This is conservative around weekday closures: without sufficient
+session evidence, the next complete day restores the reference rather than
+becoming annotation-eligible immediately.
+
 Fallback stops on the first status-derived session date. Missing status evidence
 on that date or any later date is therefore rejected as before. Historical early
 closes are not guessed: without an authoritative scheduled close, their shorter
@@ -242,11 +251,14 @@ The existing scheduled-transition filter and session trust rules are retained.
 
 A fresh local rebuild found 4,932,502 one-minute candles, 23,580 status records,
 and 5,134 condition records. With `configs/default.yaml`, preparation produced
-231,153 five-minute rows across 2,892 eligible sessions, with exact row-for-row
+219,246 five-minute rows across 2,745 eligible sessions, with exact row-for-row
 timestamp alignment between the OHLC and normalized tables. The first
 authoritative status-derived session is November 20, 2015. Historical fallback
-makes June 7, 2010 the first trustworthy reference session and June 14, 2010
-the first annotation-eligible session.
+makes June 7, 2010 a trustworthy reference-only session, but missing intervening
+weekdays prevent June 14 from using its close. After correcting that gap check,
+March 15, 2011 is the first annotation-eligible session, using March 14's close.
+Reference-only sessions need not appear in the annotation files; their closing
+prices are retained during preparation to normalize the next eligible opening.
 
 The first trustworthy session supplies a closing reference; it is not itself
 training input. Every retained session needs a trustworthy predecessor. An

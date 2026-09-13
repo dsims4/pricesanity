@@ -163,9 +163,15 @@ def prepare_resampled_session_tables(
         session_end_time=config.session.end_time,
     )
 
+    # Dataset availability does not prove that this instrument's candles were
+    # downloaded. Retain condition dates on configured trading weekdays even
+    # when no prices or historical status survived, so a missing Friday cannot
+    # let Monday borrow an older close. Weekend metadata alone adds no session.
+    condition_dates = pd.to_datetime(data_conditions["date"], errors="raise")
+    is_configured_weekday = condition_dates.dt.weekday.isin(config.session.trading_weekdays)
     adverse_conditions = ~(data_conditions["condition"].astype(str).str.lower().eq("available"))
     observed_dates.update(
-        pd.to_datetime(data_conditions.loc[adverse_conditions, "date"]).dt.date
+        condition_dates.loc[is_configured_weekday | adverse_conditions].dt.date
     )
     validated_sessions = validate_sessions(
         resampled_candlestick_data,

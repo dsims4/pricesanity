@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, QSignalBlocker, Qt
 from PySide6.QtGui import QColor, QCloseEvent, QKeySequence, QShortcut, QTextCharFormat
 from PySide6.QtWidgets import (
     QCalendarWidget,
@@ -203,9 +203,21 @@ class AnnotationWindow(QMainWindow):
             maximum_session_date.month,
             maximum_session_date.day,
         )
+        first_available_date = self.available_session_dates[0]
+        last_available_date = self.available_session_dates[-1]
+        first_available_qdate = QDate(
+            first_available_date.year,
+            first_available_date.month,
+            first_available_date.day,
+        )
+        last_available_qdate = QDate(
+            last_available_date.year,
+            last_available_date.month,
+            last_available_date.day,
+        )
 
         date_range_layout.addWidget(QLabel("Starting date:"))
-        self.start_date_input = QDateEdit(minimum_qdate)
+        self.start_date_input = QDateEdit(first_available_qdate)
         self.start_date_input.setCalendarPopup(True)
         self.start_date_input.setDisplayFormat("yyyy-MM-dd")
         self.start_date_input.setReadOnly(False)
@@ -216,11 +228,14 @@ class AnnotationWindow(QMainWindow):
         )
         self.start_date_input.setFixedWidth(150)
         self.start_date_input.setDateRange(minimum_qdate, maximum_qdate)
-        self._configure_date_calendar(self.start_date_input)
+        self._configure_date_calendar(
+            self.start_date_input,
+            self.available_session_dates,
+        )
         date_range_layout.addWidget(self.start_date_input)
 
         date_range_layout.addWidget(QLabel("Ending date:"))
-        self.end_date_input = QDateEdit(maximum_qdate)
+        self.end_date_input = QDateEdit(last_available_qdate)
         self.end_date_input.setCalendarPopup(True)
         self.end_date_input.setDisplayFormat("yyyy-MM-dd")
         self.end_date_input.setReadOnly(False)
@@ -231,7 +246,10 @@ class AnnotationWindow(QMainWindow):
         )
         self.end_date_input.setFixedWidth(150)
         self.end_date_input.setDateRange(minimum_qdate, maximum_qdate)
-        self._configure_date_calendar(self.end_date_input)
+        self._configure_date_calendar(
+            self.end_date_input,
+            self.available_session_dates,
+        )
         date_range_layout.addWidget(self.end_date_input)
 
         # Apply a new range from the already loaded data instead of reopening
@@ -393,12 +411,20 @@ class AnnotationWindow(QMainWindow):
             self.regime_shortcuts[number_key] = regime_shortcut
 
     @staticmethod
-    def _configure_date_calendar(date_input: QDateEdit) -> None:
-        """Make corpus boundaries clear in an editable calendar control.
+    def _configure_date_calendar(
+        date_input: QDateEdit,
+        available_session_dates: list[date],
+    ) -> None:
+        """Make only validated annotation sessions selectable in a calendar.
 
         Args:
             date_input: Date field whose minimum and maximum dates are set.
+            available_session_dates: Validated sessions available for annotation.
         """
+
+        selectable_dates = frozenset(available_session_dates)
+        if date_input.date().toPython() not in selectable_dates:
+            raise ValueError("The initial calendar date must be an available session.")
 
         # Customize the existing calendar so date selection keeps the field's configured bounds.
         calendar = date_input.calendarWidget()
@@ -472,24 +498,65 @@ class AnnotationWindow(QMainWindow):
             calendar,
             date_input.minimumDate(),
             date_input.maximumDate(),
+            selectable_dates,
         )
         calendar.currentPageChanged.connect(format_boundaries)
         format_boundaries(calendar.yearShown(), calendar.monthShown())
+
+        # Reject unavailable dates from both popup clicks and typed input. The
+        # previous valid endpoint remains selected so applying a range can never
+        # begin or end on a session removed by validation.
+        selection_state = {"last_valid_date": date_input.date()}
+        date_input.dateChanged.connect(
+            partial(
+                AnnotationWindow._enforce_available_calendar_date,
+                date_input,
+                selectable_dates,
+                selection_state,
+            )
+        )
+
+    @staticmethod
+    def _enforce_available_calendar_date(
+        date_input: QDateEdit,
+        selectable_dates: frozenset[date],
+        selection_state: dict[str, QDate],
+        selected_date: QDate,
+    ) -> None:
+        """Restore the last valid endpoint after an unavailable date is chosen.
+
+        Args:
+            date_input: Date field receiving the selection.
+            selectable_dates: Validated sessions available for annotation.
+            selection_state: Last accepted Qt date for this field.
+            selected_date: Newly selected or typed Qt date.
+        """
+
+        if selected_date.toPython() in selectable_dates:
+            selection_state["last_valid_date"] = selected_date
+            return
+
+        # Blocking this corrective update prevents it from recursively becoming
+        # another user selection while the popup returns to the valid date.
+        with QSignalBlocker(date_input):
+            date_input.setDate(selection_state["last_valid_date"])
 
     @staticmethod
     def _format_calendar_boundaries(
         calendar: QCalendarWidget,
         minimum_date: QDate,
         maximum_date: QDate,
+        selectable_dates: frozenset[date],
         visible_year: int,
         visible_month: int,
     ) -> None:
-        """Color visible dates outside the corpus red.
+        """Color visible dates without validated annotation sessions red.
 
         Args:
             calendar: Qt calendar receiving per-date text formats.
             minimum_date: First selectable corpus date.
             maximum_date: Last selectable corpus date.
+            selectable_dates: Validated sessions available for annotation.
             visible_year: Year currently displayed by the calendar.
             visible_month: Month currently displayed by the calendar.
         """
@@ -504,15 +571,21 @@ class AnnotationWindow(QMainWindow):
         ).addDays(7)
         red_date_format = QTextCharFormat()
         red_date_format.setForeground(QColor("red"))
+        available_date_format = QTextCharFormat()
 
         visible_date = first_visible_date
 
         # Mark every displayed calendar cell, including adjacent-month dates in the visible
         # grid.
         while visible_date <= last_visible_date:
-            # Calendar cells outside the permitted corpus should not appear selectable.
-            if visible_date < minimum_date or visible_date > maximum_date:
-                calendar.setDateTextFormat(visible_date, red_date_format)
+            is_available_session = (
+                minimum_date <= visible_date <= maximum_date
+                and visible_date.toPython() in selectable_dates
+            )
+            calendar.setDateTextFormat(
+                visible_date,
+                available_date_format if is_available_session else red_date_format,
+            )
 
             visible_date = visible_date.addDays(1)
 
