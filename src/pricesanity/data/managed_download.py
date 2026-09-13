@@ -427,11 +427,11 @@ class ManagedDownload:
             if repair and "repair" not in saved_manifest:
                 raise ValueError("This manifest belongs to a normal download, not a repair")
 
-            # Require the repair entry point to preserve the original adoption workflow.
+            # Require explicit repair mode to preserve the original adoption workflow.
             if not repair and "repair" in saved_manifest:
                 raise ValueError(
                     "This manifest belongs to a repair; resume it with "
-                    "pricesanity-repair-download"
+                    "pricesanity-download --repair"
                 )
 
         # Existing files need an explicit adoption path before they can become managed evidence.
@@ -439,7 +439,7 @@ class ManagedDownload:
             # Normal downloads cannot infer whether unmanaged files are complete or related.
             if not repair:
                 raise ValueError(
-                    "Unmanaged directory; use pricesanity-repair-download "
+                    "Unmanaged directory; use pricesanity-download --repair "
                     "for the known partial corpus"
                 )
 

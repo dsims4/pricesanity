@@ -431,6 +431,14 @@ def build_download_argument_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # Existing unmanaged files need explicit adoption, including when an
+    # estimate checkpoints reusable ranges before any paid requests begin.
+    argument_parser.add_argument(
+        "--repair",
+        action="store_true",
+        help="Adopt an interrupted unmanaged corpus or resume its repair manifest.",
+    )
+
     return argument_parser
 
 
@@ -474,40 +482,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
 
 
 def download_main(arguments: Sequence[str] | None = None) -> int:
-    """Run a managed download; report failures briefly and retain checkpoints.
+    """Run a managed download or explicit repair, retaining resumable checkpoints.
 
     Args:
         arguments: Command-line arguments, or None to read the process arguments.
-
-    Returns:
-        Zero on success, one on failure, or 130 after interruption.
-    """
-
-    # Use normal managed ownership rules; existing unmanaged files still require explicit
-    # repair.
-    return _managed_main(arguments, repair=False)
-
-
-def repair_main(arguments: Sequence[str] | None = None) -> int:
-    """Adopt valid OHLC ranges and finish an interrupted managed download.
-
-    Args:
-        arguments: Command-line arguments, or None to read the process arguments.
-
-    Returns:
-        Zero on success, one on failure, or 130 after interruption.
-    """
-
-    # Select explicit adoption while sharing the downloader's validation and cost safeguards.
-    return _managed_main(arguments, repair=True)
-
-
-def _managed_main(arguments: Sequence[str] | None, *, repair: bool) -> int:
-    """Run the selected download mode with concise failure reporting.
-
-    Args:
-        arguments: Command-line arguments, or None to read the process arguments.
-        repair: Whether to adopt validated ranges from an interrupted download.
 
     Returns:
         Zero on success, one on failure, or 130 after interruption.
@@ -517,11 +495,9 @@ def _managed_main(arguments: Sequence[str] | None, *, repair: bool) -> int:
 
     parser = build_download_argument_parser()
 
-    # Repair uses the same options while describing its explicit source-adoption behavior.
-    if repair:
-        parser.description = "Repair an interrupted download by adopting complete OHLC ranges."
-
+    # Adoption must be explicitly selected; existing files alone cannot authorize repair.
     args = parser.parse_args(arguments)
+    repair = args.repair
 
     # Reject unusable cost ceilings before constructing any download state.
     if not isfinite(args.max_cost_usd) or args.max_cost_usd < 0:

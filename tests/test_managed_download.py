@@ -722,8 +722,9 @@ def test_repair_estimate_only_checkpoints_one_time_probes(tmp_path, monkeypatch,
     )
     client = FakeClient()
     monkeypatch.setattr(fetch, "create_historical_client", lambda: client)
-    result = fetch.repair_main(
+    result = fetch.download_main(
         [
+            "--repair",
             "--start",
             "2020-06-06",
             "--end",
@@ -767,8 +768,9 @@ def test_repair_probe_failure_is_logged_and_remains_resumable(tmp_path, monkeypa
 
     monkeypatch.setattr(client, "get_record_count", fail_probe)
     monkeypatch.setattr(fetch, "create_historical_client", lambda: client)
-    result = fetch.repair_main(
+    result = fetch.download_main(
         [
+            "--repair",
             "--start",
             "2020-06-06",
             "--end",
@@ -792,8 +794,57 @@ def test_repair_probe_failure_is_logged_and_remains_resumable(tmp_path, monkeypa
     assert "metadata unavailable" in log.read_text()
 
 
-def test_download_and_repair_manifests_use_distinct_commands(tmp_path):
-    """Verify download and repair manifests use distinct commands."""
+def test_download_cli_repairs_and_resumes_only_with_explicit_flag(tmp_path, monkeypatch):
+    """Keep adoption explicit while completing and resuming through one download command."""
+
+    # One complete source range can be adopted; the other ranges still need
+    # fixture responses so the test exercises repair through final assembly.
+    directory = tmp_path / "ES-v-0_2020-06-06_2022-09-12"
+    directory.mkdir()
+    source_path = directory / "candlesticks.csv"
+    source_path.write_text(
+        "ts_event,open,high,low,close\n2020-06-06T01:00:00Z,100,101,99,100\n"
+    )
+    original_source = source_path.read_bytes()
+    client = FakeClient()
+    monkeypatch.setattr(fetch, "create_historical_client", lambda: client)
+    arguments = [
+        "--start", "2020-06-06",
+        "--end", "2022-09-12",
+        "--max-cost-usd", "6",
+        "--status-chunk-years", "1",
+        "--raw-data-directory", str(tmp_path),
+    ]
+
+    # Ordinary downloading must reject the unmanaged source before contacting
+    # the vendor or manufacturing a manifest from existing files.
+    assert fetch.download_main(arguments) == 1
+    assert source_path.read_bytes() == original_source
+    assert not (directory / "manifest.json").exists()
+    assert not client.calls and not client.counts and not client.estimates
+
+    # Explicit adoption shares normal checkpointing and publishes all three
+    # final components after the missing ranges have been downloaded.
+    assert fetch.download_main(["--repair", *arguments]) == 0
+    assert all((directory / filename).exists() for filename in managed.FINAL_NAMES.values())
+    manifest_bytes = (directory / "manifest.json").read_bytes()
+
+    # A completed repair must resume locally. Make every vendor method fail if
+    # the unified CLI accidentally starts new work during either mode check.
+    for method in ("get_range", "get_cost", "get_record_count", "get_dataset_condition"):
+        monkeypatch.setattr(
+            client,
+            method,
+            lambda **kwargs: pytest.fail("Completed repair contacted the vendor"),
+        )
+
+    assert fetch.download_main(arguments) == 1
+    assert (directory / "manifest.json").read_bytes() == manifest_bytes
+    assert fetch.download_main(["--repair", *arguments]) == 0
+
+
+def test_repair_manifest_requires_explicit_repair_mode(tmp_path):
+    """Require the repair flag when resuming a source-adoption manifest."""
 
     download_plan = repair_plan(tmp_path)
     client = FakeClient()
@@ -801,7 +852,7 @@ def test_download_and_repair_manifests_use_distinct_commands(tmp_path):
 
     # A repair manifest must resume through repair so its adoption and cleanup policy stays
     # consistent.
-    with pytest.raises(ValueError, match="pricesanity-repair-download"):
+    with pytest.raises(ValueError, match="pricesanity-download --repair"):
         managed.ManagedDownload(request(), tmp_path / "corpus", status_chunk_years=1)
 
 

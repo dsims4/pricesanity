@@ -137,7 +137,7 @@ still requires evidence beyond absence alone to distinguish it from a holiday.
 ## Repair the existing interrupted download
 
 `pricesanity-download` starts a new managed request or resumes its manifest.
-`pricesanity-repair-download` is reserved for an interrupted, manifest-less
+`pricesanity-download --repair` is reserved for an interrupted, manifest-less
 request directory that already contains `candlesticks.csv`. Repair validates
 the existing rows, separates them into the configured OHLC ranges, and compares
 each range with Databento's metadata count. Complete ranges are adopted; only
@@ -155,7 +155,7 @@ For the current 2010–2026 corpus, create the repair checkpoint and preview the
 remaining paid estimate with:
 
 ```zsh
-pricesanity-repair-download \
+pricesanity-download --repair \
   --start 2010-06-06 --end 2026-09-12 \
   --max-cost-usd 0 --estimate-only
 ```
@@ -168,10 +168,11 @@ chunks unless explicitly changed. Harmless `.DS_Store` files are ignored;
 unrelated files block adoption. Conditions are retrieved from metadata and
 replace an earlier condition file only after successful validation.
 
-Once a managed repair is checkpointed, it can be resumed with the same repair
-command. The ordinary download command resumes ordinary download manifests;
-keeping the two entry points distinct prevents accidental adoption of unrelated
-files. Repair keeps chunks while work is incomplete, then removes them only
+Once a managed repair is checkpointed, resume it with `pricesanity-download --repair`
+and the same chunk settings. Without `--repair`, the command starts or resumes
+ordinary managed downloads and refuses unmanaged directories or repair manifests.
+The explicit flag prevents accidental adoption of unrelated files.
+Repair keeps chunks while work is incomplete, then removes them only
 after every merged final file has passed validation. Its manifest retains the
 range counts and final checksums needed to verify that completed repair later.
 

@@ -21,11 +21,10 @@ dependencies = [
     "databento>=0.86,<0.87",
 ]
 
-# Distinct commands keep estimation, managed downloading, and explicit repair visible.
+# Separate entry points expose estimation, preparation, annotation, and managed downloading.
 [project.scripts]
 pricesanity-prepare = "pricesanity.data.build_dataset:main"
 pricesanity-estimate = "pricesanity.data.databento_fetch:main"
-pricesanity-repair-download = "pricesanity.data.databento_fetch:repair_main"
 pricesanity-download = "pricesanity.data.databento_fetch:download_main"
 pricesanity-annotate = "pricesanity.gui.annotation_launcher:main"
 

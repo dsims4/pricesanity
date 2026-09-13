@@ -77,7 +77,11 @@ def test_lock_loser_cli_leaves_all_managed_state_unchanged(
         if mode.endswith("estimate"):
             args += ["--estimate-only"]
 
-        assert (fetch.repair_main if mode.startswith("repair") else fetch.download_main)(args) == 1
+        # Select adoption explicitly through the same command used for ordinary downloads.
+        if mode.startswith("repair"):
+            args += ["--repair"]
+
+        assert fetch.download_main(args) == 1
         assert snapshot(download_plan.directory) == before
 
     assert not client.calls and not client.counts and not client.estimates
