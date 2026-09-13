@@ -14,6 +14,7 @@ from pricesanity.data.normalize import normalize_candlestick_data
 from pricesanity.data.resample import resample_ohlc
 from pricesanity.data.sessions import validate_sessions
 from pricesanity.data.status import (
+    add_historical_fallback_sessions,
     build_session_schedule,
     extract_session_transitions,
 )
@@ -148,6 +149,20 @@ def prepare_resampled_session_tables(
     )
 
     observed_dates = set(observed_session_dates)
+
+    # Databento's older CME status feed lacks the scheduled closes needed to
+    # build sessions. Before the first authoritative status-derived session,
+    # use only the configured normal RTH grid; this recovers complete normal
+    # dates without guessing historical early closes.
+    session_schedule = add_historical_fallback_sessions(
+        session_schedule,
+        data_conditions,
+        observed_dates,
+        session_timezone=config.data.session_timezone,
+        session_start_time=config.session.start_time,
+        session_end_time=config.session.end_time,
+    )
+
     adverse_conditions = ~(data_conditions["condition"].astype(str).str.lower().eq("available"))
     observed_dates.update(
         pd.to_datetime(data_conditions.loc[adverse_conditions, "date"]).dt.date

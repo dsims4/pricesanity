@@ -702,7 +702,8 @@ def test_complete_managed_request_needs_no_vendor_calls(tmp_path, monkeypatch):
     client = FakeClient()
     plan(tmp_path).run(client, max_cost_usd=6)
 
-    # Completed repair must use its validated final artifacts without any new vendor requests.
+    # A completed request must use its validated final artifacts without making
+    # new vendor requests.
     for method in ("get_range", "get_cost", "get_record_count", "get_dataset_condition"):
         monkeypatch.setattr(
             client, method, lambda **kwargs: pytest.fail("Complete request contacted vendor")

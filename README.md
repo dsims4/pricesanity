@@ -204,33 +204,59 @@ combines one-minute candles into complete five-minute candles, and validates
 exact timestamps against status-derived closing boundaries and daily quality.
 Scheduled early closes retain their shorter sessions.
 
+The older CME status feed does not contain the scheduled transitions needed to
+construct normal sessions. Price Sanity derives the coverage boundary from the
+first session successfully built from scheduled status data; it does not use a
+hard-coded year. For observed OHLC dates strictly before that boundary, an
+`available` Databento condition permits a conservative fallback using the
+configured normal RTH open and close. The exact full five-minute grid is still
+required. Degraded, unavailable, unknown, or missing condition evidence remains
+untrustworthy and breaks the normal reference chain.
+
+Fallback stops on the first status-derived session date. Missing status evidence
+on that date or any later date is therefore rejected as before. Historical early
+closes are not guessed: without an authoritative scheduled close, their shorter
+candle grid fails the configured normal-session completeness check. After the
+coverage boundary, scheduled early closes continue to use their authoritative
+status-derived boundaries.
+
+The boundary is inferred from the first usable status-derived session present in
+the supplied status corpus. The complete 2010–2026 corpus contains the historical
+transition into this coverage. An arbitrary standalone subset beginning later
+could infer a later boundary if the true first authoritative records were absent.
+
 The local `ES.v.0` corpus starts in June 2010, but its first scheduled trading
 transition is November 19, 2015, and its first scheduled RTH session is
 November 20, 2015. This is a historical data limitation: Databento documents
 that normal scheduled changes did not produce status messages before November
 2015 in the older CME feed. See the
 [MDP 2 status notes](https://databento.com/docs/knowledge-base/datasets).
-The 39 earlier local status records have reason codes 2, 3, or 5, rather than
-scheduled reason 1; accepting them as daily boundaries would misinterpret
-surveillance interventions, market events, or instrument expirations.
+Before the first usable normal scheduled transition, 39 local records have
+nonscheduled reason codes 2, 3, or 5. Two additional reason-1 records carry
+nonzero trading-event codes and therefore also do not qualify as normal scheduled
+session boundaries. Accepting these records as daily boundaries would
+misinterpret surveillance interventions, market events, or instrument expirations.
 Changing the timestamp clock cannot supply the missing schedule evidence.
 The existing scheduled-transition filter and session trust rules are retained.
 
-A read-only validation of this local corpus found 4,932,502 one-minute candles,
-23,580 status records, and 5,134 condition records. With `configs/default.yaml`,
-preparation produced 217,545 five-minute rows across 2,724 eligible sessions,
-with identical timestamps in the OHLC and normalized tables. November 20, 2015
-supplies the first trustworthy closing reference; November 23 is the first
-eligible training session. These dates are unchanged by the downloader cleanup.
+A fresh local rebuild found 4,932,502 one-minute candles, 23,580 status records,
+and 5,134 condition records. With `configs/default.yaml`, preparation produced
+231,153 five-minute rows across 2,892 eligible sessions, with exact row-for-row
+timestamp alignment between the OHLC and normalized tables. The first
+authoritative status-derived session is November 20, 2015. Historical fallback
+makes June 7, 2010 the first trustworthy reference session and June 14, 2010
+the first annotation-eligible session.
 
 The first trustworthy session supplies a closing reference; it is not itself
 training input. Every retained session needs a trustworthy predecessor. An
-incomplete or degraded session breaks that chain, as does an observed date with
-missing schedule evidence. The next trustworthy session restores the reference;
-the session after it can become training input. Include enough earlier data to
-provide this reference when choosing a download range.
+incomplete or degraded session breaks that chain. In the authoritative status
+era, an observed date with missing schedule evidence also breaks it. Before that
+coverage begins, missing scheduled-status messages are expected and the
+conservative historical fallback applies. The next trustworthy session restores
+the reference; the session after it can become training input. Include enough
+earlier data to provide this reference when choosing a download range.
 
-Normalization uses only candles inside trustworthy scheduled sessions. Candles
+Normalization uses only candles inside trustworthy validated sessions. Candles
 after an early close cannot replace that session's closing reference. A calendar
 gap alone is not classified as missing data: weekends and holidays may be valid
 gaps. A day absent from price, status, and quality evidence cannot be identified
@@ -314,10 +340,11 @@ owns one SQLite connection, commits each completed label pair, and closes the
 connection when the window closes. Standalone storage helpers close theirs after
 each operation.
 
-The launcher validates alignment at the file boundary; the window also validates
-its required fields because it can be constructed directly from Python. These
-boundary checks are intentional. Normalized Parquet loading selects only the
-timestamp and opening-gap columns needed by the GUI.
+The launcher validates exact row order, instrument identity, configured candle
+spacing, OHLC geometry, and opening-gap alignment at the file boundary. The
+window also validates its required fields because it can be constructed directly
+from Python. These boundary checks are intentional. Normalized Parquet loading
+selects only the timestamp, instrument, and opening-gap columns needed by the GUI.
 
 Run the tests without opening desktop windows:
 

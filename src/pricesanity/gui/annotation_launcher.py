@@ -84,14 +84,14 @@ def load_annotation_sessions(
     try:
         normalized_data = pd.read_parquet(
             Path(normalized_path),
-            columns=[config.data.timestamp_column, "open_gap"],
+            columns=[config.data.timestamp_column, "instrument", "open_gap"],
         )
 
     # Report an unreadable Parquet export as an input error with the relevant path.
     except ArrowInvalid as error:
         raise ValueError(
-            "Normalized artifact must be valid Parquet with timestamp "
-            "and open_gap columns."
+            "Normalized artifact must be valid Parquet with timestamp, "
+            "instrument, and open_gap columns."
         ) from error
 
     # Fail before date selection when the artifact is not the output expected
@@ -112,6 +112,24 @@ def load_annotation_sessions(
             f"{', '.join(sorted(missing_columns))}."
         )
 
+    # The chart must not turn malformed text, infinities, or impossible geometry
+    # into a visual candle that appears safe to annotate.
+    price_columns = ["open", "high", "low", "close"]
+    for price_column in price_columns:
+        candlestick_data[price_column] = pd.to_numeric(
+            candlestick_data[price_column], errors="coerce"
+        )
+    if not np.isfinite(candlestick_data[price_columns].to_numpy(dtype=float)).all():
+        raise ValueError("Interim OHLC prices must be finite numbers.")
+    invalid_high = candlestick_data["high"] < candlestick_data[
+        ["open", "close"]
+    ].max(axis="columns")
+    invalid_low = candlestick_data["low"] > candlestick_data[
+        ["open", "close"]
+    ].min(axis="columns")
+    if invalid_high.any() or invalid_low.any():
+        raise ValueError("Interim candlestick data contains invalid OHLC geometry.")
+
     # Normalize timestamps to UTC so identifiers remain stable across daylight
     # saving changes and computers with different local timezone settings.
     timestamps = pd.to_datetime(
@@ -121,6 +139,13 @@ def load_annotation_sessions(
     )
     candlestick_data[config.data.timestamp_column] = timestamps
 
+    # Prepared artifacts must already be unique and chronological. Sorting here
+    # would hide a damaged export and weaken the row-for-row alignment check below.
+    if timestamps.duplicated().any() or not timestamps.is_monotonic_increasing:
+        raise ValueError(
+            "Interim candlestick timestamps must be unique and chronological."
+        )
+
     # Apply the same UTC representation to normalized timestamps before using
     # them as alignment keys.
     normalized_timestamps = pd.to_datetime(
@@ -129,6 +154,16 @@ def load_annotation_sessions(
         errors="raise",
     )
     normalized_data[config.data.timestamp_column] = normalized_timestamps
+
+    # One configured instrument must describe every normalized row so a valid
+    # price table cannot receive identifiers belonging to another market.
+    normalized_instruments = normalized_data["instrument"].astype(str)
+    if normalized_instruments.empty or not normalized_instruments.eq(
+        config.data.instrument
+    ).all():
+        raise ValueError(
+            "Normalized candlestick instrument must match the configured instrument."
+        )
 
     # The GUI cannot display a missing or infinite opening gap as a trustworthy
     # annotation reference.
@@ -144,24 +179,11 @@ def load_annotation_sessions(
     if not has_finite_opening_gaps:
         raise ValueError("Opening gaps must be finite numbers.")
 
-    # Duplicate feature timestamps would make one OHLC candle match more than
-    # one opening-gap value.
-    if normalized_data[config.data.timestamp_column].duplicated().any():
-        raise ValueError("Normalized candlestick timestamps must be unique.")
-
-    # Require complete two-way alignment so neither displayed candles nor model
-    # features silently disappear during the merge.
-    candlestick_timestamps = set(
-        candlestick_data[config.data.timestamp_column]
-    )
-    normalized_timestamp_set = set(
-        normalized_data[config.data.timestamp_column]
-    )
-
-    # Raw and normalized rows must describe exactly the same candles before labels are attached.
-    if candlestick_timestamps != normalized_timestamp_set:
+    # Exact row order is part of the prepared artifact contract. Set equality
+    # alone could conceal a reordered normalized table.
+    if not timestamps.equals(normalized_timestamps):
         raise ValueError(
-            "OHLC and normalized candlestick timestamps must match exactly."
+            "OHLC and normalized candlestick timestamps must match exactly row for row."
         )
 
     # Attach only the opening gap through a validated one-to-one timestamp join.
@@ -194,6 +216,19 @@ def load_annotation_sessions(
         raise ValueError("Interim candlestick data cannot be empty.")
 
     candlestick_data["session_date"] = local_session_dates
+
+    # Confirm the supplied configuration still names the interval used to
+    # prepare these sessions before that interval becomes part of every stable ID.
+    target_interval = pd.Timedelta(config.data.target_interval)
+    if pd.isna(target_interval) or target_interval <= pd.Timedelta(0):
+        raise ValueError("Configured target interval must be positive.")
+    within_session_differences = candlestick_data.groupby(
+        "session_date", sort=False
+    )[config.data.timestamp_column].diff().dropna()
+    if not within_session_differences.eq(target_interval).all():
+        raise ValueError(
+            "Prepared candlestick spacing must match the configured target interval."
+        )
 
     # Combine instrument identity with each UTC timestamp so annotations remain
     # aligned when files, sessions, or tables are later combined.

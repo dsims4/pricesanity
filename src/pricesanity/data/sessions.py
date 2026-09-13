@@ -164,7 +164,7 @@ def validate_sessions(
             .equals(expected_timestamps)
         )
 
-        # Only a complete scheduled grid can become a trustworthy future opening-gap reference.
+        # Only a complete validated grid can become a trustworthy future opening-gap reference.
         if current_is_trustworthy:
             trustworthy_candlestick_mask[session_start_index:session_stop_index] = True
 
