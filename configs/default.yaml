@@ -1,20 +1,33 @@
 project:
+  # Keep experiment identity and repeatable random choices in one shared configuration.
   name: Price Sanity
   random_seed: 42
 
 data:
+  # Select the continuous contract whose candles and annotations belong together.
   instrument: ES.v.0
+
+  # Preserve absolute source times while evaluating session dates in New York.
   source_timezone: UTC
   session_timezone: America/New_York
   timestamp_column: ts_event
+
+  # Build five-minute geometry from complete one-minute groups; partial groups
+  # cannot establish the same complete session grid used during training.
   source_interval: 1min
   target_interval: 5min
   require_complete_candlesticks: true
 
 session:
+  # These are the maximum RTH boundaries. Scheduled early closes can shorten
+  # an individual session before its exact candle grid is validated.
   start_time: "09:30"
   end_time: "16:15"
+
+  # Remove weekend candidates before status evidence establishes valid sessions.
   trading_weekdays: [0, 1, 2, 3, 4]
 
 normalization:
+  # Name the implemented causal geometry so incompatible feature schemes fail
+  # explicitly instead of silently producing mislabeled training inputs.
   scheme: relative_ohlc_v1

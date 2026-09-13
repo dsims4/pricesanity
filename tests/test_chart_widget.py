@@ -15,17 +15,25 @@ from pricesanity.gui.chart_widget import CandlestickChart
 
 @pytest.fixture(scope="module")
 def qt_application() -> QApplication:
+    """Reuse the Qt application required by the widget tests."""
+
     # Reuse an existing application because Qt permits only one application
     # object within a process.
     application = QApplication.instance()
+
+    # Reuse pytest's existing Qt application because Qt permits only one application per
+    # process.
     if application is None:
         application = QApplication([])
+
     return cast(QApplication, application)
 
 
 def test_draw_session_displays_all_candles_and_active_arrow(
     qt_application: QApplication,
 ) -> None:
+    """Verify draw session displays all candles and active arrow."""
+
     # Include candles on both sides of the active position to prove the complete
     # retrospective session remains visible.
     candlestick_data = pd.DataFrame(
@@ -64,6 +72,8 @@ def test_draw_session_displays_all_candles_and_active_arrow(
 def test_draw_session_rejects_invalid_active_position(
     qt_application: QApplication,
 ) -> None:
+    """Verify draw session rejects invalid active position."""
+
     # One candle permits only position zero as the active annotation target.
     candlestick_data = pd.DataFrame(
         {
@@ -76,6 +86,7 @@ def test_draw_session_rejects_invalid_active_position(
     )
     chart = CandlestickChart()
 
+    # The active marker cannot move to a position beyond the displayed session.
     with pytest.raises(ValueError, match="outside the session"):
         chart.draw_session(candlestick_data, active_candlestick_position=1)
 
@@ -83,28 +94,44 @@ def test_draw_session_rejects_invalid_active_position(
 
 
 def test_navigation_reuses_candles_and_axis_layout(qt_application) -> None:
-    data = pd.DataFrame({
-        "ts_event": pd.date_range("2026-09-09T13:30:00Z", periods=81, freq="5min"),
-        "open": [100.] * 81, "high": [102.] * 81,
-        "low": [99.] * 81, "close": [101.] * 81,
-    })
+    """Verify navigation reuses candles and axis layout."""
+
+    data = pd.DataFrame(
+        {
+            "ts_event": pd.date_range("2026-09-09T13:30:00Z", periods=81, freq="5min"),
+            "open": [100.0] * 81,
+            "high": [102.0] * 81,
+            "low": [99.0] * 81,
+            "close": [101.0] * 81,
+        }
+    )
     chart = CandlestickChart()
     chart.draw_session(data, 0)
     bodies = tuple(chart.axes.patches)
     wicks = tuple(chart.axes.collections)
     marker = chart.axes.texts[0]
     limits = (chart.axes.get_xlim(), chart.axes.get_ylim())
+
+    # Exercise forward, long-distance, and backward moves without rebuilding the candle
+    # collection.
     for position in (1, 80, 0):
         chart.set_active_candlestick(position)
-        assert marker.xy == (position, 102.)
+
+        assert marker.xy == (position, 102.0)
         assert tuple(chart.axes.patches) == bodies
         assert tuple(chart.axes.collections) == wicks
         assert chart.axes.texts[0] is marker
         assert (chart.axes.get_xlim(), chart.axes.get_ylim()) == limits
+
     assert len(wicks) == 1
     chart.draw_session(data.iloc[:3], 2)
+
     assert len(chart.axes.patches) == 3
     assert chart.axes.texts[0] is not marker
+
+    # An invalid move must leave the existing chart available rather than drawing an out-of-
+    # range marker.
     with pytest.raises(ValueError, match="outside"):
         chart.set_active_candlestick(3)
+
     chart.close()

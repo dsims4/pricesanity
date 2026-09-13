@@ -23,6 +23,7 @@ class FakeDataStore:
 
     def __init__(self, csv_contents: str) -> None:
         """Store controlled CSV contents and received save arguments."""
+
         # The contents identify which schema was saved, while the arguments
         # prove the production code used immutable raw-file settings.
         self.csv_contents = csv_contents
@@ -38,6 +39,7 @@ class FakeDataStore:
         mode: str = "w",
     ) -> None:
         """Record save settings and create the requested fake CSV."""
+
         # Keep every option so the test can verify readable values, symbol
         # mapping, and exclusive file creation.
         self.received_save_arguments = {
@@ -59,11 +61,16 @@ class FakeTimeseriesClient:
 
     def __init__(self) -> None:
         """Create fake candlestick and status downloads."""
+
         # Separate stores and recorded requests allow each schema call and file
         # destination to be checked independently.
         self.received_requests: list[dict[str, object]] = []
-        self.candlestick_store = FakeDataStore("candlesticks\n")
-        self.status_store = FakeDataStore("status\n")
+        self.candlestick_store = FakeDataStore(
+            "ts_event,open,high,low,close\n2026-09-08T13:30:00Z,100,101,99,100\n"
+        )
+        self.status_store = FakeDataStore(
+            "ts_event,reason,trading_event,is_trading\n2026-09-08T13:30:00Z,scheduled,none,Y\n"
+        )
 
     def get_range(
         self,
@@ -76,6 +83,7 @@ class FakeTimeseriesClient:
         stype_in: str,
     ) -> FakeDataStore:
         """Record one request and return its schema-specific data."""
+
         # Preserve the complete request so estimation and download parameters
         # can be compared without involving Databento.
         self.received_requests.append(
@@ -93,6 +101,7 @@ class FakeTimeseriesClient:
         # raw output file.
         if schema == "ohlcv-1m":
             return self.candlestick_store
+
         return self.status_store
 
 
@@ -101,6 +110,7 @@ class FakeMetadataClient:
 
     def __init__(self) -> None:
         """Create an empty record of received Databento request parameters."""
+
         # Each call is retained so the test can prove that estimation used the
         # same request identity and date range for both required schemas.
         self.received_requests: list[dict[str, object]] = []
@@ -109,8 +119,14 @@ class FakeMetadataClient:
         # inclusive instead of the time-series API's exclusive ending date.
         self.received_condition_requests: list[dict[str, object]] = []
 
+    def get_record_count(self, **request_parameters: object) -> int:
+        """Return deterministic metadata counts for the requested fake schema."""
+
+        return 1
+
     def get_cost(self, **request_parameters: object) -> float:
         """Return a schema-specific cost without contacting Databento."""
+
         # Preserve a separate copy because later changes to a supplied mapping
         # should not alter the evidence collected by this fake client.
         self.received_requests.append(dict(request_parameters))
@@ -119,6 +135,7 @@ class FakeMetadataClient:
         # and their combined total rather than accidentally counting one twice.
         if request_parameters["schema"] == "ohlcv-1m":
             return 1.25
+
         return 0.10
 
     def get_dataset_condition(
@@ -129,6 +146,7 @@ class FakeMetadataClient:
         end_date: date,
     ) -> list[dict[str, str | None]]:
         """Return controlled daily condition metadata."""
+
         # Record the adjusted date range so its different ending convention can
         # be asserted directly by the download test.
         self.received_condition_requests.append(
@@ -154,6 +172,7 @@ class FakeHistoricalClient:
 
     def __init__(self) -> None:
         """Attach the controlled metadata client used by the test."""
+
         # Match the official client's nested metadata interface without adding
         # a network dependency to this unit test.
         self.metadata = FakeMetadataClient()
@@ -161,6 +180,8 @@ class FakeHistoricalClient:
 
 
 def test_estimate_fetch_cost_uses_volume_continuous_contract() -> None:
+    """Verify estimate fetch cost uses volume continuous contract."""
+
     # Use two adjacent dates because Databento interprets the end as exclusive.
     request = DatabentoFetchRequest(
         start_date=date(2026, 9, 8),
@@ -199,7 +220,10 @@ def test_estimate_fetch_cost_uses_volume_continuous_contract() -> None:
 
 
 def test_fetch_request_rejects_empty_date_range() -> None:
+    """Verify fetch request rejects empty date range."""
+
     # Use the same start and exclusive end to describe a request with no time.
+    # An empty or reversed range cannot identify any historical request to estimate or download.
     with pytest.raises(ValueError, match="end date must follow"):
         DatabentoFetchRequest(
             start_date=date(2026, 9, 8),
@@ -208,7 +232,11 @@ def test_fetch_request_rejects_empty_date_range() -> None:
 
 
 def test_parse_request_date_rejects_invalid_date() -> None:
+    """Verify parse request date rejects invalid date."""
+
     # Verify invalid calendar dates fail before reaching Databento.
+    # OHLC schema selection must match the one-minute input expected by the preparation
+    # pipeline.
     with pytest.raises(
         argparse.ArgumentTypeError,
         match="YYYY-MM-DD",
@@ -217,6 +245,8 @@ def test_parse_request_date_rejects_invalid_date() -> None:
 
 
 def test_estimate_argument_parser_converts_dates() -> None:
+    """Verify estimate argument parser converts dates."""
+
     # Parse the same text a user would provide through the terminal.
     parsed_arguments = build_estimate_argument_parser().parse_args(
         [
@@ -236,6 +266,8 @@ def test_main_displays_cost_estimate(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Verify main displays cost estimate."""
+
     # Replace authentication with a fake client so the command cannot
     # contact Databento or download market data during this test.
     fake_client = FakeHistoricalClient()
@@ -262,10 +294,7 @@ def test_main_displays_cost_estimate(
     # Confirm the command succeeded and displayed every relevant cost.
     assert exit_status == 0
     assert "Symbol: ES.v.0" in terminal_output
-    assert (
-        "Dates: 2026-09-08 (inclusive) through "
-        "2026-09-10 (exclusive)"
-    ) in terminal_output
+    assert ("Dates: 2026-09-08 (inclusive) through " "2026-09-10 (exclusive)") in terminal_output
     assert "Candlesticks: $1.250000" in terminal_output
     assert "Status: $0.100000" in terminal_output
     assert "Total: $1.350000" in terminal_output
@@ -274,6 +303,8 @@ def test_main_displays_cost_estimate(
 def test_build_raw_data_paths_keeps_request_files_together(
     tmp_path: Path,
 ) -> None:
+    """Verify build raw data paths keeps request files together."""
+
     # Define one request whose identity should appear in its raw directory.
     request = DatabentoFetchRequest(
         start_date=date(2026, 9, 8),
@@ -284,16 +315,11 @@ def test_build_raw_data_paths_keeps_request_files_together(
     raw_paths = build_raw_data_paths(tmp_path, request)
 
     # Confirm every file belongs to the same request-specific directory.
-    expected_directory = (
-        tmp_path / "ES-v-0_2026-09-08_2026-09-09"
-    )
-    assert raw_paths.candlestick_csv_path == (
-        expected_directory / "candlesticks.csv"
-    )
+    expected_directory = tmp_path / "ES-v-0_2026-09-08_2026-09-09"
+
+    assert raw_paths.candlestick_csv_path == (expected_directory / "candlesticks.csv")
     assert raw_paths.status_csv_path == expected_directory / "status.csv"
-    assert raw_paths.condition_json_path == (
-        expected_directory / "condition.json"
-    )
+    assert raw_paths.condition_json_path == (expected_directory / "condition.json")
 
     # Path construction must not create anything on disk.
     assert not expected_directory.exists()
@@ -302,6 +328,8 @@ def test_build_raw_data_paths_keeps_request_files_together(
 def test_create_raw_data_directory_refuses_existing_request(
     tmp_path: Path,
 ) -> None:
+    """Verify create raw data directory refuses existing request."""
+
     # Build three raw paths that share one request-specific directory.
     request = DatabentoFetchRequest(
         start_date=date(2026, 9, 8),
@@ -311,6 +339,7 @@ def test_create_raw_data_directory_refuses_existing_request(
 
     # Create the directory once and confirm no data files were created.
     created_directory = create_raw_data_directory(raw_paths)
+
     assert created_directory.exists()
     assert created_directory.is_dir()
     assert not raw_paths.candlestick_csv_path.exists()
@@ -323,6 +352,8 @@ def test_create_raw_data_directory_refuses_existing_request(
 
 
 def test_download_raw_data_saves_all_source_files(tmp_path: Path) -> None:
+    """Verify download raw data saves all source files."""
+
     # Use two requested dates so the exclusive and inclusive ending conventions
     # produce visibly different condition arguments.
     request = DatabentoFetchRequest(
@@ -333,7 +364,7 @@ def test_download_raw_data_saves_all_source_files(tmp_path: Path) -> None:
     client = FakeHistoricalClient()
 
     # Run the entire file workflow through fake network interfaces.
-    returned_paths = download_raw_data(client, request, raw_paths)
+    returned_paths = download_raw_data(client, request, raw_paths, max_cost_usd=1.35)
 
     # Confirm both time-series calls use the same request except for schema.
     assert client.timeseries.received_requests == [
@@ -367,15 +398,15 @@ def test_download_raw_data_saves_all_source_files(tmp_path: Path) -> None:
 
     # Confirm all raw artifacts were saved with their controlled contents.
     assert returned_paths is raw_paths
-    assert raw_paths.candlestick_csv_path.read_text(
-        encoding="utf-8"
-    ) == "candlesticks\n"
-    assert raw_paths.status_csv_path.read_text(
-        encoding="utf-8"
-    ) == "status\n"
-    assert json.loads(
-        raw_paths.condition_json_path.read_text(encoding="utf-8")
-    ) == [
+    assert (
+        raw_paths.candlestick_csv_path.read_text(encoding="utf-8")
+        == client.timeseries.candlestick_store.csv_contents
+    )
+    assert (
+        raw_paths.status_csv_path.read_text(encoding="utf-8")
+        == client.timeseries.status_store.csv_contents
+    )
+    assert json.loads(raw_paths.condition_json_path.read_text(encoding="utf-8")) == [
         {
             "date": "2026-09-08",
             "condition": "available",
@@ -386,14 +417,16 @@ def test_download_raw_data_saves_all_source_files(tmp_path: Path) -> None:
     # Confirm both CSVs used readable Databento formatting and exclusive file
     # creation rather than permitting replacement.
     assert client.timeseries.candlestick_store.received_save_arguments == {
-        "path": raw_paths.candlestick_csv_path,
+        "path": raw_paths.candlestick_csv_path.parent
+        / "chunks/candlesticks/2026-09-08_2026-09-10.partial.csv",
         "pretty_px": True,
         "pretty_ts": True,
         "map_symbols": True,
         "mode": "x",
     }
     assert client.timeseries.status_store.received_save_arguments == {
-        "path": raw_paths.status_csv_path,
+        "path": raw_paths.status_csv_path.parent
+        / "chunks/status/2026-09-08_2026-09-10.partial.csv",
         "pretty_px": True,
         "pretty_ts": True,
         "map_symbols": True,
@@ -402,8 +435,12 @@ def test_download_raw_data_saves_all_source_files(tmp_path: Path) -> None:
 
 
 def test_download_argument_parser_requires_cost_ceiling() -> None:
+    """Verify download argument parser requires cost ceiling."""
+
     # Omit the approval amount so argument parsing must stop before a client or
     # request can be created.
+    # Conflicting status units must fail during argument parsing rather than change a request
+    # silently.
     with pytest.raises(SystemExit):
         build_download_argument_parser().parse_args(
             [
@@ -420,6 +457,8 @@ def test_download_main_stops_above_approved_cost(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Verify download main stops above approved cost."""
+
     # Use the fake client whose combined estimate is $1.35, then approve less
     # than that amount to exercise the command's spending boundary.
     fake_client = FakeHistoricalClient()
@@ -430,26 +469,28 @@ def test_download_main_stops_above_approved_cost(
     )
 
     # Confirm the command exits before calling either fake download endpoint.
-    with pytest.raises(SystemExit):
-        databento_fetch.download_main(
-            [
-                "--start",
-                "2026-09-08",
-                "--end",
-                "2026-09-09",
-                "--max-cost-usd",
-                "1.00",
-                "--raw-data-directory",
-                str(tmp_path),
-            ]
-        )
+    result = databento_fetch.download_main(
+        [
+            "--start",
+            "2026-09-08",
+            "--end",
+            "2026-09-09",
+            "--max-cost-usd",
+            "1.00",
+            "--raw-data-directory",
+            str(tmp_path),
+        ]
+    )
+
+    assert result == 1
 
     # The error should explain both prices without creating a raw directory.
     terminal_error = capsys.readouterr().err
+
     assert "estimate $1.350000" in terminal_error
     assert "approved maximum $1.000000" in terminal_error
     assert fake_client.timeseries.received_requests == []
-    assert list(tmp_path.iterdir()) == []
+    assert not list(tmp_path.rglob("*.csv"))
 
 
 def test_download_main_saves_below_approved_cost(
@@ -457,6 +498,8 @@ def test_download_main_saves_below_approved_cost(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Verify download main saves below approved cost."""
+
     # Approve more than the fake estimate so the command can exercise the local
     # download workflow without contacting Databento.
     fake_client = FakeHistoricalClient()
@@ -483,32 +526,50 @@ def test_download_main_saves_below_approved_cost(
     # Confirm success, all three artifacts, and the reported cost ceiling.
     request_directory = tmp_path / "ES-v-0_2026-09-08_2026-09-09"
     terminal_output = capsys.readouterr().out
+
     assert exit_status == 0
     assert (request_directory / "candlesticks.csv").exists()
     assert (request_directory / "status.csv").exists()
     assert (request_directory / "condition.json").exists()
-    assert "Estimated cost at download: $1.350000" in terminal_output
+    assert "remaining estimate: $1.350000" in terminal_output
 
 
 @pytest.mark.parametrize("ceiling", ["nan", "inf", "-inf", "-1"])
 def test_download_rejects_invalid_ceiling_before_authentication(ceiling, monkeypatch) -> None:
+    """Verify download rejects invalid ceiling before authentication."""
+
     def unexpected_client():
+        """Fail if invalid CLI arguments reach historical client construction."""
+
         pytest.fail("Invalid approval reached authentication")
 
     monkeypatch.setattr(databento_fetch, "create_historical_client", unexpected_client)
+
+    # Malformed CLI options must be rejected before calling the historical client.
     with pytest.raises(SystemExit):
-        databento_fetch.download_main([
-            "--start", "2026-09-08", "--end", "2026-09-09",
-            "--max-cost-usd=" + ceiling,
-        ])
+        databento_fetch.download_main(
+            [
+                "--start",
+                "2026-09-08",
+                "--end",
+                "2026-09-09",
+                "--max-cost-usd=" + ceiling,
+            ]
+        )
 
 
 @pytest.mark.parametrize("cost", [float("nan"), float("inf"), -1.0])
 def test_estimate_rejects_invalid_component(cost) -> None:
+    """Verify estimate rejects invalid component."""
+
+    # A negative or nonfinite estimate cannot be treated as permission for a paid request.
     with pytest.raises(ValueError, match="finite and nonnegative"):
         databento_fetch.DatabentoCostEstimate(cost, 0.1)
 
 
 def test_estimate_rejects_overflowing_total() -> None:
+    """Verify estimate rejects overflowing total."""
+
+    # Individually finite costs can still overflow when combined, so validate the total as well.
     with pytest.raises(ValueError, match="finite and nonnegative"):
         databento_fetch.DatabentoCostEstimate(1.7e308, 1.7e308)

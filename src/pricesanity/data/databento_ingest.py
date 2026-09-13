@@ -1,11 +1,10 @@
 """Load Databento exports without modifying their source files."""
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 import pandas as pd
-
 
 # Exclude volume and vendor metadata because later price-action processing uses
 # only the four values that define OHLC candlestick geometry.
@@ -36,9 +35,10 @@ def load_ohlc_csv(
         Candlestick data with UTC timestamps and only the required columns.
 
     Raises:
-        ValueError: If required columns, timestamps, prices, or row order are
-            invalid.
+        ValueError: If required columns, timestamps, prices, or row order are invalid.
     """
+
+    # Use one path interface for header inspection and the subsequent data read.
     csv_path = Path(csv_path)
 
     # The timestamp places each candle in sequence, while all four prices are
@@ -73,6 +73,23 @@ def load_ohlc_csv(
         csv_path,
         usecols=list(required_csv_columns),
     )
+
+    return validate_ohlc_data(candlestick_data, timestamp_column, source_timezone)
+
+
+def validate_ohlc_data(
+    candlestick_data: pd.DataFrame, timestamp_column: str, source_timezone: str
+) -> pd.DataFrame:
+    """Validate one isolated OHLC table and convert its timestamps to UTC.
+
+    Args:
+        candlestick_data: Chronological candlestick prices to validate or prepare.
+        timestamp_column: Column containing the candlestick or event timestamps.
+        source_timezone: Timezone assigned to source timestamps when they are naive.
+
+    Returns:
+        Validated OHLC table with timestamps expressed in UTC.
+    """
 
     # Convert every timestamp together and mark parsing failures as NaT so one
     # check can reject all unusable time values.
@@ -139,6 +156,8 @@ def load_status_csv(
     Raises:
         ValueError: If the CSV is missing a required field.
     """
+
+    # Use one path interface for header inspection and the subsequent data read.
     csv_path = Path(csv_path)
 
     # A transition needs its timestamp, cause, event, and resulting trading
@@ -190,6 +209,8 @@ def load_dataset_conditions_json(json_path: str | Path) -> pd.DataFrame:
     Raises:
         ValueError: If the JSON structure or required fields are invalid.
     """
+
+    # Normalize the caller's path before opening the unchanged metadata source.
     json_path = Path(json_path)
 
     # Decode the file with the standard library because the batch condition
@@ -236,3 +257,62 @@ def load_dataset_conditions_json(json_path: str | Path) -> pd.DataFrame:
     # Keep only pipeline inputs because last-modified and other delivery
     # metadata do not affect session boundaries or the quality decision.
     return condition_data.loc[:, list(REQUIRED_CONDITION_COLUMNS)].copy()
+
+
+def iter_ohlc_csv(
+    csv_path: str | Path,
+    *,
+    timestamp_column: str = "ts_event",
+    source_timezone: str = "UTC",
+    chunk_rows: int = 100_000,
+) -> Iterator[pd.DataFrame]:
+    """Read only price fields in bounded chunks, checking order across reads.
+
+    Args:
+        csv_path: Source candlestick CSV read without loading the entire file.
+        timestamp_column: Column containing the candlestick or event timestamps.
+        source_timezone: Timezone assigned to source timestamps when they are naive.
+        chunk_rows: Maximum number of source rows loaded in one CSV read.
+
+    Yields:
+        Validated price chunks with chronological UTC timestamps.
+
+    Raises:
+        ValueError: For invalid row counts, missing fields or malformed prices/times.
+    """
+
+    # A positive row count keeps each CSV read bounded and able to advance.
+    if chunk_rows < 1:
+        raise ValueError("CSV chunk rows must be positive")
+
+    # Read only model price inputs; vendor metadata and volume do not affect this geometry.
+    columns = [timestamp_column, *REQUIRED_OHLC_COLUMNS]
+
+    # Retain only the previous read's final time to detect cross-read duplicates without
+    # retaining its rows.
+    previous_timestamp = None
+
+    # Own the CSV reader in a context so early termination still closes its file handle.
+    with pd.read_csv(csv_path, usecols=columns, chunksize=chunk_rows) as reader:
+        # Validate each bounded read before yielding it, keeping the original large file out of
+        # memory.
+        for raw in reader:
+            parsed = validate_ohlc_data(raw, timestamp_column, source_timezone)
+
+            # An empty decoded chunk contributes neither prices nor ordering evidence.
+            if parsed.empty:
+                continue
+
+            timestamps = parsed[timestamp_column]
+
+            # Per-read validation cannot detect duplicates or disorder at the boundary between two
+            # reads.
+            if previous_timestamp is not None and timestamps.iloc[0] <= previous_timestamp:
+                raise ValueError(
+                    "CSV contains duplicate or nonchronological timestamps across chunks"
+                )
+
+            # Carry this boundary into the next read before releasing the current validated
+            # chunk to its caller.
+            previous_timestamp = timestamps.iloc[-1]
+            yield parsed

@@ -25,13 +25,12 @@ def filter_regular_trading_hours(
         trading_weekdays: Weekday indices eligible for trading sessions.
 
     Returns:
-        A copy of the candlestick data within the configured weekday and time
-        boundaries.
+        A copy of the candlestick data within the configured weekday and time boundaries.
 
     Raises:
-        ValueError: If timestamps lack a timezone or the session times are
-            invalid.
+        ValueError: If timestamps lack a timezone or the session times are invalid.
     """
+
     # Keep one reference to the timestamps because weekday and time boundaries
     # are both calculated from the same session-local values.
     candlestick_timestamps = candlestick_data[timestamp_column]
@@ -67,9 +66,7 @@ def filter_regular_trading_hours(
 
     # Measure the maximum session window so each candle can later be located
     # relative to zero at the configured open.
-    session_duration_minutes = (
-        session_end_minute_of_day - session_start_minute_of_day
-    )
+    session_duration_minutes = session_end_minute_of_day - session_start_minute_of_day
 
     # Convert timestamps only for the local weekday and clock checks while
     # leaving their stored UTC values unchanged for later pipeline stages.
@@ -93,9 +90,8 @@ def filter_regular_trading_hours(
 
     # Keep possible intraday candles from the opening boundary up to, but not
     # including, the time at which the next candle interval would begin.
-    is_within_session = (
-        (session_relative_minutes >= 0)
-        & (session_relative_minutes < session_duration_minutes)
+    is_within_session = (session_relative_minutes >= 0) & (
+        session_relative_minutes < session_duration_minutes
     )
 
     # Return only candles eligible for later schedule validation without

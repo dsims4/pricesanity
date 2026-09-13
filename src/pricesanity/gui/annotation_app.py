@@ -29,7 +29,6 @@ from pricesanity.annotation.schema import CandlestickAnnotation, MarketRegime
 from pricesanity.annotation.store import AnnotationStore
 from pricesanity.gui.chart_widget import CandlestickChart
 
-
 # Use one key map for shortcut creation and visible selection feedback.
 REGIME_SHORTCUT_OPTIONS = {
     "1": MarketRegime.BULL,
@@ -38,10 +37,7 @@ REGIME_SHORTCUT_OPTIONS = {
 }
 
 # Reverse the shortcut map so saved regimes can show their original key.
-REGIME_KEYS = {
-    regime: number_key
-    for number_key, regime in REGIME_SHORTCUT_OPTIONS.items()
-}
+REGIME_KEYS = {regime: number_key for number_key, regime in REGIME_SHORTCUT_OPTIONS.items()}
 
 # Distinguish an untouched scalar from any of the three valid choices.
 UNSELECTED_REGIME_TEXT = "Not selected"
@@ -68,6 +64,8 @@ class AnnotationWindow(QMainWindow):
             corpus_start_date: First calendar date named by the corpus.
             corpus_end_date: Last inclusive calendar date in the corpus.
         """
+
+        # Initialize Qt ownership before adding controls that the window must later release.
         super().__init__()
 
         # Keep a private copy so the window cannot alter the source market data.
@@ -93,6 +91,8 @@ class AnnotationWindow(QMainWindow):
         missing_columns = required_columns.difference(
             self.all_candlestick_data.columns
         )
+
+        # Reject missing display fields before partially initializing the window.
         if missing_columns:
             raise ValueError(
                 "Candlestick data is missing required columns: "
@@ -112,6 +112,8 @@ class AnnotationWindow(QMainWindow):
             self.all_candlestick_data["open_gap"],
             errors="raise",
         )
+
+        # Invalid opening-gap features must not be presented as trustworthy model inputs.
         if not np.isfinite(
             self.all_candlestick_data["open_gap"].to_numpy(dtype=float)
         ).all():
@@ -124,6 +126,8 @@ class AnnotationWindow(QMainWindow):
             candlestick_ids.isna()
             | candlestick_ids.astype(str).str.strip().eq("")
         ).any()
+
+        # Each annotation key must identify exactly one displayed candlestick.
         if has_blank_id or candlestick_ids.duplicated().any():
             raise ValueError(
                 "Candlestick identifiers must be unique and nonempty."
@@ -137,6 +141,7 @@ class AnnotationWindow(QMainWindow):
         self.available_session_dates = sorted(
             set(self.all_candlestick_data["session_date"])
         )
+
         # Group indices once so crossing sessions does not scan the corpus.
         self._session_indices = self.all_candlestick_data.groupby(
             "session_date", sort=False
@@ -145,17 +150,17 @@ class AnnotationWindow(QMainWindow):
         # Use filename-derived boundaries when provided while keeping direct
         # Python callers compatible with the actual prepared session dates.
         self.corpus_start_date = (
-            corpus_start_date
-            if corpus_start_date is not None
-            else self.available_session_dates[0]
+            corpus_start_date if corpus_start_date is not None else self.available_session_dates[0]
         )
         self.corpus_end_date = (
-            corpus_end_date
-            if corpus_end_date is not None
-            else self.available_session_dates[-1]
+            corpus_end_date if corpus_end_date is not None else self.available_session_dates[-1]
         )
+
+        # Calendar navigation requires increasing corpus boundaries.
         if self.corpus_start_date > self.corpus_end_date:
             raise ValueError("Corpus start date cannot be after its end date.")
+
+        # Available sessions must belong to the corpus represented by the date controls.
         if (
             self.available_session_dates[0] < self.corpus_start_date
             or self.available_session_dates[-1] > self.corpus_end_date
@@ -330,9 +335,16 @@ class AnnotationWindow(QMainWindow):
         # Begin with the complete available range and its first trading session.
         self.annotation_store = AnnotationStore(self.database_path)
         self._annotation_load_failed = False
+
+        # Initial navigation can fail after SQLite opens, so protect that connection during
+        # setup.
         try:
             self.apply_date_range()
+
+        # Release the store when construction fails because no window will exist to close it
+        # later.
         except Exception:
+            # Release the window-owned database connection before completing window teardown.
             self.annotation_store.close()
             raise
 
@@ -369,6 +381,9 @@ class AnnotationWindow(QMainWindow):
         # Retain each shortcut while limiting number-key annotation to a chart
         # that currently holds keyboard focus.
         self.regime_shortcuts: dict[str, QShortcut] = {}
+
+        # Bind each key to its own regime now so later key presses cannot all select the final
+        # loop value.
         for number_key, regime in REGIME_SHORTCUT_OPTIONS.items():
             regime_shortcut = QShortcut(QKeySequence(number_key), self.chart)
             regime_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
@@ -384,6 +399,8 @@ class AnnotationWindow(QMainWindow):
         Args:
             date_input: Date field whose minimum and maximum dates are set.
         """
+
+        # Customize the existing calendar so date selection keeps the field's configured bounds.
         calendar = date_input.calendarWidget()
         calendar.setMinimumWidth(300)
 
@@ -403,12 +420,17 @@ class AnnotationWindow(QMainWindow):
             "qt_calendar_yearbutton",
         )
         year_editor = calendar.findChild(QSpinBox, "qt_calendar_yearedit")
+
+        # The customized navigation depends on these Qt controls being present.
         if month_button is None or year_button is None or year_editor is None:
             raise RuntimeError("Qt calendar navigation controls are unavailable.")
 
         month_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         month_button.setFixedWidth(105)
         year_menu = QMenu(year_button)
+
+        # Offer only years covered by this corpus and capture each year separately in its
+        # callback.
         for year in range(
             date_input.minimumDate().year(),
             date_input.maximumDate().year() + 1,
@@ -420,6 +442,7 @@ class AnnotationWindow(QMainWindow):
                     calendar.monthShown(),
                 )
             )
+
         year_button.setMenu(year_menu)
         year_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         year_button.setFixedWidth(75)
@@ -428,8 +451,7 @@ class AnnotationWindow(QMainWindow):
         # The complete month and year button surfaces open their menus, so an
         # extra indicator is unnecessary. Centering the text keeps both compact
         # controls balanced in the calendar heading.
-        calendar.setStyleSheet(
-            """
+        calendar.setStyleSheet("""
             QToolButton#qt_calendar_monthbutton,
             QToolButton#qt_calendar_yearbutton {
                 padding: 0px;
@@ -440,8 +462,7 @@ class AnnotationWindow(QMainWindow):
                 image: none;
                 width: 0px;
             }
-            """
-        )
+            """)
 
         # QDateEdit's date range prevents out-of-corpus cells from being
         # selected. Qt's disabled palette does not reliably color calendar
@@ -472,6 +493,7 @@ class AnnotationWindow(QMainWindow):
             visible_year: Year currently displayed by the calendar.
             visible_month: Month currently displayed by the calendar.
         """
+
         # Include neighboring-month cells because Qt displays them in the same
         # six-week grid as the selected month.
         first_visible_date = QDate(visible_year, visible_month, 1).addDays(-7)
@@ -484,13 +506,19 @@ class AnnotationWindow(QMainWindow):
         red_date_format.setForeground(QColor("red"))
 
         visible_date = first_visible_date
+
+        # Mark every displayed calendar cell, including adjacent-month dates in the visible
+        # grid.
         while visible_date <= last_visible_date:
+            # Calendar cells outside the permitted corpus should not appear selectable.
             if visible_date < minimum_date or visible_date > maximum_date:
                 calendar.setDateTextFormat(visible_date, red_date_format)
+
             visible_date = visible_date.addDays(1)
 
     def apply_date_range(self) -> None:
         """Use the selected inclusive dates without reopening the GUI."""
+
         # Convert the first Qt date explicitly so type checking can prove it is
         # comparable with the exchange-local Python session dates.
         starting_qdate = self.start_date_input.date()
@@ -514,6 +542,7 @@ class AnnotationWindow(QMainWindow):
             self.session_position_label.setText(
                 "Starting date must not be after ending date."
             )
+
             return
 
         # Retain only actual prepared trading dates, naturally skipping
@@ -523,10 +552,13 @@ class AnnotationWindow(QMainWindow):
             for session_date in self.available_session_dates
             if starting_date <= session_date <= ending_date
         ]
+
+        # A range without eligible sessions cannot provide an active annotation candle.
         if not selected_session_dates:
             self.session_position_label.setText(
                 "No prepared trading sessions are inside this date range."
             )
+
             return
 
         # Restart navigation at the beginning of the newly selected range.
@@ -543,6 +575,7 @@ class AnnotationWindow(QMainWindow):
         Args:
             candlestick_position: Zero-based candle to select after loading.
         """
+
         # Use the session position to retrieve the exact exchange date currently
         # selected within the inclusive GUI range.
         active_session_date = self.selected_session_dates[
@@ -575,6 +608,8 @@ class AnnotationWindow(QMainWindow):
         Args:
             regime: Bull, bear, or range choice mapped from the pressed key.
         """
+
+        # Do not overwrite an existing judgment when its saved state could not be loaded.
         if self._annotation_load_failed:
             return
 
@@ -582,7 +617,7 @@ class AnnotationWindow(QMainWindow):
         if self.is_selecting_current_regime:
             self.selected_current_regime = regime
 
-            # Clear any old future choice because changing the current regime
+            # Clear any old anticipated choice because changing the current regime
             # begins a new two-key annotation for this candle.
             self.selected_anticipated_regime = None
             self.current_regime_value.setText(
@@ -591,6 +626,7 @@ class AnnotationWindow(QMainWindow):
             self.anticipated_regime_value.setText(UNSELECTED_REGIME_TEXT)
             self.is_selecting_current_regime = False
             self._update_selection_prompt()
+
             return
 
         # The second number completes the future target for the same candle.
@@ -613,12 +649,17 @@ class AnnotationWindow(QMainWindow):
                     anticipated_regime=self.selected_anticipated_regime,
                 )
             )
+
+        # Keep the current candle selected when saving fails so the user can retry the same
+        # judgment.
         except sqlite3.Error as error:
             # Stay on this candle and keep both choices available for retry.
             self.statusBar().showMessage(
                 f"Not saved: {error}. Press the anticipated regime key to retry."
             )
+
             return
+
         self.statusBar().clearMessage()
 
         # Begin the next two-key annotation with its current-regime choice.
@@ -627,12 +668,12 @@ class AnnotationWindow(QMainWindow):
         # Reload only at the end of the complete selected range so the final
         # saved choices remain visible; every earlier candle advances normally,
         # including from one session into the next.
-        is_final_candlestick = (
-            self.active_candlestick_position >= len(self.candlestick_data) - 1
-        )
+        is_final_candlestick = self.active_candlestick_position >= len(self.candlestick_data) - 1
         is_final_session = self.active_session_position >= len(
             self.selected_session_dates
         ) - 1
+
+        # Stop after saving the final candle instead of advancing beyond the selected data.
         if is_final_candlestick and is_final_session:
             self._load_active_annotation()
         else:
@@ -640,11 +681,15 @@ class AnnotationWindow(QMainWindow):
 
     def _active_candlestick_id(self) -> str:
         """Return the stable identifier for the active candlestick."""
+
         # Use the persistent market-data identifier instead of the DataFrame's
         # replaceable row index.
         candlestick_id = self.candlestick_data.iloc[
             self.active_candlestick_position
-        ]["candlestick_id"]
+        ][
+            "candlestick_id"
+        ]
+
         return str(candlestick_id)
 
     @staticmethod
@@ -657,12 +702,15 @@ class AnnotationWindow(QMainWindow):
         Returns:
             Number and regime shown in the GUI.
         """
+
         # Show both parts so the display confirms the exact key that was chosen.
         number_key = REGIME_KEYS[regime]
+
         return f"{number_key} - {regime.value.title()}"
 
     def _load_active_annotation(self) -> None:
         """Display the saved choices for the active candlestick."""
+
         # Convert the stored ratio into a signed percentage that is easier to
         # interpret while reading the active candle's real price geometry.
         active_opening_gap = float(
@@ -676,6 +724,9 @@ class AnnotationWindow(QMainWindow):
         # when the annotation database eventually contains many sessions.
         try:
             annotation = self.annotation_store.load(self._active_candlestick_id())
+
+        # A failed read must not appear to be an unannotated candle and permit accidental
+        # overwrite.
         except (sqlite3.Error, ValueError) as error:
             # An unreadable judgment must not appear to be an unlabeled candle.
             self._annotation_load_failed = True
@@ -685,7 +736,9 @@ class AnnotationWindow(QMainWindow):
             self.anticipated_regime_value.setText("Unavailable")
             self.selection_prompt.setText("Reload this candle before annotating.")
             self.statusBar().showMessage(f"Could not load annotation: {error}")
+
             return
+
         self._annotation_load_failed = False
         self.statusBar().clearMessage()
 
@@ -701,6 +754,7 @@ class AnnotationWindow(QMainWindow):
             self.current_regime_value.setText(UNSELECTED_REGIME_TEXT)
             self.anticipated_regime_value.setText(UNSELECTED_REGIME_TEXT)
             self._update_selection_prompt()
+
             return
 
         # Restore both stored choices when revisiting an annotated candle.
@@ -716,6 +770,7 @@ class AnnotationWindow(QMainWindow):
 
     def _update_selection_prompt(self) -> None:
         """Show which scalar the next number key will fill."""
+
         # State the physical action, key meanings, save point, and automatic
         # movement so a first-time annotator can complete the workflow unaided.
         if self.is_selecting_current_regime:
@@ -729,13 +784,16 @@ class AnnotationWindow(QMainWindow):
                 "to choose the anticipated regime. This saves both choices "
                 "and moves to the next candle."
             )
+
         self.selection_prompt.setText(instruction)
 
     def move_to_next_candlestick(self) -> None:
         """Select the next candlestick when one exists."""
+
         # Move from the final candle into the next selected trading date so one
         # annotation run can continue across the complete chosen date range.
         if self.active_candlestick_position >= len(self.candlestick_data) - 1:
+            # The next-session action must stay within the selected session range.
             if self.active_session_position >= len(
                 self.selected_session_dates
             ) - 1:
@@ -743,6 +801,7 @@ class AnnotationWindow(QMainWindow):
 
             self.active_session_position += 1
             self._load_active_session(candlestick_position=0)
+
             return
 
         self.active_candlestick_position += 1
@@ -756,9 +815,11 @@ class AnnotationWindow(QMainWindow):
 
     def move_to_previous_candlestick(self) -> None:
         """Select the previous candlestick when one exists."""
+
         # Move from the opening candle to the end of the previous selected
         # session when one exists in the current date range.
         if self.active_candlestick_position <= 0:
+            # The previous-session action must not move before the first selected session.
             if self.active_session_position <= 0:
                 return
 
@@ -770,6 +831,7 @@ class AnnotationWindow(QMainWindow):
             self._load_active_session(
                 candlestick_position=previous_session_size - 1
             )
+
             return
 
         self.active_candlestick_position -= 1
@@ -782,6 +844,12 @@ class AnnotationWindow(QMainWindow):
         self._load_active_annotation()
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """Release the window's database connection on close."""
+        """Release the window's database connection on close.
+
+        Args:
+            event: Qt close event passed to the base window handler.
+        """
+
+        # Release the window-owned database connection before completing window teardown.
         self.annotation_store.close()
         super().closeEvent(event)

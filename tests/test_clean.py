@@ -4,6 +4,8 @@ from pricesanity.data.clean import filter_regular_trading_hours
 
 
 def test_filter_regular_trading_hours_respects_boundaries() -> None:
+    """Verify filter regular trading hours respects boundaries."""
+
     # Build rows immediately before, at, and after the RTH boundaries.
     candlestick_data = pd.DataFrame(
         {

@@ -63,9 +63,10 @@ def load_config(path: str | Path) -> AppConfig:
         Project configuration organized into typed sections.
 
     Raises:
-        ValueError: If the YAML structure is invalid or a required key is
-            missing.
+        ValueError: If the YAML structure is invalid or a required key is missing.
     """
+
+    # Accept path strings and Path objects through one filesystem interface.
     config_path = Path(path)
 
     # Parse the UTF-8 YAML into Python data before building the typed settings
@@ -78,6 +79,8 @@ def load_config(path: str | Path) -> AppConfig:
     if not isinstance(config_data, dict):
         raise ValueError("The configuration must be a YAML mapping.")
 
+    # Build the typed sections together so a missing setting is reported as one configuration
+    # error.
     try:
         # Copy the session settings because its weekday list must be changed
         # without altering the data produced directly by the YAML parser.
@@ -97,6 +100,8 @@ def load_config(path: str | Path) -> AppConfig:
             session=SessionConfig(**session_config_data),
             normalization=NormalizationConfig(**config_data["normalization"]),
         )
+
+    # Translate a missing dictionary key into a message that identifies the required setting.
     except KeyError as error:
         # Name the missing setting directly because a raw dictionary error
         # would not explain which part of the project configuration is invalid.

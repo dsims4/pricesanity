@@ -11,6 +11,8 @@ from pricesanity.data.pipeline import prepare_candlestick_sessions
 
 
 def test_prepare_candlestick_sessions_preserves_opening_gap_reference() -> None:
+    """Verify prepare candlestick sessions preserves opening gap reference."""
+
     # Use one complete reference date followed by one complete eligible date so
     # the second opening candle can be checked against the first session's close.
     reference_timestamps = pd.date_range(
@@ -32,25 +34,11 @@ def test_prepare_candlestick_sessions_preserves_opening_gap_reference() -> None:
     # two-percent overnight opening gap is the only price change.
     candlestick_data = pd.DataFrame(
         {
-            "ts_event": reference_timestamps.append(
-                eligible_timestamps
-            ).tz_convert("UTC"),
-            "open": (
-                [100.0] * len(reference_timestamps)
-                + [102.0] * len(eligible_timestamps)
-            ),
-            "high": (
-                [100.0] * len(reference_timestamps)
-                + [102.0] * len(eligible_timestamps)
-            ),
-            "low": (
-                [100.0] * len(reference_timestamps)
-                + [102.0] * len(eligible_timestamps)
-            ),
-            "close": (
-                [100.0] * len(reference_timestamps)
-                + [102.0] * len(eligible_timestamps)
-            ),
+            "ts_event": reference_timestamps.append(eligible_timestamps).tz_convert("UTC"),
+            "open": ([100.0] * len(reference_timestamps) + [102.0] * len(eligible_timestamps)),
+            "high": ([100.0] * len(reference_timestamps) + [102.0] * len(eligible_timestamps)),
+            "low": ([100.0] * len(reference_timestamps) + [102.0] * len(eligible_timestamps)),
+            "close": ([100.0] * len(reference_timestamps) + [102.0] * len(eligible_timestamps)),
         }
     )
 
@@ -112,67 +100,117 @@ def test_prepare_candlestick_sessions_preserves_opening_gap_reference() -> None:
     # One RTH session contains eighty-one five-minute candles, and its first
     # normalized row must preserve the two-percent move from the prior close.
     assert len(prepared_candlestick_data) == 81
-    assert prepared_candlestick_data.loc[0, "ts_event"] == pd.Timestamp(
-        "2026-01-06 14:30:00Z"
-    )
+    assert prepared_candlestick_data.loc[0, "ts_event"] == pd.Timestamp("2026-01-06 14:30:00Z")
     assert prepared_candlestick_data.loc[0, "open_gap"] == 0.02
     assert prepared_candlestick_data["body"].eq(0.0).all()
 
 
-def _prepare_reference_case(*, missing_middle_status=False, middle_rows=None,
-                            middle_condition="available", early_close=False):
+def _prepare_reference_case(
+    *,
+    missing_middle_status=False,
+    middle_rows=None,
+    middle_condition="available",
+    early_close=False,
+):
+    """Prepare three sessions with distinct closes and controlled middle-session evidence."""
+
     from pricesanity.config import load_config
     from pricesanity.data.pipeline import prepare_candlestick_session_tables
 
     dates = ["2026-09-08", "2026-09-09", "2026-09-10"]
-    prices = [100., 102., 104.]
+    prices = [100.0, 102.0, 104.0]
     frames = []
     status_rows = []
+
+    # Use distinct daily prices so opening-gap assertions reveal which preceding close was
+    # selected.
     for position, (day, price) in enumerate(zip(dates, prices, strict=True)):
-        times = pd.date_range(day + " 09:30", day + " 16:15", freq="1min",
-                              inclusive="left", tz="America/New_York").tz_convert("UTC")
-        frame = pd.DataFrame({"ts_event": times, "open": price, "high": price,
-                              "low": price, "close": price})
+        times = pd.date_range(
+            day + " 09:30", day + " 16:15", freq="1min", inclusive="left", tz="America/New_York"
+        ).tz_convert("UTC")
+        frame = pd.DataFrame(
+            {"ts_event": times, "open": price, "high": price, "low": price, "close": price}
+        )
+
+        # An after-close candle must not replace the actual closing reference of a scheduled
+        # early session.
         if early_close and position == 0:
             # Valid prices after the official close must never replace its 100 reference.
-            frame.loc[frame.ts_event >= pd.Timestamp(day + "T17:15:00Z"),
-                      ["open", "high", "low", "close"]] = 200.
+            frame.loc[
+                frame.ts_event >= pd.Timestamp(day + "T17:15:00Z"),
+                ["open", "high", "low", "close"],
+            ] = 200.0
+
+        # Vary only the middle day's available candles to test the cross-session completeness
+        # chain.
         if position == 1 and middle_rows is not None:
             frame = frame.iloc[:middle_rows]
+
         frames.append(frame)
+
+        # Retain observed prices while omitting schedule evidence so missing status breaks
+        # session trust.
         if position == 1 and missing_middle_status:
             continue
+
         close = "17:15" if early_close and position == 0 else "21:00"
-        status_rows.extend([
-            {"ts_event": day + "T13:00:00Z", "reason": "scheduled", "trading_event": "none", "is_trading": "Y"},
-            {"ts_event": day + "T" + close + ":00Z", "reason": "scheduled", "trading_event": "none", "is_trading": "N"},
-        ])
+        status_rows.extend(
+            [
+                {
+                    "ts_event": day + "T13:00:00Z",
+                    "reason": "scheduled",
+                    "trading_event": "none",
+                    "is_trading": "Y",
+                },
+                {
+                    "ts_event": day + "T" + close + ":00Z",
+                    "reason": "scheduled",
+                    "trading_event": "none",
+                    "is_trading": "N",
+                },
+            ]
+        )
+
     return prepare_candlestick_session_tables(
-        pd.concat(frames, ignore_index=True), pd.DataFrame(status_rows),
+        pd.concat(frames, ignore_index=True),
+        pd.DataFrame(status_rows),
         pd.DataFrame({"date": dates, "condition": ["available", middle_condition, "available"]}),
         config=load_config("configs/default.yaml"),
     )
 
 
 def test_missing_status_breaks_reference_chain() -> None:
+    """Verify missing status breaks reference chain."""
+
     result = _prepare_reference_case(missing_middle_status=True, middle_condition="degraded")
+
     assert result.ohlc.empty
     assert result.normalized.empty
 
 
 def test_incomplete_bars_cannot_erase_missing_session_evidence() -> None:
+    """Verify incomplete bars cannot erase missing session evidence."""
+
     result = _prepare_reference_case(missing_middle_status=True, middle_rows=1)
+
     assert result.normalized.empty
 
 
 def test_adverse_condition_breaks_chain_without_prices_or_status() -> None:
-    result = _prepare_reference_case(missing_middle_status=True, middle_rows=0,
-                                     middle_condition="degraded")
+    """Verify adverse condition breaks chain without prices or status."""
+
+    result = _prepare_reference_case(
+        missing_middle_status=True, middle_rows=0, middle_condition="degraded"
+    )
+
     assert result.normalized.empty
 
 
 def test_opening_gap_uses_official_early_close() -> None:
+    """Verify opening gap uses official early close."""
+
     result = _prepare_reference_case(early_close=True)
+
     assert len(result.ohlc) == len(result.normalized) == 162
     assert result.normalized.iloc[0].open_gap == 0.02
     assert result.ohlc.ts_event.tolist() == result.normalized.ts_event.tolist()

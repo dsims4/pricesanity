@@ -27,9 +27,11 @@ class RawCandlestick:
         """Validate raw candlestick fields.
 
         Raises:
-            ValueError: If the timestamp, instrument, or OHLC prices are
-                invalid.
+            ValueError: If the timestamp, instrument, or OHLC prices are invalid.
         """
+
+        # Canonicalize the interval during frozen-object initialization so equivalent durations
+        # share an identifier.
         object.__setattr__(self, "interval", canonical_interval(self.interval))
 
         # Reject a timestamp that cannot identify one absolute moment in time.
@@ -59,8 +61,10 @@ class RawCandlestick:
     @property
     def candlestick_id(self) -> str:
         """Return the interval-qualified string identifier."""
-        return build_candlestick_id(self.instrument, self.timestamp, self.interval)
 
+        # Use the shared builder so raw and normalized representations identify exactly the same
+        # candle.
+        return build_candlestick_id(self.instrument, self.timestamp, self.interval)
 
 
 @dataclass(frozen=True)
@@ -79,9 +83,11 @@ class NormalizedCandlestick:
         """Validate normalized candlestick fields.
 
         Raises:
-            ValueError: If the timestamp, instrument, or normalized features
-                are invalid.
+            ValueError: If the timestamp, instrument, or normalized features are invalid.
         """
+
+        # Canonicalize the interval during frozen-object initialization so equivalent durations
+        # share an identifier.
         object.__setattr__(self, "interval", canonical_interval(self.interval))
 
         # Reject a timestamp that cannot identify one absolute moment in time.
@@ -110,4 +116,7 @@ class NormalizedCandlestick:
     @property
     def candlestick_id(self) -> str:
         """Return the interval-qualified string identifier."""
+
+        # Use the shared builder so raw and normalized representations identify exactly the same
+        # candle.
         return build_candlestick_id(self.instrument, self.timestamp, self.interval)

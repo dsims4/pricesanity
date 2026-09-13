@@ -11,6 +11,8 @@ def test_build_dataset_from_exports_saves_pipeline_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verify build dataset from exports saves pipeline output."""
+
     # Use distinct marker tables so the test can verify that each loaded export
     # reaches the matching pipeline argument.
     candlestick_data = pd.DataFrame({"source": ["candlesticks"]})
@@ -50,14 +52,7 @@ def test_build_dataset_from_exports_saves_pipeline_output(
         },
     )()
 
-    # Replace already-tested loaders with marker-returning functions so this
-    # test can isolate the order and arguments used by the file workflow.
     monkeypatch.setattr(build_dataset, "load_config", lambda path: config)
-    monkeypatch.setattr(
-        build_dataset,
-        "load_ohlc_csv",
-        lambda path, timestamp_column, source_timezone: candlestick_data,
-    )
     monkeypatch.setattr(
         build_dataset,
         "load_status_csv",
@@ -74,12 +69,15 @@ def test_build_dataset_from_exports_saves_pipeline_output(
     received_pipeline_inputs: dict[str, object] = {}
 
     def fake_prepare_candlestick_session_tables(
-        received_candlestick_data: pd.DataFrame,
+        received_candlestick_data: Path,
         received_status_data: pd.DataFrame,
         received_data_conditions: pd.DataFrame,
         *,
         config: object,
+        csv_chunk_rows: int,
     ) -> PreparedCandlestickSessions:
+        """Capture the orchestration inputs and return a fixed aligned pair of prepared tables."""
+
         # Save object identities because the orchestration should pass each
         # loader's exact result directly into the preparation pipeline.
         received_pipeline_inputs.update(
@@ -90,6 +88,7 @@ def test_build_dataset_from_exports_saves_pipeline_output(
                 "config": config,
             }
         )
+
         return PreparedCandlestickSessions(
             ohlc=prepared_ohlc_data,
             normalized=prepared_candlestick_data,
@@ -97,7 +96,7 @@ def test_build_dataset_from_exports_saves_pipeline_output(
 
     monkeypatch.setattr(
         build_dataset,
-        "prepare_candlestick_session_tables",
+        "prepare_csv_session_tables",
         fake_prepare_candlestick_session_tables,
     )
 
@@ -117,7 +116,7 @@ def test_build_dataset_from_exports_saves_pipeline_output(
     # Confirm every source reached its intended argument without copying or
     # replacing the in-memory tables between the loader and pipeline.
     assert received_pipeline_inputs == {
-        "candlesticks": candlestick_data,
+        "candlesticks": tmp_path / "ohlc.csv",
         "status": status_data,
         "conditions": data_conditions,
         "config": config,
@@ -141,6 +140,8 @@ def test_build_dataset_from_exports_saves_pipeline_output(
 def test_build_dataset_from_exports_protects_existing_output(
     tmp_path: Path,
 ) -> None:
+    """Verify build dataset from exports protects existing output."""
+
     # Create an existing processed artifact whose replacement was not approved.
     output_path = tmp_path / "candlesticks.parquet"
     output_path.write_bytes(b"existing dataset")
@@ -163,6 +164,8 @@ def test_build_dataset_from_exports_protects_existing_output(
 def test_build_dataset_from_exports_requires_parquet_output(
     tmp_path: Path,
 ) -> None:
+    """Verify build dataset from exports requires parquet output."""
+
     # Use a CSV destination that would discard parts of the processed schema.
     output_path = tmp_path / "candlesticks.csv"
 
@@ -183,23 +186,44 @@ def test_build_dataset_from_exports_requires_parquet_output(
 def test_artifact_pair_is_staged_before_publication(
     tmp_path, monkeypatch, failed_write, existing_outputs
 ):
+    """Verify artifact pair is staged before publication."""
+
     prepared = PreparedCandlestickSessions(
-        ohlc=pd.DataFrame({"open": [100.]}),
+        ohlc=pd.DataFrame({"open": [100.0]}),
         normalized=pd.DataFrame({"open_gap": [0.01]}),
     )
-    monkeypatch.setattr(build_dataset, "load_ohlc_csv", lambda *a, **k: pd.DataFrame())
-    monkeypatch.setattr(build_dataset, "load_status_csv", lambda *a, **k: pd.DataFrame())
-    monkeypatch.setattr(build_dataset, "load_dataset_conditions_json", lambda *a: pd.DataFrame())
-    monkeypatch.setattr(build_dataset, "prepare_candlestick_session_tables", lambda *a, **k: prepared)
+    monkeypatch.setattr(
+        build_dataset, "load_status_csv", lambda *arguments, **keyword_arguments: pd.DataFrame()
+    )
+    monkeypatch.setattr(
+        build_dataset, "load_dataset_conditions_json", lambda *arguments: pd.DataFrame()
+    )
+    monkeypatch.setattr(
+        build_dataset,
+        "prepare_csv_session_tables",
+        lambda *arguments, **keyword_arguments: prepared,
+    )
     output = tmp_path / "processed" / "data.parquet"
     interim = tmp_path / "interim" / "data.parquet"
+
+    # Apply the same initial-state scenario to both outputs because they must remain an aligned
+    # pair.
     for path in (output, interim):
         path.parent.mkdir()
+
+        # Existing outputs let the test distinguish preservation from simply removing incomplete
+        # new files.
         if existing_outputs:
             path.write_bytes(b"original")
 
     def assert_unpublished():
+        """Check that neither final destination changes before both staging writes finish."""
+
+        # Check both destinations before publication so the second write cannot expose a mixed
+        # output pair.
         for path in (output, interim):
+            # Previously saved bytes must remain unchanged while either replacement is still
+            # being staged.
             if existing_outputs:
                 assert path.read_bytes() == b"original"
             else:
@@ -209,30 +233,48 @@ def test_artifact_pair_is_staged_before_publication(
     write_count = 0
 
     def write(table, path, **kwargs):
+        """Observe each staging write and optionally inject a partial-file disk failure."""
+
         nonlocal write_count
         write_count += 1
         assert_unpublished()
+
         assert Path(path).parent.parent in (output.parent, interim.parent)
+
+        # Fail the selected staging write to verify that neither destination is published
+        # prematurely.
         if write_count == failed_write:
             Path(path).write_bytes(b"partial")
             raise OSError("simulated disk failure")
+
         return original_write(table, path, **kwargs)
 
     monkeypatch.setattr(pd.DataFrame, "to_parquet", write)
 
     def build():
+        """Run preparation against the same protected destinations for each staging outcome."""
+
         return build_dataset.build_dataset_from_exports(
-            tmp_path / "source.csv", tmp_path / "status.csv", tmp_path / "conditions.json",
-            output, config_path="configs/default.yaml", interim_output_path=interim,
+            tmp_path / "source.csv",
+            tmp_path / "status.csv",
+            tmp_path / "conditions.json",
+            output,
+            config_path="configs/default.yaml",
+            interim_output_path=interim,
             overwrite=existing_outputs,
         )
 
+    # Exercise failed staging and successful publication through the same deterministic setup.
     if failed_write is not None:
+        # The staging failure must propagate while preserving the original state of both
+        # destinations.
         with pytest.raises(OSError, match="simulated disk failure"):
             build()
+
         assert_unpublished()
     else:
         assert build() is prepared.normalized
         pd.testing.assert_frame_equal(pd.read_parquet(output), prepared.normalized)
         pd.testing.assert_frame_equal(pd.read_parquet(interim), prepared.ohlc)
+
     assert not list(tmp_path.rglob(".pricesanity-*"))

@@ -24,13 +24,15 @@ def normalize_candlestick(
         The current candlestick as normalized OHLC geometry.
 
     Raises:
-        ValueError: If instruments or intervals differ, timestamps are out of order, or
-            the previous close is zero.
+        ValueError: If instruments or intervals differ, timestamps are out of order, or the
+            previous close is zero.
     """
+
     # Require one instrument so both candlesticks share the same price scale.
     if previous_candlestick.instrument != current_candlestick.instrument:
         raise ValueError("Candlesticks must belong to the same instrument.")
 
+    # Candles with different durations must not share a normalization reference.
     if previous_candlestick.interval != current_candlestick.interval:
         raise ValueError("Candlesticks must use the same interval.")
 
@@ -53,16 +55,20 @@ def normalize_candlestick(
         timestamp=current_candlestick.timestamp,
         instrument=current_candlestick.instrument,
         interval=current_candlestick.interval,
+
         # Preserve the overnight move by measuring open from previous close.
         open_gap=(current_candlestick.open - previous_close) / previous_close,
+
         # Preserve candle direction by measuring the signed open-to-close body.
         body=(
             current_candlestick.close - current_candlestick.open
         ) / previous_close,
+
         # Preserve upper price geometry by measuring high from current close.
         high_from_close=(
             current_candlestick.high - current_candlestick.close
         ) / previous_close,
+
         # Preserve lower price geometry by measuring low from current close.
         low_from_close=(
             current_candlestick.low - current_candlestick.close
@@ -84,13 +90,14 @@ def normalize_candlestick_data(
         instrument: Instrument shared by every candlestick.
 
     Returns:
-        Timestamps, instrument names, and normalized OHLC geometry for every
-        candlestick that has a previous close.
+        Timestamps, instrument names, and normalized OHLC geometry for every candlestick that
+            has a previous close.
 
     Raises:
-        ValueError: If required fields, timestamps, prices, ordering, the
-            instrument, or previous closes are invalid.
+        ValueError: If required fields, timestamps, prices, ordering, the instrument, or
+            previous closes are invalid.
     """
+
     # Each output candle needs its timestamp and complete OHLC geometry before
     # it can be measured against the preceding close.
     required_candlestick_columns = (
@@ -147,9 +154,7 @@ def normalize_candlestick_data(
 
     # Store timestamps in UTC so session filtering and annotation alignment use
     # the same absolute time representation.
-    parsed_candlestick_data[timestamp_column] = (
-        parsed_timestamps.dt.tz_convert("UTC")
-    )
+    parsed_candlestick_data[timestamp_column] = parsed_timestamps.dt.tz_convert("UTC")
 
     # Convert all OHLC fields to numbers so text or malformed prices cannot
     # produce misleading normalized ratios.
@@ -164,6 +169,8 @@ def normalize_candlestick_data(
     has_only_finite_prices = np.isfinite(
         parsed_candlestick_data[list(REQUIRED_OHLC_COLUMNS)].to_numpy(dtype=float)
     ).all()
+
+    # Relative geometry cannot be calculated from infinite or missing prices.
     if not has_only_finite_prices:
         raise ValueError("OHLC prices must be finite numbers.")
 
@@ -184,6 +191,8 @@ def normalize_candlestick_data(
     has_invalid_high = parsed_candlestick_data["high"] < (
         parsed_candlestick_data[["open", "close"]].max(axis="columns")
     )
+
+    # A candle high must enclose both its opening and closing prices.
     if has_invalid_high.any():
         raise ValueError("High cannot be below the open or close.")
 
@@ -192,6 +201,8 @@ def normalize_candlestick_data(
     has_invalid_low = parsed_candlestick_data["low"] > (
         parsed_candlestick_data[["open", "close"]].min(axis="columns")
     )
+
+    # A candle low must enclose both its opening and closing prices.
     if has_invalid_low.any():
         raise ValueError("Low cannot be above the open or close.")
 
@@ -221,23 +232,28 @@ def normalize_candlestick_data(
         {
             timestamp_column: current_candlestick_data[timestamp_column],
             "instrument": instrument,
+
             # Measure the opening move from the preceding close so the first
             # candle of a session preserves its overnight gap.
             "open_gap": (
                 current_candlestick_data["open"] - previous_closes
             ) / previous_closes,
+
             # Measure the signed body on the same scale so positive and negative
             # values preserve bullish and bearish candle direction.
             "body": (
                 current_candlestick_data["close"]
                 - current_candlestick_data["open"]
             ) / previous_closes,
+
             # Measure the high above or below the current close to preserve the
             # candle's upper price geometry.
             "high_from_close": (
                 current_candlestick_data["high"]
                 - current_candlestick_data["close"]
-            ) / previous_closes,
+            )
+            / previous_closes,
+
             # Measure the low from the current close on the same scale to
             # preserve the candle's lower price geometry.
             "low_from_close": (

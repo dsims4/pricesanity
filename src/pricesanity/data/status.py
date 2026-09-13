@@ -5,7 +5,6 @@ from datetime import date, time
 import pandas as pd
 from pandas.api.types import is_bool_dtype
 
-
 # Schedule construction needs only the normalized trading state because
 # extraction has already removed unrelated Databento status events.
 REQUIRED_STATUS_COLUMNS = ("is_trading",)
@@ -39,13 +38,12 @@ def build_session_schedule(
         session_end_time: Latest configured RTH time.
 
     Returns:
-        Session date, open time, close time, and data condition for each
-        trading date.
+        Session date, open time, close time, and data condition for each trading date.
 
     Raises:
-        ValueError: If required fields, timestamps, conditions, or session
-            settings are invalid.
+        ValueError: If required fields, timestamps, conditions, or session settings are invalid.
     """
+
     # The timestamp places a transition on a trading date, while its boolean
     # state identifies whether that transition closes the session.
     required_status_columns = (
@@ -160,7 +158,9 @@ def build_session_schedule(
     # to the session timezone before deciding which trading date it ends.
     session_close_timestamps = scheduled_close_data[
         timestamp_column
-    ].dt.tz_convert(session_timezone)
+    ].dt.tz_convert(
+        session_timezone
+    )
 
     # Store the local closing date so all transitions belonging to the same
     # trading session can be considered together.
@@ -195,9 +195,17 @@ def build_session_schedule(
             parsed_session_end_time,
         ).tz_localize(session_timezone)
 
-        # The earliest scheduled close ends the eligible session; later closes
-        # may belong to trading outside the chosen RTH window.
-        scheduled_session_close = daily_close_data[timestamp_column].min()
+        # Databento records the exchange status message a few milliseconds
+        # after its scheduled minute. Floor that transport-level offset so the
+        # boundary matches the minute-aligned OHLC candles being validated.
+        scheduled_close_value = daily_close_data[timestamp_column].min()
+
+        # The closing boundary must be a valid timestamp before it can be aligned to the candle
+        # grid.
+        if not isinstance(scheduled_close_value, pd.Timestamp):
+            raise ValueError("Status data contains an invalid session close.")
+
+        scheduled_session_close = scheduled_close_value.floor("min")
 
         # Choose whichever close occurs first so normal sessions stop at the
         # configured RTH end while official half-days retain their early close.
@@ -255,9 +263,9 @@ def extract_session_transitions(
         UTC timestamps and boolean trading states for scheduled changes.
 
     Raises:
-        ValueError: If required fields, timestamps, or trading states are
-            invalid.
+        ValueError: If required fields, timestamps, or trading states are invalid.
     """
+
     # The timestamp locates each status change, while the Databento fields
     # determine whether that change represents a scheduled session transition.
     required_status_columns = (
@@ -313,9 +321,7 @@ def extract_session_transitions(
     # Databento repeats the current state at midnight so requests crossing UTC
     # dates still know the active state. These snapshots are not new session
     # transitions and must be removed before comparing changes.
-    is_not_midnight_snapshot = (
-        extracted_status_data[timestamp_column].dt.time != time.min
-    )
+    is_not_midnight_snapshot = extracted_status_data[timestamp_column].dt.time != time.min
     extracted_status_data = extracted_status_data.loc[
         is_not_midnight_snapshot
     ].copy()
@@ -323,12 +329,22 @@ def extract_session_transitions(
     # Databento may provide reason and event codes as enum objects, names, or
     # numbers. Converting each form to lowercase text gives the filters below
     # one consistent representation.
-    normalized_reasons = extracted_status_data["reason"].map(
+    normalized_reasons = (
+        extracted_status_data["reason"].map(
         lambda value: getattr(value, "name", value)
-    ).astype(str).str.strip().str.lower()
-    normalized_trading_events = extracted_status_data["trading_event"].map(
+    )
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+    normalized_trading_events = (
+        extracted_status_data["trading_event"].map(
         lambda value: getattr(value, "name", value)
-    ).astype(str).str.strip().str.lower()
+    )
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
 
     # Only scheduled changes describe normal session boundaries. Unscheduled
     # changes, such as operational halts, must not shorten a planned session.

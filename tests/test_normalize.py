@@ -11,6 +11,8 @@ from pricesanity.data.schemas import RawCandlestick
 
 
 def test_normalize_candlestick_calculates_relative_geometry() -> None:
+    """Verify normalize candlestick calculates relative geometry."""
+
     # Create the earlier candlestick that supplies the reference close.
     previous_candlestick = RawCandlestick(
         timestamp=datetime(2026, 9, 9, 13, 30, tzinfo=timezone.utc),
@@ -45,6 +47,8 @@ def test_normalize_candlestick_calculates_relative_geometry() -> None:
 
 
 def test_normalize_candlestick_rejects_reversed_order() -> None:
+    """Verify normalize candlestick rejects reversed order."""
+
     # Create a supposed previous candlestick with the later timestamp.
     previous_candlestick = RawCandlestick(
         timestamp=datetime(2026, 9, 9, 13, 35, tzinfo=timezone.utc),
@@ -71,6 +75,8 @@ def test_normalize_candlestick_rejects_reversed_order() -> None:
 
 
 def test_normalize_candlestick_data_preserves_causal_alignment() -> None:
+    """Verify normalize candlestick data preserves causal alignment."""
+
     # Use three simple candles so each expected ratio can be traced to the close
     # in the row immediately before it.
     candlestick_data = pd.DataFrame(
@@ -103,12 +109,8 @@ def test_normalize_candlestick_data_preserves_causal_alignment() -> None:
         candlestick_data["ts_event"].iloc[1:].tolist()
     )
     assert normalized_candlestick_data["instrument"].tolist() == ["ES", "ES"]
-    assert normalized_candlestick_data["open_gap"].tolist() == pytest.approx(
-        [0.02, 0.0]
-    )
-    assert normalized_candlestick_data["body"].tolist() == pytest.approx(
-        [0.02, 4.0 / 104.0]
-    )
+    assert normalized_candlestick_data["open_gap"].tolist() == pytest.approx([0.02, 0.0])
+    assert normalized_candlestick_data["body"].tolist() == pytest.approx([0.02, 4.0 / 104.0])
     assert normalized_candlestick_data["high_from_close"].tolist() == (
         pytest.approx([0.02, 1.0 / 104.0])
     )
@@ -122,13 +124,13 @@ def test_normalize_candlestick_data_preserves_causal_alignment() -> None:
 
 
 def test_normalize_candlestick_data_rejects_naive_timestamps() -> None:
+    """Verify normalize candlestick data rejects naive timestamps."""
+
     # Naive timestamps cannot prove the absolute order needed for causal
     # previous-close references.
     candlestick_data = pd.DataFrame(
         {
-            "ts_event": pd.to_datetime(
-                ["2026-09-09 09:30:00", "2026-09-09 09:35:00"]
-            ),
+            "ts_event": pd.to_datetime(["2026-09-09 09:30:00", "2026-09-09 09:35:00"]),
             "open": [100.0, 101.0],
             "high": [102.0, 103.0],
             "low": [99.0, 100.0],
@@ -146,6 +148,8 @@ def test_normalize_candlestick_data_rejects_naive_timestamps() -> None:
 
 
 def test_normalize_candlestick_data_rejects_zero_previous_close() -> None:
+    """Verify normalize candlestick data rejects zero previous close."""
+
     # A zero close in the first row becomes an undefined denominator for the
     # next candle's relative geometry.
     candlestick_data = pd.DataFrame(

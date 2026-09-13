@@ -12,6 +12,7 @@ def resample_ohlc(
     source_interval: str,
     target_interval: str,
     require_complete_candlesticks: bool,
+    origin: str | pd.Timestamp = "start_day",
 ) -> pd.DataFrame:
     """Resample OHLC candlestick data to a larger interval.
 
@@ -21,14 +22,15 @@ def resample_ohlc(
         source_interval: Current candlestick interval.
         target_interval: Desired candlestick interval.
         require_complete_candlesticks: Whether to discard incomplete results.
+        origin: Shared bin alignment for eager or incremental aggregation.
 
     Returns:
         Resampled OHLC candlestick data labeled by interval start.
 
     Raises:
-        ValueError: If the target interval is not a whole multiple of the
-            source interval.
+        ValueError: If the target interval is not a whole multiple of the source interval.
     """
+
     # Convert the source interval string into a "pandas" duration for interval
     # arithmetic.
     source_duration = pd.Timedelta(source_interval)
@@ -62,7 +64,7 @@ def resample_ohlc(
         target_interval,
         closed="left",
         label="left",
-        origin="start_day",
+        origin=origin,
     )
 
     # Combine each group into a new candle using its first open, highest high,
@@ -89,9 +91,7 @@ def resample_ohlc(
     if require_complete_candlesticks:
         # Compare each group count with the expected count to mark complete
         # resampled candles.
-        is_complete_candlestick = (
-            source_candlestick_counts == expected_source_candlesticks
-        )
+        is_complete_candlestick = source_candlestick_counts == expected_source_candlesticks
 
         # Use the completeness mask to remove partial target candles.
         resampled_candlestick_data = resampled_candlestick_data.loc[

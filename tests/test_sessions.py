@@ -5,6 +5,8 @@ from pricesanity.data.sessions import filter_complete_sessions
 
 
 def test_filter_complete_sessions_keeps_regular_and_half_sessions() -> None:
+    """Verify filter complete sessions keeps regular and half sessions."""
+
     # Generate a complete earlier session whose close provides the first
     # retained session with a trustworthy normalization reference.
     reference_session_timestamps = pd.date_range(
@@ -37,9 +39,9 @@ def test_filter_complete_sessions_keeps_regular_and_half_sessions() -> None:
     # candlestick dataset.
     candlestick_data = pd.DataFrame(
         {
-            "ts_event": reference_session_timestamps.append(
-                regular_session_timestamps
-            ).append(half_session_timestamps).tz_convert("UTC"),
+            "ts_event": reference_session_timestamps.append(regular_session_timestamps)
+            .append(half_session_timestamps)
+            .tz_convert("UTC"),
             "session_marker": (
                 ["reference"] * len(reference_session_timestamps)
                 + ["regular"] * len(regular_session_timestamps)
@@ -92,6 +94,8 @@ def test_filter_complete_sessions_keeps_regular_and_half_sessions() -> None:
 
 
 def test_filter_complete_sessions_discards_incomplete_and_degraded() -> None:
+    """Verify filter complete sessions discards incomplete and degraded."""
+
     # Remove the final timestamp from an otherwise normal scheduled session.
     incomplete_session_timestamps = pd.date_range(
         "2026-09-11 09:30:00",
@@ -157,6 +161,8 @@ def test_filter_complete_sessions_discards_incomplete_and_degraded() -> None:
 
 
 def test_filter_complete_sessions_rejects_misaligned_boundaries() -> None:
+    """Verify filter complete sessions rejects misaligned boundaries."""
+
     # Create one valid timestamp so input validation reaches the schedule check.
     candlestick_data = pd.DataFrame(
         {
@@ -193,11 +199,11 @@ def test_filter_complete_sessions_rejects_misaligned_boundaries() -> None:
 
 
 def test_filter_complete_sessions_requires_trustworthy_predecessor() -> None:
+    """Verify filter complete sessions requires trustworthy predecessor."""
+
     # Give four complete dates different quality roles so the test can separate
     # a session's own trustworthiness from its eligibility as model input.
-    session_dates = pd.to_datetime(
-        ["2026-09-08", "2026-09-09", "2026-09-10", "2026-09-11"]
-    )
+    session_dates = pd.to_datetime(["2026-09-08", "2026-09-09", "2026-09-10", "2026-09-11"])
     session_timestamps = [
         pd.date_range(
             date + pd.Timedelta(hours=9, minutes=30),
@@ -235,12 +241,9 @@ def test_filter_complete_sessions_requires_trustworthy_predecessor() -> None:
     # complete.
     session_schedule = pd.DataFrame(
         {
-            "session_open": [
-                timestamps[0] for timestamps in session_timestamps
-            ],
+            "session_open": [timestamps[0] for timestamps in session_timestamps],
             "session_close": [
-                timestamps[-1] + pd.Timedelta(minutes=5)
-                for timestamps in session_timestamps
+                timestamps[-1] + pd.Timedelta(minutes=5) for timestamps in session_timestamps
             ],
             "data_condition": [
                 "available",
@@ -262,6 +265,4 @@ def test_filter_complete_sessions_requires_trustworthy_predecessor() -> None:
 
     # The recovery date repairs the causal reference chain but cannot use the
     # degraded close itself; only the following date becomes eligible.
-    assert complete_session_data["session_marker"].unique().tolist() == [
-        "eligible"
-    ]
+    assert complete_session_data["session_marker"].unique().tolist() == ["eligible"]

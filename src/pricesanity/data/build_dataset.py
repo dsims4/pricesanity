@@ -11,10 +11,9 @@ import pandas as pd
 from pricesanity.config import load_config
 from pricesanity.data.databento_ingest import (
     load_dataset_conditions_json,
-    load_ohlc_csv,
     load_status_csv,
 )
-from pricesanity.data.pipeline import prepare_candlestick_session_tables
+from pricesanity.data.pipeline import prepare_csv_session_tables
 
 
 def build_dataset_from_exports(
@@ -26,6 +25,7 @@ def build_dataset_from_exports(
     config_path: str | Path,
     interim_output_path: str | Path,
     overwrite: bool = False,
+    csv_chunk_rows: int = 100_000,
 ) -> pd.DataFrame:
     """Prepare and save model-ready data from Databento export files.
 
@@ -37,6 +37,7 @@ def build_dataset_from_exports(
         config_path: Path to the project configuration file.
         interim_output_path: Path for validated 5-minute OHLC data.
         overwrite: Whether an existing output file may be replaced.
+        csv_chunk_rows: Maximum source rows per pandas read.
 
     Returns:
         The model-ready candlestick data saved to the output file.
@@ -45,6 +46,7 @@ def build_dataset_from_exports(
         FileExistsError: If the output exists and overwrite is false.
         ValueError: If the output path is invalid or matches an input path.
     """
+
     # Convert every path once so validation, loading, and saving all refer to
     # the same filesystem representations.
     candlestick_csv_path = Path(candlestick_csv_path)
@@ -87,6 +89,8 @@ def build_dataset_from_exports(
     # interim artifact from replacing any raw input or configuration file.
     if resolved_interim_output_path in resolved_input_paths:
         raise ValueError("The interim output path cannot match an input path.")
+
+    # Raw geometry and normalized features must not overwrite the same destination.
     if resolved_interim_output_path == resolved_output_path:
         raise ValueError("The interim and processed outputs must differ.")
 
@@ -109,14 +113,6 @@ def build_dataset_from_exports(
     # timezone, intervals, and session boundaries control every later stage.
     config = load_config(config_path)
 
-    # Read only chronological OHLC values because volume and unrelated vendor
-    # metadata are outside the model's price-action representation.
-    candlestick_data = load_ohlc_csv(
-        candlestick_csv_path,
-        timestamp_column=config.data.timestamp_column,
-        source_timezone=config.data.source_timezone,
-    )
-
     # Preserve the raw scheduled-state evidence needed to discover each date's
     # official session close, including early closes.
     status_data = load_status_csv(
@@ -130,11 +126,12 @@ def build_dataset_from_exports(
 
     # Apply the established filtering, resampling, schedule validation, and
     # causal price normalization in one shared pipeline.
-    prepared_sessions = prepare_candlestick_session_tables(
-        candlestick_data,
+    prepared_sessions = prepare_csv_session_tables(
+        candlestick_csv_path,
         status_data,
         data_conditions,
         config=config,
+        csv_chunk_rows=csv_chunk_rows,
     )
 
     # Stage on each destination's filesystem so its final replacement is atomic.
@@ -143,25 +140,38 @@ def build_dataset_from_exports(
         (prepared_sessions.normalized, output_path),
         (prepared_sessions.ohlc, interim_output_path),
     )
+
+    # Keep all staging directories alive until both outputs have been written and validated for
+    # publication.
     with ExitStack() as staging:
         staged_paths = []
+
+        # Stage each representation beside its destination so each final replacement remains
+        # atomic.
         for table, destination in artifacts:
             destination.parent.mkdir(parents=True, exist_ok=True)
-            directory = staging.enter_context(TemporaryDirectory(
+            directory = staging.enter_context(
+                TemporaryDirectory(
                 prefix=".pricesanity-", dir=destination.parent
-            ))
+            )
+            )
             temporary_path = Path(directory) / destination.name
             table.to_parquet(temporary_path, index=False)
             staged_paths.append((temporary_path, destination))
 
         # Recheck before publication in case an output appeared during staging.
         if not overwrite:
+            # Check both destinations again because a file may have appeared while the tables
+            # were being written.
             for _, destination in staged_paths:
+                # Honor overwrite protection even if another operation created a file during
+                # staging.
                 if destination.exists():
                     raise FileExistsError(
                         f"Output already exists: {destination}. "
                         "Use --overwrite to replace it."
                     )
+
         # These replacements are individually atomic, not a transaction across
         # both files. A failure here can still leave a partially published pair.
         for temporary_path, destination in staged_paths:
@@ -178,6 +188,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     Returns:
         Parser describing every required input and output path.
     """
+
     # Keep command-line definitions in a separate function so tests and future
     # interfaces can inspect them without executing dataset preparation.
     argument_parser = argparse.ArgumentParser(
@@ -242,8 +253,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Replace the output file if it already exists.",
     )
 
-    # Return the completed parser so command execution remains a small wrapper
-    # around the reusable Python function.
+    argument_parser.add_argument(
+        "--csv-chunk-rows",
+        type=int,
+        default=100_000,
+        help="One-minute CSV rows per read before aggregation (default: 100000).",
+    )
+
     return argument_parser
 
 
@@ -256,6 +272,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     Returns:
         Zero after the processed dataset is saved successfully.
     """
+
     # Parse terminal input through one declared interface so missing or unknown
     # options receive consistent usage errors.
     parsed_arguments = build_argument_parser().parse_args(arguments)
@@ -270,6 +287,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         config_path=parsed_arguments.config,
         interim_output_path=parsed_arguments.interim_output,
         overwrite=parsed_arguments.overwrite,
+        csv_chunk_rows=parsed_arguments.csv_chunk_rows,
     )
 
     # Report the exact artifact and row count so a terminal run gives immediate
@@ -287,6 +305,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     return 0
 
 
+# Only direct execution should begin dataset preparation.
 if __name__ == "__main__":
     # Support direct module execution while the installed console command uses
     # the same main function through the project metadata.

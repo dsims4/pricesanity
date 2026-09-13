@@ -32,6 +32,7 @@ class CandlestickAnnotation:
         Raises:
             ValueError: If the candlestick identifier is empty.
         """
+
         # An annotation without a candle identifier could not be aligned
         # with its candlestick during training or chart replay.
         if not self.candlestick_id.strip():

@@ -8,6 +8,8 @@ from pricesanity.data.status import (
 
 
 def test_extract_session_transitions_keeps_scheduled_state_changes() -> None:
+    """Verify extract session transitions keeps scheduled state changes."""
+
     # Mix valid boundaries with a midnight snapshot, a repeated state, an
     # unscheduled halt, and an unrelated trading event.
     status_data = pd.DataFrame(
@@ -50,6 +52,8 @@ def test_extract_session_transitions_keeps_scheduled_state_changes() -> None:
 
 
 def test_extract_session_transitions_rejects_unknown_trading_state() -> None:
+    """Verify extract session transitions rejects unknown trading state."""
+
     # An unknown state cannot prove which side of a session boundary is active.
     status_data = pd.DataFrame(
         {
@@ -69,6 +73,8 @@ def test_extract_session_transitions_rejects_unknown_trading_state() -> None:
 
 
 def test_build_session_schedule_preserves_scheduled_early_close() -> None:
+    """Verify build session schedule preserves scheduled early close."""
+
     # Reproduce scheduled ES trading-state changes around Christmas Eve 2024.
     scheduled_status_data = pd.DataFrame(
         {
@@ -120,19 +126,46 @@ def test_build_session_schedule_preserves_scheduled_early_close() -> None:
     )
 
     # Clip the regular close to 16:15 while retaining the scheduled early close.
-    assert session_schedule["session_open"].tolist() == list(
-        expected_session_opens
-    )
-    assert session_schedule["session_close"].tolist() == list(
-        expected_session_closes
-    )
+    assert session_schedule["session_open"].tolist() == list(expected_session_opens)
+    assert session_schedule["session_close"].tolist() == list(expected_session_closes)
     assert session_schedule["data_condition"].tolist() == [
         "available",
         "available",
     ]
 
 
+def test_build_session_schedule_removes_status_delivery_offset() -> None:
+    """Verify build session schedule removes status delivery offset."""
+
+    # Real status events can arrive milliseconds after the scheduled boundary,
+    # while the OHLC candles remain aligned to exact minutes.
+    scheduled_status_data = pd.DataFrame(
+        {
+            "ts_event": pd.to_datetime(
+                ["2015-11-27 18:15:00.004557838Z"],
+                utc=True,
+            ),
+            "is_trading": [False],
+        }
+    )
+    data_conditions = pd.DataFrame({"date": ["2015-11-27"], "condition": ["available"]})
+
+    session_schedule = build_session_schedule(
+        scheduled_status_data,
+        data_conditions,
+        timestamp_column="ts_event",
+        session_timezone="America/New_York",
+        session_start_time="09:30",
+        session_end_time="16:15",
+    )
+
+    # Use the scheduled minute rather than creating a partial five-minute bar.
+    assert session_schedule.loc[0, "session_close"] == pd.Timestamp("2015-11-27 18:15:00Z")
+
+
 def test_build_session_schedule_preserves_degraded_condition() -> None:
+    """Verify build session schedule preserves degraded condition."""
+
     # Create one scheduled close for a normal trading date.
     scheduled_status_data = pd.DataFrame(
         {
@@ -167,6 +200,8 @@ def test_build_session_schedule_preserves_degraded_condition() -> None:
 
 
 def test_build_session_schedule_omits_close_before_rth() -> None:
+    """Verify build session schedule omits close before rth."""
+
     # Create a scheduled market close that occurs before the configured RTH open.
     scheduled_status_data = pd.DataFrame(
         {
@@ -201,6 +236,8 @@ def test_build_session_schedule_omits_close_before_rth() -> None:
 
 
 def test_build_session_schedule_rejects_nonboolean_trading_state() -> None:
+    """Verify build session schedule rejects nonboolean trading state."""
+
     # Create an unnormalized Databento trading-state value.
     scheduled_status_data = pd.DataFrame(
         {

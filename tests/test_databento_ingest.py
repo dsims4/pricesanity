@@ -12,6 +12,8 @@ from pricesanity.data.databento_ingest import (
 def test_load_ohlc_csv_loads_ohlc_and_converts_to_utc(
     tmp_path: Path,
 ) -> None:
+    """Verify load OHLC CSV loads OHLC and converts to UTC."""
+
     # Create a vendor-style CSV with naive New York times and unused volume.
     csv_path = tmp_path / "sample.csv"
     csv_path.write_text(
@@ -38,9 +40,7 @@ def test_load_ohlc_csv_loads_ohlc_and_converts_to_utc(
     assert len(candlestick_data) == 2
 
     # Verify timestamps became UTC and numeric prices retained their values.
-    assert candlestick_data.loc[0, "ts_event"].isoformat() == (
-        "2026-09-09T13:30:00+00:00"
-    )
+    assert candlestick_data.loc[0, "ts_event"].isoformat() == ("2026-09-09T13:30:00+00:00")
     assert candlestick_data.loc[0, "open"] == 6500
 
     # Confirm that volume does not enter this price-only pipeline.
@@ -50,6 +50,8 @@ def test_load_ohlc_csv_loads_ohlc_and_converts_to_utc(
 def test_load_ohlc_csv_rejects_duplicate_timestamps(
     tmp_path: Path,
 ) -> None:
+    """Verify load OHLC CSV rejects duplicate timestamps."""
+
     # Create two candlesticks with the same timestamp.
     csv_path = tmp_path / "duplicate.csv"
     csv_path.write_text(
@@ -70,11 +72,12 @@ def test_load_ohlc_csv_rejects_duplicate_timestamps(
 def test_load_ohlc_csv_rejects_missing_required_column(
     tmp_path: Path,
 ) -> None:
+    """Verify load OHLC CSV rejects missing required column."""
+
     # Create a CSV without the required close column.
     csv_path = tmp_path / "missing_close.csv"
     csv_path.write_text(
-        "ts_event,open,high,low\n"
-        "2026-09-09 09:30:00,6500,6502,6498\n",
+        "ts_event,open,high,low\n" "2026-09-09 09:30:00,6500,6502,6498\n",
         encoding="utf-8",
     )
 
@@ -89,11 +92,12 @@ def test_load_ohlc_csv_rejects_missing_required_column(
 def test_load_ohlc_csv_rejects_invalid_timestamp(
     tmp_path: Path,
 ) -> None:
+    """Verify load OHLC CSV rejects invalid timestamp."""
+
     # Create a CSV containing timestamp text that "pandas" cannot parse.
     csv_path = tmp_path / "invalid_timestamp.csv"
     csv_path.write_text(
-        "ts_event,open,high,low,close\n"
-        "not-a-timestamp,6500,6502,6498,6501\n",
+        "ts_event,open,high,low,close\n" "not-a-timestamp,6500,6502,6498,6501\n",
         encoding="utf-8",
     )
 
@@ -108,6 +112,8 @@ def test_load_ohlc_csv_rejects_invalid_timestamp(
 def test_load_ohlc_csv_rejects_nonchronological_rows(
     tmp_path: Path,
 ) -> None:
+    """Verify load OHLC CSV rejects nonchronological rows."""
+
     # Create valid candlesticks arranged in reverse chronological order.
     csv_path = tmp_path / "nonchronological.csv"
     csv_path.write_text(
@@ -128,11 +134,12 @@ def test_load_ohlc_csv_rejects_nonchronological_rows(
 def test_load_ohlc_csv_rejects_invalid_price(
     tmp_path: Path,
 ) -> None:
+    """Verify load OHLC CSV rejects invalid price."""
+
     # Create a CSV containing a non-numeric high price.
     csv_path = tmp_path / "invalid_price.csv"
     csv_path.write_text(
-        "ts_event,open,high,low,close\n"
-        "2026-09-09 09:30:00,6500,not-a-price,6498,6501\n",
+        "ts_event,open,high,low,close\n" "2026-09-09 09:30:00,6500,not-a-price,6498,6501\n",
         encoding="utf-8",
     )
 
@@ -145,6 +152,8 @@ def test_load_ohlc_csv_rejects_invalid_price(
 
 
 def test_load_status_csv_keeps_transition_fields(tmp_path: Path) -> None:
+    """Verify load status CSV keeps transition fields."""
+
     # Create a vendor-style status export with one field the pipeline does not
     # need after downloading the data.
     csv_path = tmp_path / "status.csv"
@@ -172,12 +181,13 @@ def test_load_status_csv_keeps_transition_fields(tmp_path: Path) -> None:
 def test_load_status_csv_rejects_missing_required_field(
     tmp_path: Path,
 ) -> None:
+    """Verify load status CSV rejects missing required field."""
+
     # Omit the reason because the remaining values cannot prove that a status
     # transition was scheduled.
     csv_path = tmp_path / "status_missing_reason.csv"
     csv_path.write_text(
-        "ts_event,trading_event,is_trading\n"
-        "2026-09-09T13:30:00Z,none,Y\n",
+        "ts_event,trading_event,is_trading\n" "2026-09-09T13:30:00Z,none,Y\n",
         encoding="utf-8",
     )
 
@@ -189,6 +199,8 @@ def test_load_status_csv_rejects_missing_required_field(
 def test_load_dataset_conditions_json_keeps_daily_quality_fields(
     tmp_path: Path,
 ) -> None:
+    """Verify load dataset conditions json keeps daily quality fields."""
+
     # Reproduce Databento's list of daily condition records, including delivery
     # metadata that the model pipeline does not need.
     json_path = tmp_path / "condition.json"
@@ -215,6 +227,8 @@ def test_load_dataset_conditions_json_keeps_daily_quality_fields(
 def test_load_dataset_conditions_json_rejects_invalid_structure(
     tmp_path: Path,
 ) -> None:
+    """Verify load dataset conditions json rejects invalid structure."""
+
     # Use a single object instead of Databento's expected list of daily records.
     json_path = tmp_path / "invalid_condition.json"
     json_path.write_text(
@@ -230,6 +244,8 @@ def test_load_dataset_conditions_json_rejects_invalid_structure(
 def test_load_dataset_conditions_json_rejects_missing_field(
     tmp_path: Path,
 ) -> None:
+    """Verify load dataset conditions json rejects missing field."""
+
     # Omit condition so the date has no trustworthy quality decision.
     json_path = tmp_path / "condition_missing_quality.json"
     json_path.write_text(

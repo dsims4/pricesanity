@@ -1,16 +1,19 @@
 """Define Databento requests and estimate their cost before downloading."""
 
 import argparse
-import json
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from math import isfinite
 from pathlib import Path
 from typing import Literal, Protocol
 
 import databento as db
 from dotenv import load_dotenv
+from pricesanity.data.download_config import (
+    DEFAULT_CANDLE_CHUNK_YEARS,
+    DEFAULT_STATUS_CHUNK_MONTHS,
+)
 
 
 class DatabentoMetadataClient(Protocol):
@@ -26,7 +29,20 @@ class DatabentoMetadataClient(Protocol):
         schema: str,
         stype_in: str,
     ) -> float:
-        """Return Databento's estimated cost for one historical request."""
+        """Return Databento's estimated cost for one historical request.
+
+        Args:
+            dataset: Databento dataset identifier.
+            start: Inclusive beginning of the requested date range.
+            end: Exclusive end of the requested date range.
+            symbols: Instrument symbol requested from Databento.
+            schema: Databento record schema to retrieve.
+            stype_in: Symbology used to interpret the requested instrument.
+
+        Returns:
+            Estimated price of the historical request in US dollars.
+        """
+
         ...
 
 
@@ -42,7 +58,16 @@ class DatabentoDataStore(Protocol):
         map_symbols: bool = True,
         mode: Literal["w", "x"] = "w",
     ) -> None:
-        """Write downloaded records to a CSV file."""
+        """Write downloaded records to a CSV file.
+
+        Args:
+            path: File to read or publish.
+            pretty_px: Whether CSV prices use readable decimal values.
+            pretty_ts: Whether CSV timestamps use readable date-time strings.
+            map_symbols: Whether CSV records include their resolved symbols.
+            mode: File creation mode; exclusive creation protects existing files.
+        """
+
         ...
 
 
@@ -59,7 +84,20 @@ class DatabentoTimeseriesClient(Protocol):
         schema: str,
         stype_in: str,
     ) -> DatabentoDataStore:
-        """Download one historical time-series range."""
+        """Download one historical time-series range.
+
+        Args:
+            dataset: Databento dataset identifier.
+            start: Inclusive beginning of the requested date range.
+            end: Exclusive end of the requested date range.
+            symbols: Instrument symbol requested from Databento.
+            schema: Databento record schema to retrieve.
+            stype_in: Symbology used to interpret the requested instrument.
+
+        Returns:
+            Completed SDK data store ready for local serialization.
+        """
+
         ...
 
 
@@ -73,7 +111,17 @@ class DatabentoConditionClient(Protocol):
         start_date: date,
         end_date: date,
     ) -> list[dict[str, str | None]]:
-        """Return Databento's condition for each requested date."""
+        """Return Databento's condition for each requested date.
+
+        Args:
+            dataset: Databento dataset identifier.
+            start_date: Inclusive first date requested from the metadata endpoint.
+            end_date: Inclusive final date requested from the metadata endpoint.
+
+        Returns:
+            Daily condition records covering the requested inclusive range.
+        """
+
         ...
 
 
@@ -83,11 +131,13 @@ class DatabentoDownloadClient(Protocol):
     @property
     def timeseries(self) -> DatabentoTimeseriesClient:
         """Return the historical time-series interface."""
+
         ...
 
     @property
     def metadata(self) -> DatabentoConditionClient:
         """Return the dataset-condition interface."""
+
         ...
 
 
@@ -97,6 +147,7 @@ class DatabentoHistoricalClient(Protocol):
     @property
     def metadata(self) -> DatabentoMetadataClient:
         """Return the client's historical metadata interface."""
+
         ...
 
 
@@ -106,6 +157,7 @@ def create_historical_client() -> db.Historical:
     Returns:
         Historical client authenticated from the environment.
     """
+
     # Load local environment variables so authentication does not require
     # storing a private API key in source code.
     load_dotenv()
@@ -126,10 +178,14 @@ def parse_request_date(date_text: str) -> date:
     Raises:
         ArgumentTypeError: If the date is invalid.
     """
+
+    # Parse the date at the CLI boundary so invalid input never reaches a vendor request.
     try:
         # Convert the command-line text into the date type expected
         # by the request object and Databento client.
         return date.fromisoformat(date_text)
+
+    # Let argparse display malformed dates using its normal command-line error handling.
     except ValueError as error:
         # Replace Python's parsing error with a short command-line explanation.
         raise argparse.ArgumentTypeError(
@@ -155,6 +211,7 @@ class DatabentoFetchRequest:
         Raises:
             ValueError: If the date range or request names are invalid.
         """
+
         # Databento treats the ending value as exclusive, so it must follow the
         # starting date for the request to contain any historical information.
         if self.start_date >= self.end_date:
@@ -169,6 +226,8 @@ class DatabentoFetchRequest:
             self.candlestick_schema,
             self.status_schema,
         )
+
+        # Empty vendor identifiers cannot define a reproducible historical request.
         if not all(value.strip() for value in named_request_values):
             raise ValueError("Databento request names cannot be empty.")
 
@@ -182,11 +241,13 @@ class DatabentoCostEstimate:
 
     def __post_init__(self) -> None:
         """Reject unusable estimates before the spending comparison."""
+
+        # Validate both paid components and their total before exposing an estimate for
+        # approval.
         costs = (self.candlestick_cost_usd, self.status_cost_usd)
-        if (
-            not all(isfinite(cost) and cost >= 0 for cost in costs)
-            or not isfinite(sum(costs))
-        ):
+
+        # Negative, nonfinite, or overflowing estimates cannot support a safe approval decision.
+        if not all(isfinite(cost) and cost >= 0 for cost in costs) or not isfinite(sum(costs)):
             raise ValueError("Cost estimates must be finite and nonnegative.")
 
     @property
@@ -196,6 +257,7 @@ class DatabentoCostEstimate:
         Returns:
             Combined candlestick and status request cost.
         """
+
         # Keep both component estimates visible while providing the number a
         # user needs when deciding whether to approve the complete download.
         return self.candlestick_cost_usd + self.status_cost_usd
@@ -223,6 +285,7 @@ def estimate_fetch_cost(
     Returns:
         Separate candlestick and status costs with a combined total.
     """
+
     # These parameters must remain identical between estimation and downloading
     # so the displayed price describes the data that will later be requested.
     shared_request_parameters = {
@@ -261,6 +324,7 @@ def build_estimate_argument_parser() -> argparse.ArgumentParser:
     Returns:
         Parser accepting the requested start and exclusive end dates.
     """
+
     # Keep the terminal interface separate from its execution so tests can
     # inspect arguments without authenticating or contacting Databento.
     argument_parser = argparse.ArgumentParser(
@@ -291,6 +355,7 @@ def build_download_argument_parser() -> argparse.ArgumentParser:
     Returns:
         Parser accepting dates, a cost ceiling, and a raw-data directory.
     """
+
     # Keep downloading on a separate command so estimating cost can never begin
     # a paid time-series request by accident.
     argument_parser = argparse.ArgumentParser(
@@ -318,7 +383,7 @@ def build_download_argument_parser() -> argparse.ArgumentParser:
         "--max-cost-usd",
         required=True,
         type=float,
-        help="Highest approved combined cost estimate in US dollars.",
+        help="Maximum additional estimated cost for this invocation, including retries.",
     )
 
     # Default licensed files to the ignored raw-data tree while allowing tests
@@ -328,6 +393,42 @@ def build_download_argument_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("data/raw"),
         help="Ignored parent directory for raw files (default: data/raw).",
+    )
+
+    argument_parser.add_argument(
+        "--candlestick-chunk-years",
+        type=int,
+        default=DEFAULT_CANDLE_CHUNK_YEARS,
+        help=f"Calendar years per OHLC chunk (default: {DEFAULT_CANDLE_CHUNK_YEARS}).",
+    )
+    status_chunking = argument_parser.add_mutually_exclusive_group()
+    status_chunking.add_argument(
+        "--status-chunk-years",
+        type=int,
+        help="Calendar years per status chunk; overrides the quarterly default.",
+    )
+    status_chunking.add_argument(
+        "--status-chunk-months",
+        type=int,
+        choices=(1, 2, 3, 4, 6, 12),
+        help=(
+            f"Calendar months per status chunk (default: {DEFAULT_STATUS_CHUNK_MONTHS}, "
+            "quarterly). Keep the same setting on resume."
+        ),
+    )
+    argument_parser.add_argument(
+        "--retries",
+        type=int,
+        default=2,
+        help="Transient retries per chunk; each paid attempt counts toward the ceiling.",
+    )
+    argument_parser.add_argument(
+        "--estimate-only",
+        action="store_true",
+        help=(
+            "Estimate without paid downloads. "
+            "Repair mode checkpoints adoption under the writer lock."
+        ),
     )
 
     return argument_parser
@@ -342,6 +443,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     Returns:
         Zero after the estimates are displayed.
     """
+
     # Parse and validate both dates before authenticating with Databento.
     parsed_arguments = build_estimate_argument_parser().parse_args(arguments)
 
@@ -372,75 +474,164 @@ def main(arguments: Sequence[str] | None = None) -> int:
 
 
 def download_main(arguments: Sequence[str] | None = None) -> int:
-    """Download raw Databento data within an approved cost ceiling.
+    """Run a managed download; report failures briefly and retain checkpoints.
 
     Args:
-        arguments: Optional arguments used instead of terminal input.
+        arguments: Command-line arguments, or None to read the process arguments.
 
     Returns:
-        Zero after every raw source file is saved successfully.
+        Zero on success, one on failure, or 130 after interruption.
     """
-    # Parse the approval and request details before authenticating or checking
-    # current Databento prices.
-    argument_parser = build_download_argument_parser()
-    parsed_arguments = argument_parser.parse_args(arguments)
 
+    # Use normal managed ownership rules; existing unmanaged files still require explicit
+    # repair.
+    return _managed_main(arguments, repair=False)
+
+
+def repair_main(arguments: Sequence[str] | None = None) -> int:
+    """Adopt valid OHLC ranges and finish an interrupted managed download.
+
+    Args:
+        arguments: Command-line arguments, or None to read the process arguments.
+
+    Returns:
+        Zero on success, one on failure, or 130 after interruption.
+    """
+
+    # Select explicit adoption while sharing the downloader's validation and cost safeguards.
+    return _managed_main(arguments, repair=True)
+
+
+def _managed_main(arguments: Sequence[str] | None, *, repair: bool) -> int:
+    """Run the selected download mode with concise failure reporting.
+
+    Args:
+        arguments: Command-line arguments, or None to read the process arguments.
+        repair: Whether to adopt validated ranges from an interrupted download.
+
+    Returns:
+        Zero on success, one on failure, or 130 after interruption.
+    """
+
+    from pricesanity.data.managed_download import ManagedDownload, DownloadBusyError, sanitized
+
+    parser = build_download_argument_parser()
+
+    # Repair uses the same options while describing its explicit source-adoption behavior.
+    if repair:
+        parser.description = "Repair an interrupted download by adopting complete OHLC ranges."
+
+    args = parser.parse_args(arguments)
+
+    # Reject unusable cost ceilings before constructing any download state.
+    if not isfinite(args.max_cost_usd) or args.max_cost_usd < 0:
+        parser.error("--max-cost-usd must be finite and nonnegative.")
+
+    # Positive chunks and bounded retries are required for the request to make progress.
     if (
-        not isfinite(parsed_arguments.max_cost_usd)
-        or parsed_arguments.max_cost_usd < 0
+        args.candlestick_chunk_years < 1
+        or args.retries < 0
+        or (args.status_chunk_years is not None and args.status_chunk_years < 1)
     ):
-        argument_parser.error("--max-cost-usd must be finite and nonnegative.")
+        parser.error("Chunk years must be positive; retries must be nonnegative.")
 
-    # Rebuild the same fixed ES request used by the standalone estimator.
-    request = DatabentoFetchRequest(
-        start_date=parsed_arguments.start,
-        end_date=parsed_arguments.end,
-    )
+    plan = None
 
-    # Use one authenticated client so the estimate and immediate download share
-    # the same account entitlements and pricing plan.
-    client = create_historical_client()
-
-    # Re-estimate immediately before downloading because pricing or account
-    # entitlements may have changed since the earlier review.
-    estimate = estimate_fetch_cost(client, request)
-
-    # Stop before any time-series call when the current estimate exceeds the
-    # exact amount authorized on the command line.
-    if (
-        estimate.total_cost_usd
-        > parsed_arguments.max_cost_usd
-    ):
-        argument_parser.error(
-            f"Current estimate ${estimate.total_cost_usd:.6f} exceeds "
-            f"approved maximum "
-            f"${parsed_arguments.max_cost_usd:.6f}."
+    # Keep planning and execution under one CLI error boundary so failures return a useful exit
+    # code.
+    try:
+        request = DatabentoFetchRequest(args.start, args.end)
+        paths = build_raw_data_paths(args.raw_data_directory, request)
+        plan = ManagedDownload(
+            request,
+            paths.candlestick_csv_path.parent,
+            candlestick_chunk_years=args.candlestick_chunk_years,
+            status_chunk_years=args.status_chunk_years,
+            status_chunk_months=args.status_chunk_months,
+            repair=repair,
         )
+        client = create_historical_client()
 
-    # Calculate unique destinations beneath the ignored raw-data tree before
-    # the downloader reserves their shared directory.
-    raw_data_paths = build_raw_data_paths(
-        parsed_arguments.raw_data_directory,
-        request,
-    )
+        # Estimate mode must avoid paid downloads while preserving its documented repair
+        # checkpoints.
+        if args.estimate_only:
+            # Repair estimates adopt reusable ranges, so they need the same writer lock as
+            # downloads.
+            if repair:
+                # Save range-count probes and adopted chunks once so the later
+                # repair reuses them instead of repeating metadata work.
+                with plan.operation():
+                    plan.prepare_repair(client)
+                    remaining = plan.estimate(client)
+                    plan.summary(args.max_cost_usd, remaining)
+            else:
+                remaining = plan.estimate(client)
+                plan.summary(args.max_cost_usd, remaining)
 
-    # Make the two approved time-series requests and save their supporting
-    # condition metadata as one immutable raw download.
-    saved_raw_data_paths = download_raw_data(
-        client,
-        request,
-        raw_data_paths,
-    )
+            # Make the repair estimate mutation explicit in the terminal confirmation.
+            if repair:
+                print(
+                    "Estimate only: no time-series requests made; repair "
+                    "probes and adopted ranges were checkpointed."
+                )
+            else:
+                print(
+                    "Estimate only: no time-series requests or local "
+                    "checkpoints written."
+                )
+        else:
+            plan.run(client, max_cost_usd=args.max_cost_usd, retries=args.retries)
 
-    # Report each artifact separately so it can be inspected or passed into the
-    # preparation command without searching the raw directory.
-    print(f"Candlesticks: {saved_raw_data_paths.candlestick_csv_path}")
-    print(f"Status: {saved_raw_data_paths.status_csv_path}")
-    print(f"Conditions: {saved_raw_data_paths.condition_json_path}")
-    print(f"Estimated cost at download: ${estimate.total_cost_usd:.6f}.")
+        return 0
 
-    # A zero status tells shells and later automation that all files were saved.
-    return 0
+    # Handle interruption alongside failures so both retain checkpoints and return a nonzero
+    # status.
+    except (Exception, KeyboardInterrupt) as error:
+        # A losing writer must exit before any managed diagnostic or checkpoint can be written.
+        if isinstance(error, DownloadBusyError):
+            import sys
+
+            print(f"Download busy: {error}. Managed state unchanged.", file=sys.stderr)
+
+            return 1
+
+        context = plan.context if plan is not None else "local validation"
+        log = str(plan.log_path) if plan is not None and plan._error_logged else None
+
+        # Use the separate preflight log when this process did not record a managed failure.
+        if log is None:
+            # Preflight cannot write into an unmanaged/conflicting corpus. Keep
+            # its traceback in the ignored raw parent instead.
+            import traceback
+
+            # Fallback diagnostics must not replace the original failure when the filesystem is
+            # also unavailable.
+            try:
+                args.raw_data_directory.mkdir(parents=True, exist_ok=True)
+                failure_path = args.raw_data_directory / "download-errors.log"
+
+                # Append outside the managed corpus because preflight failure may occur before
+                # writer ownership.
+                with failure_path.open("a", encoding="utf-8") as stream:
+                    from datetime import datetime, timezone
+
+                    stream.write(datetime.now(timezone.utc).isoformat() + " " + context + "\n")
+                    stream.write(sanitized(traceback.format_exc()) + "\n")
+
+                log = str(failure_path)
+
+            # The terminal still reports the original problem when even the fallback log cannot
+            # be written.
+            except OSError:
+                log = "unavailable (could not write failure log)"
+
+        message = sanitized(str(error) or type(error).__name__).splitlines()[0][:400]
+        resumable = plan is not None and plan.manifest_path.exists()
+        import sys
+
+        print(f"Failed {context}: {message}. Resumable: {resumable}. Log: {log}", file=sys.stderr)
+
+        return 130 if isinstance(error, KeyboardInterrupt) else 1
 
 
 def build_raw_data_paths(
@@ -456,6 +647,7 @@ def build_raw_data_paths(
     Returns:
         Paths for the candlestick, status, and condition files.
     """
+
     # Remove symbol punctuation so the directory has a simple name.
     safe_symbol = request.symbol.replace(".", "-")
 
@@ -488,6 +680,7 @@ def create_raw_data_directory(
         FileExistsError: If the request directory already exists.
         ValueError: If the raw files do not share one directory.
     """
+
     # Collect each parent to confirm that all files belong to one protected
     # request directory before anything is created.
     raw_file_directories = {
@@ -516,94 +709,54 @@ def download_raw_data(
     client: DatabentoDownloadClient,
     request: DatabentoFetchRequest,
     raw_data_paths: DatabentoRawDataPaths,
+    *,
+    max_cost_usd: float,
+    candlestick_chunk_years: int = DEFAULT_CANDLE_CHUNK_YEARS,
+    status_chunk_years: int | None = None,
+    status_chunk_months: int | None = None,
 ) -> DatabentoRawDataPaths:
-    """Download and save one immutable set of Databento source files.
+    """Download or resume a managed request within an additional-cost ceiling.
 
     Args:
-        client: Authenticated Databento historical client.
-        request: Dataset, symbol, schemas, and requested date range.
-        raw_data_paths: Destinations for the three raw source files.
+        client: Databento client providing metadata and historical requests.
+        request: Dataset, instrument, schemas, and inclusive/exclusive request boundaries.
+        raw_data_paths: Destination paths for the raw files belonging to one request.
+        max_cost_usd: Approved maximum additional estimated request cost, including retries.
+        candlestick_chunk_years: Calendar years per candlestick chunk.
+        status_chunk_years: Explicit yearly status partition, mutually exclusive with months.
+        status_chunk_months: Explicit monthly status partition; omitted settings use quarters.
 
     Returns:
-        The paths containing the downloaded source data.
+        The original destination paths after successful completion.
 
     Raises:
-        FileExistsError: If the request directory or a raw file already exists.
+        ValueError: For conflicting paths, invalid files or insufficient approval.
     """
-    # Reserve a new request directory before making paid calls so an
-    # existing raw download can never be silently replaced.
-    create_raw_data_directory(raw_data_paths)
 
-    # Both time-series downloads must use the same symbol and date
-    # range that were shown by the cost estimator.
-    shared_request_parameters = {
-        "dataset": request.dataset,
-        "start": request.start_date,
-        "end": request.end_date,
-        "symbols": request.symbol,
-        "stype_in": request.symbol_type,
-    }
+    from pricesanity.data.managed_download import ManagedDownload
 
-    # Download the one-minute candles that will later be filtered, resampled,
-    # and normalized for model input.
-    candlestick_store = client.timeseries.get_range(
-        **shared_request_parameters,
-        schema=request.candlestick_schema,
+    directory = raw_data_paths.candlestick_csv_path.parent
+
+    # All output paths must belong to one corpus so checkpoints cannot mix unrelated artifacts.
+    if (
+        raw_data_paths.status_csv_path != directory / "status.csv"
+        or raw_data_paths.condition_json_path != directory / "condition.json"
+        or raw_data_paths.candlestick_csv_path.name != "candlesticks.csv"
+    ):
+        raise ValueError("Managed downloads require standard filenames in one directory")
+
+    plan = ManagedDownload(
+        request,
+        directory,
+        candlestick_chunk_years=candlestick_chunk_years,
+        status_chunk_years=status_chunk_years,
+        status_chunk_months=status_chunk_months,
     )
+    plan.run(client, max_cost_usd=max_cost_usd)
 
-    # Preserve readable timestamps, prices, and contract mappings in the
-    # raw artifact while refusing to replace an existing file.
-    candlestick_store.to_csv(
-        raw_data_paths.candlestick_csv_path,
-        pretty_px=True,
-        pretty_ts=True,
-        map_symbols=True,
-        mode="x",
-    )
-
-    # Download session-status records separately because their scheduled
-    # state changes establish regular and shortened session boundaries.
-    status_store = client.timeseries.get_range(
-        **shared_request_parameters,
-        schema=request.status_schema,
-    )
-
-    # Keep the complete raw status export for auditing while later
-    # ingestion selects only the fields required by schedule construction.
-    status_store.to_csv(
-        raw_data_paths.status_csv_path,
-        pretty_px=True,
-        pretty_ts=True,
-        map_symbols=True,
-        mode="x",
-    )
-
-    # Databento's time-series end is exclusive, while the condition endpoint's
-    # ending date is inclusive, so subtract one day to describe the same range.
-    condition_end_date = request.end_date - timedelta(days=1)
-
-    # Retrieve the daily quality evidence used to reject degraded, pending, or
-    # missing sessions without making another time-series download.
-    condition_records = client.metadata.get_dataset_condition(
-        dataset=request.dataset,
-        start_date=request.start_date,
-        end_date=condition_end_date,
-    )
-
-    # Save the original metadata records as readable JSON without changing
-    # their dates, conditions, or last-modified values.
-    with raw_data_paths.condition_json_path.open(
-        mode="x",
-        encoding="utf-8",
-    ) as condition_file:
-        json.dump(condition_records, condition_file, indent=2)
-        condition_file.write("\n")
-
-    # Return the destinations so the caller can display or pass them
-    # directly into the preparation command.
     return raw_data_paths
 
 
+# Only direct execution should run the standalone estimator.
 if __name__ == "__main__":
-    # Convert the function's return value into the process exit status.
     raise SystemExit(main())

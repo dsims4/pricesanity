@@ -15,7 +15,6 @@ from pricesanity.config import AppConfig, load_config
 from pricesanity.data.identifiers import build_candlestick_id
 from pricesanity.gui.annotation_app import AnnotationWindow
 
-
 CORPUS_DATE_PATTERN = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
 
@@ -31,9 +30,12 @@ def parse_corpus_date_bounds(corpus_path: str | Path) -> tuple[date, date]:
     Raises:
         ValueError: If two valid increasing dates cannot be identified.
     """
+
     # Use the final two ISO dates so instrument names may contain other digits
     # without changing how the requested corpus boundaries are interpreted.
     date_values = CORPUS_DATE_PATTERN.findall(Path(corpus_path).name)
+
+    # Both date boundaries are required to interpret the corpus filename safely.
     if len(date_values) < 2:
         raise ValueError(
             "Candlestick filenames must contain start and end dates."
@@ -43,9 +45,13 @@ def parse_corpus_date_bounds(corpus_path: str | Path) -> tuple[date, date]:
     # so the last included calendar date is the preceding day.
     starting_date = date.fromisoformat(date_values[-2])
     exclusive_ending_date = date.fromisoformat(date_values[-1])
+
+    # A reversed or empty range cannot describe any included trading dates.
     if starting_date >= exclusive_ending_date:
         raise ValueError("Corpus start date must be before its end date.")
+
     ending_date = exclusive_ending_date - timedelta(days=1)
+
     return starting_date, ending_date
 
 
@@ -68,6 +74,7 @@ def load_annotation_sessions(
     Raises:
         ValueError: If the file cannot provide valid candlesticks.
     """
+
     # Read the real-price interim artifact because annotations should be made
     # from recognizable OHLC candles rather than normalized model features.
     candlestick_data = pd.read_parquet(Path(candlestick_path))
@@ -79,6 +86,8 @@ def load_annotation_sessions(
             Path(normalized_path),
             columns=[config.data.timestamp_column, "open_gap"],
         )
+
+    # Report an unreadable Parquet export as an input error with the relevant path.
     except ArrowInvalid as error:
         raise ValueError(
             "Normalized artifact must be valid Parquet with timestamp "
@@ -95,6 +104,8 @@ def load_annotation_sessions(
         "close",
     }
     missing_columns = required_columns.difference(candlestick_data.columns)
+
+    # The annotation view needs complete candle geometry and identifiers before opening a window.
     if missing_columns:
         raise ValueError(
             "Interim candlestick data is missing required columns: "
@@ -128,6 +139,8 @@ def load_annotation_sessions(
     has_finite_opening_gaps = np.isfinite(
         normalized_data["open_gap"].to_numpy(dtype=float)
     ).all()
+
+    # Nonfinite opening gaps cannot be displayed as valid normalized input.
     if not has_finite_opening_gaps:
         raise ValueError("Opening gaps must be finite numbers.")
 
@@ -144,6 +157,8 @@ def load_annotation_sessions(
     normalized_timestamp_set = set(
         normalized_data[config.data.timestamp_column]
     )
+
+    # Raw and normalized rows must describe exactly the same candles before labels are attached.
     if candlestick_timestamps != normalized_timestamp_set:
         raise ValueError(
             "OHLC and normalized candlestick timestamps must match exactly."
@@ -161,15 +176,23 @@ def load_annotation_sessions(
     # must follow the same chronology used by the Transformer.
     candlestick_data = candlestick_data.sort_values(
         config.data.timestamp_column
-    ).reset_index(drop=True)
+    ).reset_index(
+        drop=True
+    )
 
     # Convert UTC timestamps to the exchange timezone only for deciding which
     # local trading date each prepared candle belongs to.
-    local_session_dates = candlestick_data[
+    local_session_dates = (
+        candlestick_data[
         config.data.timestamp_column
-    ].dt.tz_convert(config.data.session_timezone).dt.date
+    ].dt.tz_convert(config.data.session_timezone)
+        .dt.date
+    )
+
+    # Do not open an annotation window without an eligible session to display.
     if local_session_dates.empty:
         raise ValueError("Interim candlestick data cannot be empty.")
+
     candlestick_data["session_date"] = local_session_dates
 
     # Combine instrument identity with each UTC timestamp so annotations remain
@@ -199,6 +222,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     Returns:
         Parser describing the candlestick, configuration, and database paths.
     """
+
     # Keep parsing separate from launching so tests can inspect this interface
     # without opening a desktop window.
     argument_parser = argparse.ArgumentParser(
@@ -255,6 +279,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     Returns:
         Qt application exit status after the window closes.
     """
+
     # Parse every path before creating GUI state.
     argument_parser = build_argument_parser()
     parsed_arguments = argument_parser.parse_args(arguments)
@@ -271,10 +296,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
         normalized_start_date, normalized_end_date = parse_corpus_date_bounds(
             parsed_arguments.normalized
         )
-        if (
-            corpus_start_date != normalized_start_date
-            or corpus_end_date != normalized_end_date
-        ):
+
+        # The two files must describe the same requested corpus rather than merely overlapping
+        # timestamps.
+        if corpus_start_date != normalized_start_date or corpus_end_date != normalized_end_date:
             raise ValueError(
                 "OHLC and normalized filenames must use the same date range."
             )
@@ -284,12 +309,16 @@ def main(arguments: Sequence[str] | None = None) -> int:
             parsed_arguments.normalized,
             config=config,
         )
+
+    # Input problems should produce a concise CLI error before a window is shown.
     except (FileNotFoundError, ValueError) as error:
         argument_parser.error(str(error))
 
     # Reuse a Qt application when launched from an interactive Python process;
     # otherwise create the one application allowed for this process.
     application = QApplication.instance()
+
+    # Reuse the existing Qt application when another window or test already owns it.
     if application is None:
         application = QApplication([])
 
@@ -309,6 +338,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     return application.exec()
 
 
+# Only direct execution should launch the GUI; imports remain reusable by tests and callers.
 if __name__ == "__main__":
     # Support direct module execution while the installed terminal command uses
     # this same function through the project metadata.

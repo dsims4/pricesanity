@@ -5,6 +5,8 @@ from pricesanity.data.resample import resample_ohlc
 
 
 def test_resample_ohlc_combines_source_candlesticks() -> None:
+    """Verify resample OHLC combines source candlesticks."""
+
     # Create five one-minute candles with distinct OHLC values.
     candlestick_data = pd.DataFrame(
         {
@@ -43,6 +45,8 @@ def test_resample_ohlc_combines_source_candlesticks() -> None:
 
 
 def test_resample_ohlc_discards_incomplete_candlesticks() -> None:
+    """Verify resample OHLC discards incomplete candlesticks."""
+
     # Create one complete five-minute group followed by one partial group.
     candlestick_data = pd.DataFrame(
         {
@@ -77,6 +81,8 @@ def test_resample_ohlc_discards_incomplete_candlesticks() -> None:
 
 
 def test_resample_ohlc_keeps_incomplete_candlesticks_when_allowed() -> None:
+    """Verify resample OHLC keeps incomplete candlesticks when allowed."""
+
     # Create one complete five-minute group followed by one partial group.
     candlestick_data = pd.DataFrame(
         {
@@ -111,6 +117,8 @@ def test_resample_ohlc_keeps_incomplete_candlesticks_when_allowed() -> None:
 
 
 def test_resample_ohlc_rejects_nonmultiple_target_interval() -> None:
+    """Verify resample OHLC rejects nonmultiple target interval."""
+
     # Create one source candlestick for testing interval validation.
     candlestick_data = pd.DataFrame(
         {

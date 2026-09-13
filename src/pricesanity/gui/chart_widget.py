@@ -28,6 +28,9 @@ class CandlestickChart(FigureCanvasQTAgg):
             parent: PySide6 widget responsible for this chart.
             timestamp_column: Column containing UTC candle timestamps.
         """
+
+        # Give this Qt widget its own figure so chart updates do not depend on global pyplot
+        # state.
         figure = Figure(figsize=(12, 7), tight_layout=True)
 
         self.axes = figure.add_subplot(1, 1, 1)
@@ -52,6 +55,7 @@ class CandlestickChart(FigureCanvasQTAgg):
         Args:
             event: Qt mouse event delivered to the chart canvas.
         """
+
         # Make the chart's shortcuts active immediately after it is clicked.
         self.setFocus(Qt.FocusReason.MouseFocusReason)
         super().mousePressEvent(event)
@@ -70,6 +74,7 @@ class CandlestickChart(FigureCanvasQTAgg):
         Raises:
             ValueError: If the active candle position is outside the session.
         """
+
         # Reject a position that cannot identify a candle in this session.
         if not 0 <= active_candlestick_position < len(candlestick_data):
             raise ValueError(
@@ -90,6 +95,9 @@ class CandlestickChart(FigureCanvasQTAgg):
         # Draw every candle because retrospective annotation uses the completed
         # session to assign the regimes that actually occurred.
         wick_segments = []
+
+        # Place candles at consecutive positions so closed-market gaps do not stretch the
+        # session chart.
         for x_position, candlestick in enumerate(
             candlestick_data.itertuples(index=False)
         ):
@@ -105,11 +113,14 @@ class CandlestickChart(FigureCanvasQTAgg):
 
             body_bottom = min(open_price, close_price)
             body_top = max(open_price, close_price)
+
             # Stop each wick at the body edge so hollow candles stay clear.
-            wick_segments.extend([
-                [(x_position, low_price), (x_position, body_bottom)],
-                [(x_position, body_top), (x_position, high_price)],
-            ])
+            wick_segments.extend(
+                [
+                    [(x_position, low_price), (x_position, body_bottom)],
+                    [(x_position, body_top), (x_position, high_price)],
+                ]
+            )
 
             body_height = abs(close_price - open_price)
 
@@ -124,9 +135,13 @@ class CandlestickChart(FigureCanvasQTAgg):
             self.axes.add_patch(candlestick_body)
 
         # One collection draws all wicks; candle bodies remain individual patches.
-        self.axes.add_collection(LineCollection(
-            wick_segments, colors="black", linewidths=1,
-        ))
+        self.axes.add_collection(
+            LineCollection(
+                wick_segments,
+                colors="black",
+                linewidths=1,
+            )
+        )
         self._highs = tuple(float(value) for value in candlestick_data["high"])
         active_high = self._highs[active_candlestick_position]
 
@@ -164,11 +179,13 @@ class CandlestickChart(FigureCanvasQTAgg):
         tick_interval = max(len(candlestick_data) // 8, 1)
         tick_positions = list(range(0, len(candlestick_data), tick_interval))
         final_position = len(candlestick_data) - 1
+
+        # Include the final candle label even when the regular tick spacing misses it.
         if final_position not in tick_positions:
             tick_positions.append(final_position)
+
         tick_labels = [
-            new_york_timestamps.iloc[position].strftime("%H:%M")
-            for position in tick_positions
+            new_york_timestamps.iloc[position].strftime("%H:%M") for position in tick_positions
         ]
         self.axes.set_xticks(tick_positions, tick_labels)
 
@@ -184,9 +201,16 @@ class CandlestickChart(FigureCanvasQTAgg):
         self.draw_idle()
 
     def set_active_candlestick(self, position: int) -> None:
-        """Move the marker without rebuilding the loaded session's artists."""
+        """Move the marker without rebuilding the loaded session's artists.
+
+        Args:
+            position: Zero-based position of the active candlestick in the loaded session.
+        """
+
+        # A marker can move only after a session is loaded and the requested position exists.
         if self._active_marker is None or not 0 <= position < len(self._highs):
             raise ValueError("Active candlestick position is outside the session.")
+
         high = self._highs[position]
         self._active_marker.xy = (position, high)
         self._active_marker.set_position((position, high + self._arrow_offset))
