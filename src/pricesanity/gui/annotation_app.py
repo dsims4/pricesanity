@@ -267,6 +267,11 @@ class AnnotationWindow(QMainWindow):
 
         navigation_buttons = (
             (
+                self.seek_back_button,
+                partial(self._seek_unannotated_candlestick, -1),
+                "Find the previous unannotated candle in the applied date range.",
+            ),
+            (
                 self.previous_day_button,
                 partial(self._move_session, -1),
                 "Open the previous valid trading day's first candle.",
@@ -275,11 +280,6 @@ class AnnotationWindow(QMainWindow):
                 self.next_day_button,
                 partial(self._move_session, 1),
                 "Open the next valid trading day's first candle.",
-            ),
-            (
-                self.seek_back_button,
-                partial(self._seek_unannotated_candlestick, -1),
-                "Find the previous unannotated candle in the applied date range.",
             ),
             (
                 self.seek_forward_button,
