@@ -12,6 +12,7 @@ from pyarrow import ArrowInvalid
 from PySide6.QtWidgets import QApplication
 
 from pricesanity.config import AppConfig, load_config
+from pricesanity.data.annotation_evidence import validate_annotation_evidence
 from pricesanity.data.identifiers import build_candlestick_id
 from pricesanity.gui.annotation_app import AnnotationWindow
 
@@ -229,6 +230,15 @@ def load_annotation_sessions(
         raise ValueError(
             "Prepared candlestick spacing must match the configured target interval."
         )
+
+    # Validated export metadata preserves reference-only days that are absent
+    # from this display. Check full session grids and every opening-gap ratio
+    # before any candle identifier can become an annotation target.
+    validate_annotation_evidence(candlestick_data, normalized_data, config=config)
+
+    # Validation is complete. Keeping the corpus metadata on this display table
+    # would make pandas copy every session's evidence during routine row access.
+    candlestick_data.attrs.clear()
 
     # Combine instrument identity with each UTC timestamp so annotations remain
     # aligned when files, sessions, or tables are later combined.

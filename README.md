@@ -205,14 +205,12 @@ combines one-minute candles into complete five-minute candles, and validates
 exact timestamps against status-derived closing boundaries and daily quality.
 Scheduled early closes retain their shorter sessions.
 
-The older CME status feed does not contain the scheduled transitions needed to
-construct normal sessions. Price Sanity derives the coverage boundary from the
-first session successfully built from scheduled status data; it does not use a
-hard-coded year. For observed OHLC dates strictly before that boundary, an
-`available` Databento condition permits a conservative fallback using the
-configured normal RTH open and close. The exact full five-minute grid is still
-required. Degraded, unavailable, unknown, or missing condition evidence remains
-untrustworthy and breaks the normal reference chain.
+Every eligible session requires a scheduled status-derived closing boundary,
+an `available` dataset condition, and its complete configured candle grid.
+Availability alone does not establish trading hours. Dates without scheduled
+status evidence cannot become annotation input or supply a previous-session
+close, regardless of how complete their prices appear. No historical calendar
+fallback or hard-coded year cutoff is used.
 
 An `available` dataset condition does not prove that this instrument's candles
 exist. Condition records on configured trading weekdays remain date evidence
@@ -222,18 +220,6 @@ Available weekend metadata alone does not interrupt a valid Friday-to-Monday
 reference. This is conservative around weekday closures: without sufficient
 session evidence, the next complete day restores the reference rather than
 becoming annotation-eligible immediately.
-
-Fallback stops on the first status-derived session date. Missing status evidence
-on that date or any later date is therefore rejected as before. Historical early
-closes are not guessed: without an authoritative scheduled close, their shorter
-candle grid fails the configured normal-session completeness check. After the
-coverage boundary, scheduled early closes continue to use their authoritative
-status-derived boundaries.
-
-The boundary is inferred from the first usable status-derived session present in
-the supplied status corpus. The complete 2010–2026 corpus contains the historical
-transition into this coverage. An arbitrary standalone subset beginning later
-could infer a later boundary if the true first authoritative records were absent.
 
 The local `ES.v.0` corpus starts in June 2010, but its first scheduled trading
 transition is November 19, 2015, and its first scheduled RTH session is
@@ -249,25 +235,24 @@ misinterpret surveillance interventions, market events, or instrument expiration
 Changing the timestamp clock cannot supply the missing schedule evidence.
 The existing scheduled-transition filter and session trust rules are retained.
 
-A fresh local rebuild found 4,932,502 one-minute candles, 23,580 status records,
-and 5,134 condition records. With `configs/default.yaml`, preparation produced
-219,246 five-minute rows across 2,745 eligible sessions, with exact row-for-row
-timestamp alignment between the OHLC and normalized tables. The first
-authoritative status-derived session is November 20, 2015. Historical fallback
-makes June 7, 2010 a trustworthy reference-only session, but missing intervening
-weekdays prevent June 14 from using its close. After correcting that gap check,
-March 15, 2011 is the first annotation-eligible session, using March 14's close.
-Reference-only sessions need not appear in the annotation files; their closing
-prices are retained during preparation to normalize the next eligible opening.
+A full local audit validated 4,932,502 one-minute candles, 23,580 status records,
+and 5,134 condition records. Independent source-minute aggregation reproduced all
+286,967 complete five-minute candles. Strict session validation retained 214,791
+candles across 2,690 annotation-eligible sessions; all four normalized features
+matched independent calculations for every retained candle.
+The first eligible session is November 23, 2015, using the complete, available
+November 20 session's closing candle at 21:10 UTC (the interval ending at 21:15).
+Earlier complete prices cannot supply references without scheduled status evidence.
+The actual GUI percentage label was also checked for every retained candle in
+all 2,690 sessions. The local audit record, including artifact checksums and each
+session's reference date, is `data/processed/annotation_validation_audit.json`.
 
-The first trustworthy session supplies a closing reference; it is not itself
-training input. Every retained session needs a trustworthy predecessor. An
-incomplete or degraded session breaks that chain. In the authoritative status
-era, an observed date with missing schedule evidence also breaks it. Before that
-coverage begins, missing scheduled-status messages are expected and the
-conservative historical fallback applies. The next trustworthy session restores
-the reference; the session after it can become training input. Include enough
-earlier data to provide this reference when choosing a download range.
+The first trustworthy scheduled session supplies a closing reference; it is not
+itself training input. Every retained session needs a trustworthy predecessor.
+An incomplete or degraded session, or an evidenced weekday without scheduled
+boundaries, breaks that chain. The next trustworthy session restores the
+reference; the session after it can become training input. Include enough earlier
+data to provide this reference when choosing a download range.
 
 Normalization uses only candles inside trustworthy validated sessions. Candles
 after an early close cannot replace that session's closing reference. A calendar
@@ -307,9 +292,26 @@ pricesanity-annotate \
   --normalized data/processed/ES-v-0_2010-06-06_2026-09-12.parquet
 ```
 
+The launcher requires matching session-validation metadata written by the current
+preparation pipeline. It verifies each full scheduled candle grid, the retained
+preceding-session close, and every candle's `open_gap` before opening the window.
+Older exports without this evidence must be prepared again. This metadata lives
+in the Parquet metadata rather than the model's numeric feature columns.
+The GUI displays each checked candle gap as a signed percentage rounded to three
+decimal places; selecting another date range does not recalculate its reference.
+
 Both filenames must contain the matching start and exclusive end dates, as in
 the example. The GUI's date controls use inclusive dates. Choose a range and
 click **Apply date range**; only prepared sessions in that range are navigated.
+
+The four buttons beside the date controls stay within that applied range:
+
+- **Back one day / Forward one day:** open the adjacent valid session at its first candle.
+- **Seek back / Seek forward:** jump to the nearest unannotated candle before or after
+  the current candle, skipping saved judgments and crossing valid sessions as needed.
+
+Seeking does not wrap around. If no matching candle remains, the selection stays
+in place and the status bar explains why. Navigation returns keyboard focus to the chart.
 
 Click the chart to activate its shortcuts:
 

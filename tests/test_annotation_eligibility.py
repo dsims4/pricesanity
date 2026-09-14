@@ -81,16 +81,26 @@ def test_first_displayed_session_requires_previous_close(
     if friday_state == "degraded":
         conditions.loc[conditions.date.eq("2010-06-11"), "condition"] = "degraded"
 
-    # Later authoritative evidence establishes the historical fallback boundary
-    # without inventing scheduled status records for these early dates.
-    status = pd.DataFrame(
-        {
-            "ts_event": ["2015-11-20T14:00:00Z", "2015-11-20T14:45:00Z"],
-            "reason": "scheduled",
-            "trading_event": "none",
-            "is_trading": ["Y", "N"],
-        }
-    )
+    # Supply actual scheduled transitions for every evidenced weekday, even
+    # when that instrument's candles are missing. Weekends remain unscheduled.
+    status_rows = []
+
+    # Synthetic pre-2015 scheduled evidence verifies that eligibility depends
+    # on records rather than a hard-coded date cutoff.
+    for day in pd.bdate_range("2010-06-07", "2010-06-15"):
+        # Provide both states so each closing transition is independently visible.
+        for clock, state in (("09:00", "Y"), ("09:45", "N")):
+            status_rows.append(
+                {
+                    "ts_event": pd.Timestamp(
+                        f"{day.date()} {clock}", tz="America/New_York"
+                    ).tz_convert("UTC"),
+                    "reason": "scheduled",
+                    "trading_event": "none",
+                    "is_trading": state,
+                }
+            )
+    status = pd.DataFrame(status_rows)
 
     # Seven-row reads split five-minute buckets so the same eligibility rule
     # must survive both source loading paths.

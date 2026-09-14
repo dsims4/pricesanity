@@ -257,6 +257,43 @@ class AnnotationWindow(QMainWindow):
         self.apply_date_range_button = QPushButton("Apply date range")
         self.apply_date_range_button.clicked.connect(self.apply_date_range)
         date_range_layout.addWidget(self.apply_date_range_button)
+
+        # Match the existing native buttons while keeping all four navigation actions beside
+        # the date controls. Only prepared sessions inside the applied range are reachable.
+        self.previous_day_button = QPushButton("Back one day")
+        self.next_day_button = QPushButton("Forward one day")
+        self.seek_back_button = QPushButton("Seek back")
+        self.seek_forward_button = QPushButton("Seek forward")
+
+        navigation_buttons = (
+            (
+                self.previous_day_button,
+                partial(self._move_session, -1),
+                "Open the previous valid trading day's first candle.",
+            ),
+            (
+                self.next_day_button,
+                partial(self._move_session, 1),
+                "Open the next valid trading day's first candle.",
+            ),
+            (
+                self.seek_back_button,
+                partial(self._seek_unannotated_candlestick, -1),
+                "Find the previous unannotated candle in the applied date range.",
+            ),
+            (
+                self.seek_forward_button,
+                partial(self._seek_unannotated_candlestick, 1),
+                "Find the next unannotated candle in the applied date range.",
+            ),
+        )
+
+        # Restore chart focus after navigation so number-key annotation can resume immediately.
+        for button, navigation_action, tooltip in navigation_buttons:
+            button.setToolTip(tooltip)
+            button.clicked.connect(navigation_action)
+            date_range_layout.addWidget(button)
+
         date_range_layout.addStretch()
 
         # Let the user end an annotation run explicitly without relying on the
@@ -659,6 +696,13 @@ class AnnotationWindow(QMainWindow):
         ].reset_index(drop=True)
         self.active_candlestick_position = candlestick_position
 
+        # Disable day navigation at the applied range boundaries instead of offering a move
+        # into an unavailable date or silently wrapping to the other end of the corpus.
+        self.previous_day_button.setEnabled(self.active_session_position > 0)
+        self.next_day_button.setEnabled(
+            self.active_session_position < len(self.selected_session_dates) - 1
+        )
+
         # Make session progress visible without assigning equal lengths to
         # regular sessions and exchange-scheduled half days.
         self.session_position_label.setText(
@@ -859,6 +903,93 @@ class AnnotationWindow(QMainWindow):
             )
 
         self.selection_prompt.setText(instruction)
+
+    def _move_session(self, direction: int) -> None:
+        """Open the adjacent eligible session at its first candlestick.
+
+        Args:
+            direction: Negative one for the previous day, positive one for the next.
+        """
+
+        session_position = self.active_session_position + direction
+
+        # Calendar gaps do not matter because the prepared session list already excludes
+        # weekends, holidays, and sessions whose validation evidence is insufficient.
+        if 0 <= session_position < len(self.selected_session_dates):
+            self.active_session_position = session_position
+            self._load_active_session(candlestick_position=0)
+
+        self.chart.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _seek_unannotated_candlestick(self, direction: int) -> None:
+        """Select the nearest unsaved candle strictly before or after the current one.
+
+        Args:
+            direction: Negative one to seek backward, positive one to seek forward.
+        """
+
+        self.chart.setFocus(Qt.FocusReason.OtherFocusReason)
+
+        # A database failure must leave the current selection intact; an unreadable annotation
+        # cannot safely be treated as a missing judgment.
+        try:
+            annotated_ids = self.annotation_store.load_annotated_ids()
+
+        except sqlite3.Error as error:
+            self.statusBar().showMessage(f"Could not seek annotations: {error}")
+
+            return
+
+        # Use existing session indices and the identifier array rather than constructing or
+        # drawing every intermediate session while searching a long annotated stretch.
+        candlestick_ids = self.all_candlestick_data["candlestick_id"].to_numpy()
+        session_positions = range(
+            self.active_session_position,
+            len(self.selected_session_dates) if direction > 0 else -1,
+            direction,
+        )
+
+        for session_position in session_positions:
+            session_date = self.selected_session_dates[session_position]
+            session_indices = self._session_indices[session_date]
+            is_current_session = session_position == self.active_session_position
+            starting_position = 0 if direction > 0 else len(session_indices) - 1
+
+            # Exclude the current candle so repeated clicks always advance in the requested
+            # direction, even when its annotation has not yet been saved.
+            if is_current_session:
+                starting_position = self.active_candlestick_position + direction
+
+            candlestick_positions = range(
+                starting_position,
+                len(session_indices) if direction > 0 else -1,
+                direction,
+            )
+
+            for candlestick_position in candlestick_positions:
+                candlestick_id = str(candlestick_ids[session_indices[candlestick_position]])
+
+                # Existing judgments are preserved; seeking only selects a candle with no row.
+                if candlestick_id in annotated_ids:
+                    continue
+
+                # Reuse the current chart geometry when the target belongs to this same day.
+                if is_current_session:
+                    self.active_candlestick_position = candlestick_position
+                    self.chart.set_active_candlestick(candlestick_position)
+                    self._load_active_annotation()
+
+                else:
+                    self.active_session_position = session_position
+                    self._load_active_session(candlestick_position=candlestick_position)
+
+                return
+
+        # Keep the selected candle and any incomplete choices when the range is exhausted.
+        search_direction = "later" if direction > 0 else "earlier"
+        self.statusBar().showMessage(
+            f"No {search_direction} unannotated candle in the applied date range."
+        )
 
     def move_to_next_candlestick(self) -> None:
         """Select the next candlestick when one exists."""

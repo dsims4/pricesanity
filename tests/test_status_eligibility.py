@@ -1,4 +1,4 @@
-"""Historical fallback sessions must remain conservative and causal."""
+"""Available historical prices still require scheduled session evidence."""
 
 from dataclasses import replace
 
@@ -25,12 +25,12 @@ def historical_corpus():
         ("2014-06-13", "available", 15, False, 104.0),
         ("2014-06-16", "unavailable", 15, False, 105.0),
         ("2014-06-17", None, 15, False, 106.0),
-        # Without a scheduled close, an early-close-shaped date must fail the
-        # configured normal-session grid instead of receiving an invented close.
+        # Short prices cannot establish an early close without a scheduled
+        # boundary; both partial and complete unscheduled dates remain unusable.
         ("2014-07-03", "available", 10, False, 107.0),
         ("2015-11-19", "available", 15, False, 110.0),
         # This is the first authoritative status-derived session and therefore
-        # the exact date on which historical fallback stops.
+        # the first date that can supply a trustworthy closing reference.
         ("2015-11-20", "available", 15, True, 112.0),
         ("2015-11-23", "available", 15, False, 113.0),
         ("2015-11-24", "available", 15, True, 114.0),
@@ -39,6 +39,9 @@ def historical_corpus():
     candle_frames = []
     status_rows = []
     condition_rows = []
+
+    # Vary prices, quality, and scheduled evidence independently so availability
+    # alone cannot accidentally qualify the pre-coverage examples.
     for day, condition, minutes, has_status, price in specifications:
         timestamps = pd.date_range(
             day + " 09:30",
@@ -57,8 +60,11 @@ def historical_corpus():
                 }
             )
         )
+        # Omitting quality evidence must remain distinct from an available day.
         if condition is not None:
             condition_rows.append({"date": day, "condition": condition})
+
+        # Only these explicit transitions may establish session boundaries.
         if has_status:
             close_time = "09:40" if minutes == 10 else "09:45"
             status_rows.extend(
@@ -99,59 +105,33 @@ def local_dates(table: pd.DataFrame) -> list[str]:
     )
 
 
-def test_pre_status_fallback_keeps_only_complete_available_normal_sessions():
-    """Verify available full sessions use fallback without weakening quality."""
+def test_available_prices_without_scheduled_status_are_not_eligible():
+    """Dataset availability alone cannot establish a session or its previous close."""
+
+    candles, status, conditions, config = historical_corpus()
+    result = prepare_candlestick_session_tables(candles, status, conditions, config=config)
+
+    # November 20 is the first complete scheduled session and is reference-only.
+    # Missing November 23 status breaks the chain; November 24 restores it.
+    assert local_dates(result.ohlc) == ["2015-11-25"]
+    assert len(result.ohlc) == 2
+    assert result.normalized.iloc[0].open_gap == (115.0 - 114.0) / 114.0
+
+
+def test_no_scheduled_status_produces_no_annotation_targets():
+    """Complete available candles remain unusable when no scheduled evidence exists."""
 
     candles, status, conditions, config = historical_corpus()
     result = prepare_candlestick_session_tables(
-        candles, status, conditions, config=config
+        candles, status.iloc[:0], conditions, config=config
     )
 
-    # The first available date is reference-only. Degraded, unavailable,
-    # missing-quality, and incomplete early-close-shaped dates never appear.
-    prepared_dates = local_dates(result.ohlc)
-    assert "2014-06-09" not in prepared_dates
-    assert "2014-06-10" in prepared_dates
-    assert "2014-06-11" not in prepared_dates
-    assert "2014-06-12" not in prepared_dates
-    assert "2014-06-13" in prepared_dates
-    assert "2014-06-16" not in prepared_dates
-    assert "2014-06-17" not in prepared_dates
-    assert "2014-07-03" not in prepared_dates
+    assert result.ohlc.empty
+    assert result.normalized.empty
 
 
-def test_fallback_stops_at_first_status_derived_session_and_keeps_early_close():
-    """Verify authoritative coverage replaces fallback from its first date onward."""
-
-    candles, status, conditions, config = historical_corpus()
-    result = prepare_candlestick_session_tables(
-        candles, status, conditions, config=config
-    )
-    prepared_dates = local_dates(result.ohlc)
-
-    # November 19 receives the last fallback schedule and supplies the causal
-    # close used by the first authoritative session on November 20.
-    assert "2015-11-20" in prepared_dates
-    first_boundary_candle = result.normalized.loc[
-        result.normalized.ts_event
-        == pd.Timestamp("2015-11-20 09:30", tz="America/New_York").tz_convert("UTC")
-    ].iloc[0]
-    assert first_boundary_candle.open_gap == (112.0 - 110.0) / 110.0
-
-    # A missing post-coverage schedule breaks the chain instead of invoking
-    # fallback. The next scheduled day restores it, and the official early
-    # close after that remains eligible with two five-minute candles.
-    assert "2015-11-23" not in prepared_dates
-    assert "2015-11-24" not in prepared_dates
-    assert prepared_dates.count("2015-11-25") == 1
-    assert sum(
-        result.ohlc.ts_event.dt.tz_convert("America/New_York")
-        .dt.date.astype(str).eq("2015-11-25")
-    ) == 2
-
-
-def test_chunked_and_eager_historical_fallback_are_identical(tmp_path):
-    """Verify CSV read boundaries do not alter fallback or normalization."""
+def test_chunked_and_eager_status_eligibility_are_identical(tmp_path):
+    """Verify CSV read boundaries do not alter scheduled eligibility or normalization."""
 
     candles, status, conditions, config = historical_corpus()
     csv_path = tmp_path / "candlesticks.csv"

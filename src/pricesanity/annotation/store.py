@@ -89,6 +89,22 @@ class AnnotationStore:
         # Reuse the open connection so navigating candles does not repeatedly initialize SQLite.
         return _load_annotation(self._connection, candlestick_id)
 
+    def load_annotated_ids(self) -> set[str]:
+        """Read saved candle identifiers for one navigation search.
+
+        Returns:
+            Identifiers with persisted judgments, including other date ranges.
+        """
+
+        # Read once per seek so long annotated stretches do not require one SQL query per
+        # candle. A fresh snapshot also includes judgments saved by another open window.
+        return {
+            row[0]
+            for row in self._connection.execute(
+                "SELECT candlestick_id FROM annotations"
+            )
+        }
+
     def close(self) -> None:
         """Release the connection; calling this more than once is harmless."""
 

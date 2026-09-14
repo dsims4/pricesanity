@@ -19,8 +19,8 @@ from PySide6.QtWidgets import (
     QToolButton,
 )
 
-from pricesanity.annotation.schema import MarketRegime
-from pricesanity.annotation.store import load_annotation
+from pricesanity.annotation.schema import CandlestickAnnotation, MarketRegime
+from pricesanity.annotation.store import load_annotation, save_annotation
 from pricesanity.gui.annotation_app import AnnotationWindow
 
 
@@ -462,3 +462,153 @@ def test_failed_load_does_not_offer_blank_labels_for_overwrite(
     assert window.current_regime_value.text() == "Not selected"
     assert window.statusBar().currentMessage() == ""
     window.close()
+
+
+@pytest.fixture
+def separated_sessions(candlestick_data: pd.DataFrame) -> pd.DataFrame:
+    """Supply two eligible days separated by dates that navigation must skip."""
+
+    later_session = candlestick_data.copy()
+    later_session["session_date"] = "2026-09-14"
+    later_session["ts_event"] += pd.Timedelta(days=5)
+    later_session["candlestick_id"] = ["later-1", "later-2", "later-3"]
+
+    return pd.concat([candlestick_data, later_session], ignore_index=True)
+
+
+def test_day_buttons_skip_unavailable_dates_and_respect_range(
+    qt_application, separated_sessions, tmp_path
+) -> None:
+    """Day buttons select actual sessions and stop at the applied boundaries."""
+
+    window = AnnotationWindow(separated_sessions, tmp_path / "annotations.db")
+
+    try:
+        assert not window.previous_day_button.isEnabled()
+
+        # Starting mid-session must still open the adjacent day's first candlestick.
+        window.move_to_next_candlestick()
+        window.next_day_button.click()
+
+        assert window._active_candlestick_id() == "later-1"
+        assert "2026-09-14" in window.session_position_label.text()
+        assert not window.next_day_button.isEnabled()
+
+        window.previous_day_button.click()
+
+        assert window._active_candlestick_id() == "candle-1"
+
+        # Narrowing the range must refresh both boundary buttons immediately.
+        window.end_date_input.setDate(QDate(2026, 9, 9))
+        window.apply_date_range_button.click()
+
+        assert not window.previous_day_button.isEnabled()
+        assert not window.next_day_button.isEnabled()
+
+    finally:
+        window.close()
+
+
+def test_seek_buttons_skip_saved_candles_across_sessions(
+    qt_application, separated_sessions, tmp_path
+) -> None:
+    """Seeking observes fresh database writes and preserves existing judgments."""
+
+    database_path = tmp_path / "annotations.db"
+    window = AnnotationWindow(separated_sessions, database_path)
+
+    try:
+        # Simulate another writer after the GUI opens so a stale startup cache cannot pass.
+        for candlestick_id in ("candle-2", "candle-3", "later-1"):
+            save_annotation(
+                database_path,
+                CandlestickAnnotation(candlestick_id, MarketRegime.BULL, MarketRegime.BEAR),
+            )
+
+        window.seek_forward_button.click()
+
+        assert window._active_candlestick_id() == "later-2"
+        assert window.current_regime_value.text() == "Not selected"
+        assert window.opening_gap_value.text() == "-0.200%"
+
+        window.seek_back_button.click()
+
+        assert window._active_candlestick_id() == "candle-1"
+        assert window.annotation_store.load_annotated_ids() == {
+            "candle-2", "candle-3", "later-1"
+        }
+
+        # Seeking cannot escape a selected range to find an otherwise eligible candle.
+        window.end_date_input.setDate(QDate(2026, 9, 9))
+        window.apply_date_range_button.click()
+        window.seek_forward_button.click()
+
+        assert window._active_candlestick_id() == "candle-1"
+        assert "No later unannotated candle" in window.statusBar().currentMessage()
+
+    finally:
+        window.close()
+
+
+def test_seek_within_session_reuses_chart_and_reports_boundaries(
+    qt_application, candlestick_data, tmp_path, monkeypatch
+) -> None:
+    """Seeking within a day moves only the arrow and retains unfinished choices at the end."""
+
+    window = AnnotationWindow(candlestick_data, tmp_path / "annotations.db")
+
+    def unexpected_redraw(*args):
+        """Reject unnecessary geometry work when the trading day has not changed."""
+
+        pytest.fail("Seeking within one session redrew the chart")
+
+    monkeypatch.setattr(window.chart, "draw_session", unexpected_redraw)
+
+    try:
+        window.seek_forward_button.click()
+
+        assert window._active_candlestick_id() == "candle-2"
+
+        window.seek_back_button.click()
+        window.select_regime(MarketRegime.RANGE)
+        window.seek_back_button.click()
+
+        assert window._active_candlestick_id() == "candle-1"
+        assert window.selected_current_regime is MarketRegime.RANGE
+        assert not window.is_selecting_current_regime
+        assert "No earlier unannotated candle" in window.statusBar().currentMessage()
+
+    finally:
+        window.close()
+
+
+def test_failed_seek_preserves_selection_and_can_retry(
+    qt_application, candlestick_data, tmp_path, monkeypatch
+) -> None:
+    """A failed database read cannot be interpreted as an unannotated candidate."""
+
+    import sqlite3
+
+    window = AnnotationWindow(candlestick_data, tmp_path / "annotations.db")
+    original_read = window.annotation_store.load_annotated_ids
+
+    def fail_read():
+        """Inject a read failure before any selection changes."""
+
+        raise sqlite3.OperationalError("database is locked")
+
+    try:
+        monkeypatch.setattr(window.annotation_store, "load_annotated_ids", fail_read)
+        window.seek_forward_button.click()
+
+        assert window._active_candlestick_id() == "candle-1"
+        assert "Could not seek annotations" in window.statusBar().currentMessage()
+
+        monkeypatch.setattr(window.annotation_store, "load_annotated_ids", original_read)
+        window.seek_forward_button.click()
+
+        assert window._active_candlestick_id() == "candle-2"
+        assert window.statusBar().currentMessage() == ""
+
+    finally:
+        window.close()

@@ -1,6 +1,5 @@
 """Convert Databento status information into RTH session schedules."""
 
-from collections.abc import Iterable
 from datetime import date, time
 
 import pandas as pd
@@ -246,105 +245,6 @@ def build_session_schedule(
             "data_condition",
         ),
     )
-
-
-def add_historical_fallback_sessions(
-    status_session_schedule: pd.DataFrame,
-    data_conditions: pd.DataFrame,
-    observed_session_dates: Iterable[date],
-    *,
-    session_timezone: str,
-    session_start_time: str,
-    session_end_time: str,
-) -> pd.DataFrame:
-    """Add conservative normal RTH schedules before status coverage begins.
-
-    Args:
-        status_session_schedule: Authoritative sessions built from scheduled status closes.
-        data_conditions: Databento quality evidence for historical dates.
-        observed_session_dates: Local dates containing candidate OHLC records.
-        session_timezone: Timezone defining each trading date.
-        session_start_time: Configured normal RTH opening time.
-        session_end_time: Configured normal RTH closing time.
-
-    Returns:
-        One chronological schedule containing historical fallbacks followed by
-        authoritative status-derived sessions.
-
-    Raises:
-        ValueError: If no authoritative status schedule exists or condition dates are invalid.
-    """
-
-    # The first successfully constructed status session is the evidence-based
-    # point where authoritative schedules become expected. Fallback must stop
-    # there even when a later date happens to be missing a status record.
-    # This assumes the supplied history includes the transition into scheduled
-    # coverage; an arbitrary later subset could infer a later boundary.
-    if status_session_schedule.empty:
-        raise ValueError(
-            "Historical fallback requires at least one status-derived session."
-        )
-    scheduled_status_coverage_start = min(
-        pd.to_datetime(
-            status_session_schedule["session_open"], errors="raise", utc=True
-        ).dt.tz_convert(session_timezone).dt.date
-    )
-
-    parsed_conditions = data_conditions.copy()
-    parsed_conditions["session_date"] = pd.to_datetime(
-        parsed_conditions["date"], errors="coerce"
-    ).dt.date
-    if parsed_conditions["session_date"].isna().any():
-        raise ValueError("Condition data contains invalid dates.")
-    if parsed_conditions["session_date"].duplicated().any():
-        raise ValueError("Condition data contains duplicate dates.")
-    condition_by_date = (
-        parsed_conditions.set_index("session_date")["condition"]
-        .astype(str)
-        .str.lower()
-    )
-
-    parsed_session_start = time.fromisoformat(session_start_time)
-    parsed_session_end = time.fromisoformat(session_end_time)
-    if parsed_session_start >= parsed_session_end:
-        raise ValueError("RTH session start must occur before its end.")
-
-    fallback_rows: list[dict[str, object]] = []
-    for session_date in sorted(set(observed_session_dates)):
-        if session_date >= scheduled_status_coverage_start:
-            continue
-        # Quality metadata remains authoritative in the old status era. An
-        # absent or adverse condition is retained as unknown/adverse so the
-        # ordinary validator rejects it and breaks the same causal trust chain.
-        data_condition = condition_by_date.get(session_date, "unknown")
-        fallback_open = pd.Timestamp.combine(
-            session_date, parsed_session_start
-        ).tz_localize(session_timezone)
-        fallback_close = pd.Timestamp.combine(
-            session_date, parsed_session_end
-        ).tz_localize(session_timezone)
-        # Never infer an early close without status evidence. Requiring the
-        # normal configured boundary makes early-close-shaped data incomplete
-        # and therefore untrustworthy in the existing validator.
-        fallback_rows.append(
-            {
-                "session_date": session_date,
-                "session_open": fallback_open.tz_convert("UTC"),
-                "session_close": fallback_close.tz_convert("UTC"),
-                "data_condition": data_condition,
-            }
-        )
-
-    if not fallback_rows:
-        return status_session_schedule.sort_values(
-            "session_open", kind="stable"
-        ).reset_index(drop=True)
-    fallback_schedule = pd.DataFrame(
-        fallback_rows, columns=status_session_schedule.columns
-    )
-    return pd.concat(
-        [fallback_schedule, status_session_schedule], ignore_index=True
-    ).sort_values("session_open", kind="stable").reset_index(drop=True)
 
 
 def extract_session_transitions(
