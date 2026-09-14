@@ -1,5 +1,6 @@
-"""Interactive candlestick chart for retrospective annotation."""
+"""Interactive candlestick chart for annotation and retrospective evaluation."""
 
+from collections.abc import Sequence
 from typing import cast
 
 import pandas as pd
@@ -21,12 +22,14 @@ class CandlestickChart(FigureCanvasQTAgg):
         parent: QWidget | None = None,
         *,
         timestamp_column: str = "ts_event",
+        session_timezone: str = "America/New_York",
     ) -> None:
         """Create an empty candlestick chart.
 
         Args:
             parent: PySide6 widget responsible for this chart.
             timestamp_column: Column containing UTC candle timestamps.
+            session_timezone: Configured timezone used only for display labels.
         """
 
         # Give this Qt widget its own figure so chart updates do not depend on global pyplot
@@ -35,11 +38,14 @@ class CandlestickChart(FigureCanvasQTAgg):
 
         self.axes = figure.add_subplot(1, 1, 1)
 
-        # Retain the configured timestamp name for New York time labels.
+        # Retain the configured timestamp field and timezone for display labels.
         self.timestamp_column = timestamp_column
+        self.session_timezone = session_timezone
+        self._regime_artists = []
         self._active_marker: Annotation | None = None
         self._highs: tuple[float, ...] = ()
         self._arrow_offset = 0.0
+        self._regime_change_markers: tuple[tuple[int, str], ...] = ()
 
         super().__init__(figure)
 
@@ -83,14 +89,16 @@ class CandlestickChart(FigureCanvasQTAgg):
 
         # Remove the previous chart before drawing the current session state.
         self.axes.clear()
+        self._regime_artists = []
+        self._regime_change_markers = ()
 
-        # Convert timestamps to New York time only for readable axis labels;
+        # Convert timestamps to session-local time only for readable axis labels;
         # their stored UTC values and annotation identifiers remain unchanged.
-        new_york_timestamps = pd.to_datetime(
+        display_timestamps = pd.to_datetime(
             candlestick_data[self.timestamp_column],
             utc=True,
             errors="raise",
-        ).dt.tz_convert("America/New_York")
+        ).dt.tz_convert(self.session_timezone)
 
         # Draw every candle because retrospective annotation uses the completed
         # session to assign the regimes that actually occurred.
@@ -185,19 +193,148 @@ class CandlestickChart(FigureCanvasQTAgg):
             tick_positions.append(final_position)
 
         tick_labels = [
-            new_york_timestamps.iloc[position].strftime("%H:%M") for position in tick_positions
+            display_timestamps.iloc[position].strftime("%H:%M") for position in tick_positions
         ]
         self.axes.set_xticks(tick_positions, tick_labels)
 
-        # Put New York time below the chart and price values along its right
+        # Put session-local time below the chart and price values along its right
         # edge, matching the layout commonly used for market charts.
-        self.axes.set_xlabel("Time of day (New York)")
+        display_timezone = self.session_timezone.rsplit("/", 1)[-1].replace("_", " ")
+        self.axes.set_xlabel(f"Time of day ({display_timezone})")
         self.axes.set_ylabel("Price")
         self.axes.yaxis.tick_right()
         self.axes.yaxis.set_label_position("right")
         self.axes.grid(axis="y", alpha=0.2)
 
         # Ask the existing Qt canvas to repaint after the chart has changed.
+        self.draw_idle()
+
+    @property
+    def regime_change_markers(self) -> tuple[tuple[int, str], ...]:
+        """Return the exact candle positions and new regimes drawn on the chart."""
+
+        return self._regime_change_markers
+
+    def set_regime_change_markers(
+        self,
+        regime_change_markers: Sequence[tuple[int, str]],
+        *,
+        starting_regime: str | None = None,
+    ) -> None:
+        """Underline predicted regime spans without drawing lines through the prices.
+
+        Args:
+            regime_change_markers: Zero-based positions paired with each new regime.
+            starting_regime: Optional first regime, shown from candle zero without a change.
+
+        Raises:
+            ValueError: If a marker is invalid or a session has not been drawn.
+        """
+
+        if not self._highs:
+            raise ValueError("A session must be drawn before adding regime markers.")
+
+        valid_regimes = {"bull", "bear", "range"}
+        validated_markers = []
+        for candle_position, regime in regime_change_markers:
+            # Candle zero establishes the displayed starting regime. Treating it
+            # as a change would imply a prior prediction from another session.
+            if not 0 < candle_position < len(self._highs):
+                raise ValueError("Regime-change marker is outside the valid session range.")
+            if regime not in valid_regimes:
+                raise ValueError("Regime-change marker contains an unknown regime.")
+            validated_markers.append((candle_position, regime))
+
+        regime_colors = {
+            "bull": "tab:green",
+            "bear": "tab:red",
+            "range": "tab:orange",
+        }
+        if starting_regime is not None and starting_regime not in valid_regimes:
+            raise ValueError("Starting regime is unknown.")
+        positions = [position for position, _ in validated_markers]
+        if positions != sorted(set(positions)):
+            raise ValueError("Regime changes must have unique chronological positions.")
+
+        # Replace overlays rather than accumulating artists when predictions are refreshed.
+        for artist in self._regime_artists:
+            artist.remove()
+        self._regime_artists = []
+
+        span_starts = list(validated_markers)
+        if starting_regime is not None:
+            span_starts.insert(0, (0, starting_regime))
+
+        # Short spans use abbreviations so their text does not spill into neighboring regimes.
+        short_labels = {"bull": "Bu", "bear": "Be", "range": "R"}
+
+        # A slim strip sits beneath the prices and retains exact candle-width boundaries.
+        for span_index, (starting_position, regime) in enumerate(span_starts):
+            ending_position = (
+                span_starts[span_index + 1][0]
+                if span_index + 1 < len(span_starts)
+                else len(self._highs)
+            )
+            strip = Rectangle(
+                (starting_position - 0.5, 0.015),
+                width=ending_position - starting_position,
+                height=0.035,
+                transform=self.axes.get_xaxis_transform(),
+                facecolor=regime_colors[regime],
+                edgecolor="white",
+                linewidth=0.5,
+                clip_on=True,
+            )
+            self.axes.add_patch(strip)
+            self._regime_artists.append(strip)
+
+            span_length = ending_position - starting_position
+            bar_label = self.axes.text(
+                (starting_position + ending_position - 1) / 2,
+                0.0325,
+                regime.title() if span_length >= 3 else short_labels[regime],
+                transform=self.axes.get_xaxis_transform(),
+                ha="center",
+                va="center",
+                fontsize=7,
+                fontweight="bold",
+                color="black" if regime == "range" else "white",
+                clip_on=True,
+            )
+            self._regime_artists.append(bar_label)
+
+        # Anchor each change label to its first candle. Alternating the text offset separates
+        # nearby changes without restoring vertical lines through the price chart.
+        for marker_index, (candle_position, regime) in enumerate(validated_markers):
+            change_label = self.axes.annotate(
+                regime.title(),
+                xy=(candle_position, self._highs[candle_position]),
+                xytext=(0, 5 + 12 * (marker_index % 2)),
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
+                fontsize=7,
+                color=regime_colors[regime],
+                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.8, "pad": 1},
+            )
+            self._regime_artists.append(change_label)
+
+        # A fixed legend identifies even one-candle spans without squeezing repeated text
+        # into the plot. Candle zero is a starting span, never a fabricated change marker.
+        if span_starts:
+            legend = self.axes.legend(
+                handles=[Rectangle((0, 0), 1, 1, facecolor=color,
+                                   label=f"{regime.title()} ({short_labels[regime]})")
+                         for regime, color in regime_colors.items()],
+                loc="upper left",
+                ncol=3,
+                frameon=False,
+                fontsize=9,
+                title="Model current regime",
+            )
+            self._regime_artists.append(legend)
+
+        self._regime_change_markers = tuple(validated_markers)
         self.draw_idle()
 
     def set_active_candlestick(self, position: int) -> None:

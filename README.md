@@ -3,8 +3,8 @@
 An educational walkthrough toward a Transformer that identifies the current
 market regime and regime changes in E-mini S&P 500 futures price action.
 Currently implemented: Databento downloads, session validation, normalized candle
-features, and a desktop annotation GUI. Model construction, training, and
-inference are future work.
+features, a desktop annotation GUI, a causal two-head Transformer, chronological
+training and evaluation, and a read-only GUI for saved test predictions.
 
 ## Setup
 
@@ -332,7 +332,229 @@ The full session remains visible: this is **retrospective annotation**. Feature
 normalization is causal, but the human annotator can see subsequent candles.
 Both regime targets record your own interpretation; anticipated_regime is not
 an automatically generated future-outcome label. Separate classification heads
-are a proposed model design.
+learn the current and anticipated judgments from the same causal representation.
+
+## Train
+
+Install the optional PyTorch dependency and refresh the terminal commands after
+changing the project metadata:
+
+```zsh
+python -m pip install -e '.[training]'
+```
+
+The first experiment uses the earliest 100 complete sessions for training, the
+following 20 for validation, and the final 10 for one untouched test:
+
+```zsh
+pricesanity-train \
+  --config configs/default.yaml \
+  --normalized data/processed/ES-v-0_2010-06-06_2026-09-12.parquet \
+  --database data/annotations/pricesanity.sqlite3
+```
+
+Single-run mode requires exactly 130 complete annotated sessions by default.
+For longer history, use expanding-history walk-forward mode:
+
+```zsh
+pricesanity-train \
+  --config configs/default.yaml \
+  --normalized data/processed/ES-v-0_2010-06-06_2026-09-12.parquet \
+  --database data/annotations/pricesanity.sqlite3 \
+  --walk-forward --resume
+```
+
+The first run uses **100 train / 20 validation / 10 test** sessions. Training
+keeps session one and expands by 120 sessions per later run. Validation and test
+remain fixed at 20 and 10 sessions:
+
+| Run | Train | Validation | Test |
+| --- | --- | --- | --- |
+| 1 | 1–100 | 101–120 | 121–130 |
+| 2 | 1–220 | 221–240 | 241–250 |
+| 3 | 1–340 | 341–360 | 361–370 |
+| 4 | 1–460 | 461–480 | 481–490 |
+
+The 120 added training sessions comprise the previous 20 validation sessions,
+previous 10 test sessions, and 90 newly elapsed sessions. Old test sessions may
+enter a later training set because they are then historical; their original
+predictions and scores remain the record of what the earlier model knew.
+The intervening 90 sessions are not a separate official test block in this schedule.
+
+`--training-sessions` specifies the initial training count. For small smoke tests,
+role counts remain configurable; growth is initial training plus validation count
+(default 100 + 20). The misleading `--step-sessions` option has been removed and
+old commands using it fail explicitly. Insufficient trailing history is reported
+and never creates a partial validation/test experiment.
+
+Only training sessions update weights and fit feature means and standard deviations.
+Validation uses those frozen statistics and chooses the best epoch by validation loss.
+After restoring that epoch's weights, test runs once and cannot influence scaling,
+weight updates, or checkpoint selection. Every experiment starts a fresh model;
+metadata records `initialization_mode: fresh`. There is no implicit warm-start.
+Each expanding training pool fits its own statistics, frozen throughout that run's
+validation and test. Later statistics never replace an earlier run's statistics.
+Sessions shuffle during training; candles inside each session stay chronological.
+Causal attention hides later candles. Early-close sessions retain their natural
+length, with padding excluded from attention, losses, metrics, and saved predictions.
+
+The normalized source and annotation snapshot load once per command. Overlapping
+runs reuse raw CPU session tensors, but never fitted standardizers or model weights.
+DataLoaders use zero worker processes. `--device auto` chooses CUDA if available,
+then Apple MPS, then CPU; explicit `--device mps` fails if MPS is unavailable.
+No mixed precision or automatic unsupported-operation fallback is enabled by this code.
+
+New CLI training runs default to `--model-dimension 48` (previously 12), with
+three attention heads, two layers, and a 192-dimensional feed-forward block.
+The four normalized input features are unchanged. Width must be divisible by
+three; `--model-dimension 12` reproduces the original capacity. Saved models retain
+their own architecture. Compare capacity experiments in separate output directories;
+changing width does not alter old predictions or guarantee better validation results.
+
+Single-run output defaults to `data/models/run_001/`; `--checkpoint` can change its
+checkpoint filename/location. Walk-forward output defaults to
+`data/models/walk_forward/`, configurable with `--output-directory`:
+
+```text
+run_001/
+    model.pt
+    test_predictions.parquet
+    run_metadata.json
+run_002/
+    ...
+```
+
+Checkpoints retain selected weights, architecture, train-only feature scaling,
+training settings, epoch history, baseline scores, and final test measurements.
+Predictions contain each real test candle's stable ID, timestamp, two predicted
+regimes, class probabilities, and separately named human labels. Metadata records
+boundaries, seed, source paths, model identity, and artifact checksums. Internal
+artifact paths are relative, so the bundle can be moved while supplying its OHLC source.
+Metadata also records actual session counts, real candle counts by partition and
+in total, elapsed fitting/evaluation time, and both label distributions for train,
+validation, and test. Distributions are recorded after evaluation and never change
+loss weighting. Accuracy, macro-F1, confusion matrices, and majority-class baselines
+remain in the checkpoint; a separate `results.json` is not required.
+Metadata is published last and marks a completed run.
+
+Use `--walk-forward --run-index 4` to target run four, or `--start-run 4` to run
+from four onward. Add `--resume` to skip completed bundles only after checking
+integrity and matching inputs/settings. An interrupted run without final metadata
+is explicitly rebuilt from epoch one; optimizer-state continuation is not implemented.
+A damaged completed bundle or changed labels/settings is refused. `--overwrite`
+explicitly authorizes replacement. Older bundles remain viewable with warnings about
+missing checksums, but cannot be automatically reused without the new input signature.
+Starting a later run never rewrites an earlier checkpoint, predictions, metrics,
+metadata, or checksums, even when the corpus grows and the old run count becomes
+historical. Only explicit `--overwrite` permits replacing a selected run.
+Use a new `--output-directory` for experiments created with the former rolling
+protocol: those bundles remain viewable, but resume rejects their old signatures
+rather than silently relabeling them as expanding-history runs.
+Do not run simultaneous writers against the same output directory.
+
+Later histories (100, 220, 340, 460, ...) require more training compute and retained
+input memory. This is expected. Terminal output includes session/candle counts,
+elapsed training time, run boundaries, train/validation epoch losses, best epoch,
+test accuracy and macro-F1 for both heads, and artifact locations. These are measured
+per run; this README makes no claim about trained predictive performance.
+
+### Research limitations of this baseline
+
+All historical training sessions are sampled equally, with no recency or class
+reweighting. Existing candle-level loss and natural early-close lengths are retained.
+Older market regimes may increasingly influence an expanding model; this remains
+a research question. Future experiments can compare expanding history, recent
+rolling history, and expanding history with recency weighting without changing
+this first baseline automatically.
+
+Runs share historical training data and are dependent experiments, not independent
+replications. Twenty-session validation scores can be noisy, and class distributions
+and fitted standardization can drift between runs. Recorded distributions, frozen
+per-run statistics, and immutable results make those changes auditable; they do not
+eliminate the modeling risks.
+
+Repeated architecture or hyperparameter changes informed by historical test results
+make those tests part of the researcher's effective model selection. For later
+serious performance claims, keep a final untouched holdout period. This command
+does not reserve, remove, or change any dataset period automatically.
+
+### Controlled tuning while annotation continues
+
+Use the validation-only diagnostic command for tuning. The ordinary training CLI
+runs its official test pass automatically and should not be used for repeated
+hyperparameter selection.
+
+```zsh
+python -m pricesanity.training.tuning \
+  --normalized data/processed/ES-v-0_2010-06-06_2026-09-12.parquet \
+  --database data/annotations/pricesanity.sqlite3 \
+  --config configs/default.yaml \
+  --output-directory data/models/tuning_pass_001 \
+  --device cpu
+```
+
+The first stage reruns the unchanged baseline and checks memorization of five
+sessions drawn only from training. If that diagnostic succeeds, add `--resume
+--full-checklist` to continue controlled validation comparisons. The snapshot
+contains the first run's 100 training and 20 validation sessions; the ten test
+sessions are reserved and never evaluated by this command. A resumed pass reads
+its frozen snapshot, so additional annotation work cannot change a comparison.
+Start a new pass directory to incorporate corrected labels.
+
+Every experiment records settings, seed, device, parameter count, elapsed time,
+epoch losses, per-class precision/recall/F1, confusion matrices, class counts,
+training-only majority baselines, and validation scores near human transitions
+(exact candle and neighborhoods of one/two candles). Neighborhoods never cross
+sessions. Diagnostic weights use a separate filename and are not official test
+bundles for the GUI. Completed experiments are reused only with matching settings
+and execution environment; existing reports are not overwritten.
+
+Context experiments keep each candle's original session position and restrict its
+complete receptive field to the trailing 16, 32, or 64 candles. This requires
+separate overlapping windows and is more expensive than full-session attention.
+A per-layer band mask would not enforce the same limit because deeper layers could
+pass older information through intermediate candles. No production model or GUI
+context behavior is changed by these diagnostic experiments.
+
+Width sweeps use a matched four-head control so 12, 32, and 64 dimensions can be
+compared without simultaneously changing head count. The feed-forward width stays
+fixed during that sweep and is tested separately. Single-head losses are diagnostic
+ablations; ordinary training retains its equal two-head loss. No class or recency
+weighting is added automatically, and no chosen settings replace production defaults.
+Repeated comparisons on 20 validation sessions can overfit validation itself; selected
+settings remain provisional until confirmed on additional chronological data.
+
+### Inspect saved test results
+
+Install the GUI and training extras, then open a completed run:
+
+```zsh
+pricesanity-test \
+  --run data/models/walk_forward/run_001 \
+  --candlesticks data/interim/ES-v-0_2010-06-06_2026-09-12_ohlc.parquet \
+  --config configs/default.yaml
+```
+
+The OHLC path may be omitted when the recorded external source still exists.
+The loader verifies checkpoint and prediction checksums, model/run identity,
+configured instrument and timezone, OHLC geometry, and exact timestamp/ID alignment
+for whole test sessions. It rejects overlapping subsets from wrong candle intervals.
+Older absolute internal paths resolve to local bundle filenames for portability.
+
+The GUI reads saved predictions; navigation performs no model inference and never
+opens the annotation database. Left/right move between candles; previous/next session
+buttons change days. Human labels are hidden until explicitly enabled and remain
+separate from model predictions. Display times use the validated session timezone.
+
+The chart underlines each predicted regime with a colored span (Bull, Bear, Range),
+including the first regime of the session. Bars include text labels (Bu/Be/R on short spans), and each change candle has a
+nearby label naming its new regime. A fixed legend explains the colors and abbreviations;
+no dotted vertical lines are drawn. A span boundary belongs to candle `t`
+exactly when its predicted current
+regime differs from candle `t - 1`; its label names the new regime. Candle zero
+establishes the displayed starting regime and has no change marker. Comparisons
+restart each session. The full chart is retrospective, while stored model predictions
+were produced with causal attention.
 
 ## Candle identifiers
 
@@ -350,7 +572,7 @@ normalization formulas are unchanged.
 
 The GUI uses Qt's main event loop with no application-created worker threads.
 Changing sessions builds the chart; moving within a session moves its existing
-marker and schedules a repaint. Session row indices are built once. Each window
+marker and schedules a repaint. Session row indices are built once. Each annotation window
 owns one SQLite connection, commits each completed label pair, and closes the
 connection when the window closes. Standalone storage helpers close theirs after
 each operation.

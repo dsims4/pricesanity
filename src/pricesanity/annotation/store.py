@@ -105,6 +105,31 @@ class AnnotationStore:
             )
         }
 
+    def load_all(self) -> list[CandlestickAnnotation]:
+        """Load every complete annotation.
+
+        Returns:
+            All saved candlestick judgements.
+        """
+
+        # Read both targets together so training cannot receive half of an annotation.
+        rows = self._connection.execute(
+            """
+            SELECT candlestick_id, current_regime, anticipated_regime
+            FROM annotations
+            """
+        ).fetchall()
+
+        # Rebuild the typed annotations so invalid stored regime values fail clearly.
+        return [
+            CandlestickAnnotation(
+                candlestick_id=row[0],
+                current_regime=MarketRegime(row[1]),
+                anticipated_regime=MarketRegime(row[2]),
+            )
+            for row in rows
+        ]
+
     def close(self) -> None:
         """Release the connection; calling this more than once is harmless."""
 

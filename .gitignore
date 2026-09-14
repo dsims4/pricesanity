@@ -245,3 +245,6 @@ data/annotations/*
 !data/interim/.gitkeep
 !data/processed/.gitkeep
 !data/annotations/.gitkeep
+
+# Run metadata and predictions belong with local model artifacts, not source control.
+data/models/

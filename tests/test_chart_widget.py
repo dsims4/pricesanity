@@ -135,3 +135,34 @@ def test_navigation_reuses_candles_and_axis_layout(qt_application) -> None:
         chart.set_active_candlestick(3)
 
     chart.close()
+
+
+def test_regime_strips_include_start_and_replace_without_vertical_lines(qt_application) -> None:
+    """Regime spans cover exact candle widths without obscuring price geometry."""
+
+    candles = pd.DataFrame({
+        "ts_event": pd.date_range("2026-09-09T13:30:00Z", periods=4, freq="5min"),
+        "open": [100.0] * 4, "high": [102.0] * 4,
+        "low": [99.0] * 4, "close": [101.0] * 4,
+    })
+    chart = CandlestickChart(session_timezone="America/Chicago")
+    chart.draw_session(candles, 0)
+    chart.set_regime_change_markers([(2, "bear")], starting_regime="bull")
+
+    # The first strip starts at candle zero's left edge and ends at the next regime's edge.
+    strips = list(chart.axes.patches)[4:]
+    assert [(strip.get_x(), strip.get_width()) for strip in strips] == [(-0.5, 2), (1.5, 2)]
+    assert chart.regime_change_markers == ((2, "bear"),)
+    assert len(chart.axes.lines) == 0
+    assert [label.get_text() for label in chart.axes.texts] == ["Active", "Bu", "Be", "Bear"]
+    assert chart.axes.texts[-1].xy == (2, 102.0)
+    assert chart.axes.get_xlabel() == "Time of day (Chicago)"
+    assert chart.axes.get_xticklabels()[0].get_text() == "08:30"
+
+    # Refreshing a constant day replaces prior spans and retains its starting regime.
+    chart.set_regime_change_markers([], starting_regime="range")
+    assert len(chart.axes.patches) == 5
+    assert chart.axes.patches[-1].get_width() == 4
+    assert [label.get_text() for label in chart.axes.texts] == ["Active", "Range"]
+    assert chart.regime_change_markers == ()
+    chart.close()

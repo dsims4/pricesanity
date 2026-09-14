@@ -142,3 +142,34 @@ def test_failed_transaction_preserves_previous_annotation(tmp_path) -> None:
         store.save(CandlestickAnnotation("next", MarketRegime.BEAR, MarketRegime.BULL))
 
         assert store.load("next") is not None
+
+
+def test_annotation_store_loads_all_annotations(tmp_path) -> None:
+    """The training boundary can retrieve every complete judgement."""
+
+    from contextlib import closing
+
+    from pricesanity.annotation.store import AnnotationStore
+
+    database_path = tmp_path / "annotations.sqlite3"
+    annotations = [
+        CandlestickAnnotation(
+            "candle-1",
+            MarketRegime.BULL,
+            MarketRegime.RANGE,
+        ),
+        CandlestickAnnotation(
+            "candle-2",
+            MarketRegime.BEAR,
+            MarketRegime.BULL,
+        ),
+    ]
+
+    # Save through the production interface before requesting the training collection.
+    with closing(AnnotationStore(database_path)) as store:
+        for annotation in annotations:
+            store.save(annotation)
+
+        loaded_annotations = store.load_all()
+
+    assert set(loaded_annotations) == set(annotations)
