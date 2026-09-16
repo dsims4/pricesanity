@@ -1,0 +1,76 @@
+format_version: 1
+output_root: data/models/benchmark
+
+dataset:
+  # Controlled models receive these same 64 causal values. Sequence families retain the
+  # 16-by-4 shape; tabular families receive the identical values flattened.
+  window_length: 16
+  feature_columns:
+    - open_gap
+    - body
+    - high_from_close
+    - low_from_close
+
+protocol:
+  # The validated corpus currently has 2,690 annotation-eligible sessions. Every session is
+  # accounted for: the first 2,190 are development history and the last 500 stay untouched.
+  expected_session_count: 2690
+  development_session_count: 2190
+  final_holdout_session_count: 500
+  controlled_first_scored_candle_position: 15
+  # Masked left padding lets every context score from the second candle, including early closes.
+  best_of_family_first_scored_candle_position: 1
+  learning_curve_evaluation_start: 2100
+  learning_curve_evaluation_end: 2190
+  chronological_validation_folds:
+    - training_end: 1000
+      validation_start: 1000
+      validation_end: 1100
+    - training_end: 1250
+      validation_start: 1250
+      validation_end: 1350
+    - training_end: 1500
+      validation_start: 1500
+      validation_end: 1600
+    - training_end: 1750
+      validation_start: 1750
+      validation_end: 1850
+    - training_end: 2000
+      validation_start: 2000
+      validation_end: 2100
+  learning_curve_session_counts: [250, 500, 1000, 1500, 2000]
+
+tuning:
+  primary_metric: mean_head_macro_f1
+  tuning_seed: 8675309
+  final_seeds: [42, 137, 271]
+  cpu_worker_count: 1
+  inference_timing_repetitions: 3
+  pilot_max_estimated_hours: 24.0
+  pilot_max_dense_memory_gib: 8.0
+  transformer_incumbent:
+    context_length: 16
+    model_dimension: 12
+    layer_count: 4
+    attention_head_count: 4
+    feedforward_dimension: 48
+    dropout: 0.1
+    learning_rate: 0.001
+    weight_decay: 0.01
+    batch_size: 8
+    epochs: 50
+  candidate_budgets:
+    majority_class: 0
+    previous_regime: 0
+    gaussian_naive_bayes: 10
+    logistic_regression: 20
+    polynomial_logistic: 20
+    knn: 20
+    decision_tree: 25
+    random_forest: 30
+    gradient_boosting: 30
+    rbf_svm: 25
+    mlp: 25
+    tcn: 25
+    gru: 25
+    transformer: 25

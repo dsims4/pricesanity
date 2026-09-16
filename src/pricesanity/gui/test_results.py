@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from pricesanity.config import AppConfig
+from pricesanity.benchmark.artifacts import load_benchmark_run
 from pricesanity.data.identifiers import build_candlestick_id
 from pricesanity.gui.chart_widget import CandlestickChart
 from pricesanity.training.artifacts import load_run_artifacts
@@ -76,7 +77,34 @@ def load_test_run(
         ValueError: If artifacts are malformed, incompatible, or misaligned.
     """
 
-    metadata, predictions = load_run_artifacts(run_directory, config=config)
+    run_directory = Path(run_directory)
+    if (run_directory / "benchmark_metadata.json").is_file():
+        benchmark_metadata, predictions, _ = load_benchmark_run(run_directory)
+        dataset = benchmark_metadata.get("dataset", {})
+        identity = benchmark_metadata.get("identity", {})
+        if not isinstance(dataset, dict) or not isinstance(identity, dict):
+            raise ValueError("Benchmark run is missing dataset or model identity.")
+        for field, expected_value in (
+            ("instrument", config.data.instrument),
+            ("target_interval", config.data.target_interval),
+            ("session_timezone", config.data.session_timezone),
+        ):
+            if dataset.get(field) != expected_value:
+                raise ValueError(f"Benchmark {field} does not match project configuration.")
+        metadata = {
+            "artifact_kind": "benchmark",
+            "run_index": 1,
+            "run_count": 1,
+            "instrument": dataset["instrument"],
+            "target_interval": dataset["target_interval"],
+            "session_timezone": dataset["session_timezone"],
+            "candlestick_path": dataset.get("candlestick_path"),
+            "model_name": identity.get("model_name"),
+            "run_name": identity.get("run_name"),
+            "track": identity.get("track"),
+        }
+    else:
+        metadata, predictions = load_run_artifacts(run_directory, config=config)
 
     selected_candlestick_path = (
         Path(candlestick_path)
@@ -307,13 +335,22 @@ class TestResultsWindow(QMainWindow):
         self.chart.set_regime_change_markers(
             regime_change_markers, starting_regime=predicted_regimes[0]
         )
-        run_index = int(self.test_run.metadata["run_index"])
-        run_count = int(self.test_run.metadata["run_count"])
-        self.session_information.setText(
-            f"Walk-forward run {run_index} / {run_count} | "
-            f"Test session {self.active_session_position + 1} / {len(self.session_dates)} | "
-            f"{session_date}"
-        )
+        if self.test_run.metadata.get("artifact_kind") == "benchmark":
+            model_name = str(self.test_run.metadata.get("model_name", "Unknown model"))
+            track = str(self.test_run.metadata.get("track", "unknown track"))
+            self.session_information.setText(
+                f"{model_name} | {track} | "
+                f"Session {self.active_session_position + 1} / {len(self.session_dates)} | "
+                f"{session_date}"
+            )
+        else:
+            run_index = int(self.test_run.metadata["run_index"])
+            run_count = int(self.test_run.metadata["run_count"])
+            self.session_information.setText(
+                f"Walk-forward run {run_index} / {run_count} | "
+                f"Test session {self.active_session_position + 1} / "
+                f"{len(self.session_dates)} | {session_date}"
+            )
         self.starting_regime_label.setText(
             "Starting model regime: " + predicted_regimes[0].title()
         )

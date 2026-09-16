@@ -37,10 +37,16 @@ class ContextExperimentTransformer(RegimeTransformer):
                              persistent=False)
 
     def forward(self, features, padding_mask) -> RegimeTransformerOutput:
-        if self.context_length is None or features.shape[1] <= self.context_length:
+        if self.context_length is None:
             return super().forward(features, padding_mask)
 
-        batch_size, session_length, feature_count = features.shape
+        batch_size, session_length, feature_count = self._validate_inputs(
+            features,
+            padding_mask,
+        )
+        if session_length <= self.context_length:
+            return super().forward(features, padding_mask)
+
         window_length = self.context_length
         window_positions = self._window_positions[:session_length]
         windows = features[:, window_positions].reshape(-1, window_length, feature_count)

@@ -1,19 +1,110 @@
 # Price Sanity
 
-An educational walkthrough toward a Transformer that identifies the current
-market regime and regime changes in E-mini S&P 500 futures price action.
-Currently implemented: Databento downloads, session validation, normalized candle
-features, a desktop annotation GUI, a causal two-head Transformer, chronological
-training and evaluation, and a read-only GUI for saved test predictions.
+An educational, leakage-safe time-series machine-learning benchmark built around
+manually annotated E-mini S&P 500 market regimes. The original causal Transformer
+remains important, but Price Sanity now compares classical, recurrent, convolutional,
+and attention-based learners under one chronological protocol.
+
+| Area | Status |
+| --- | --- |
+| Managed data download and preparation | Implemented and tested |
+| Annotation application | Implemented; corpus still being completed |
+| Original causal Transformer | Implemented with compatible commands/checkpoints |
+| Classical benchmark adapters | Implemented and tiny-fit tested |
+| TCN, GRU, Transformer benchmark adapters | Implemented and tiny-fit tested |
+| Full 2,690-session benchmark | Not run |
+| Final 500-session holdout | Untouched |
+
+## Multi-model benchmark status
+
+**Execution engine ready / awaiting completed annotation corpus.** Price Sanity now has an
+immutable benchmark snapshot, resumable Optuna tuning, shared causal representations,
+chronological folds, frozen winner files, explicitly locked final evaluation, stage-coherent
+checksummed artifacts, and artifact-only result views. A tiny synthetic six-family acceptance
+test exercises this machinery. The real 2,690-session search and final holdout have not been run.
+
+```text
+Databento market data
+        ↓
+session validation and normalized OHLC geometry
+        ↓
+human current + anticipated regime annotations
+        ↓
+causal 16-candle sequential or identical flattened representations
+        ↓
+multiple model families
+        ↓
+chronological development tuning
+        ↓
+common metrics and untouched final holdout
+        ↓
+saved-artifact GUI, comparison view, and report notebooks
+```
+
+The controlled benchmark gives every algorithm the same 16 × 4 values. The separate
+best-of-family benchmark permits appropriate causal representations. Both differ from the
+existing production-style Transformer walk-forward evaluation. See
+[`docs/benchmark_protocol.md`](docs/benchmark_protocol.md),
+[`docs/leakage_rules.md`](docs/leakage_rules.md), and
+[`docs/experiment_design.md`](docs/experiment_design.md).
+
+Inspect the frozen 2,690-session plan, registered families, or local infrastructure profile:
+
+```zsh
+pricesanity-benchmark plan --session-count 2690
+pricesanity-benchmark models
+pricesanity-benchmark run --all-models --track controlled \
+  --mode tuning --session-count 2690 --dry-run
+pricesanity-benchmark-report
+pricesanity-benchmark profile --synthetic
+```
+
+The execution lifecycle and launch commands are documented in
+[`docs/benchmark_execution.md`](docs/benchmark_execution.md). Exact final access requires the
+deliberate `--confirm-final-holdout` switch; a focused one-fold diagnostic can never freeze a
+winner or unlock it.
+
+Classical estimators and resumable Optuna searches are optional:
+
+```zsh
+python -m pip install -e '.[benchmark]'
+```
+
+The two report notebooks are templates until the full corpus and completed benchmark artifacts
+exist. `pricesanity-compare` opens the saved-artifact leaderboard and shows an honest empty state
+before that point.
+
+Create a clean source-only review archive after committing the intended revision:
+
+```zsh
+git archive --format=zip --output=pricesanity-source.zip HEAD
+```
+
+This excludes ignored environments, market data, annotations, caches, and model output.
 
 ## Setup
 
-Use Python 3.11 or newer:
+Use Python 3.11 or newer. Install only the area being used:
 
 ```zsh
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e '.[dev,gui]'
+
+# Core download and preparation
+python -m pip install -e .
+
+# Annotation and result GUIs
+python -m pip install -e '.[gui]'
+
+# Existing Transformer training
+python -m pip install -e '.[training]'
+
+# Multi-model benchmark and Optuna
+python -m pip install -e '.[benchmark]'
+
+# Full development/research environment and complete test suite
+python -m pip install -e '.[dev,gui,training,benchmark,notebooks]'
+python -m pytest
 ```
 
 Downloads use `DATABENTO_API_KEY` from your environment or local `.env` file.
@@ -442,8 +533,10 @@ from four onward. Add `--resume` to skip completed bundles only after checking
 integrity and matching inputs/settings. An interrupted run without final metadata
 is explicitly rebuilt from epoch one; optimizer-state continuation is not implemented.
 A damaged completed bundle or changed labels/settings is refused. `--overwrite`
-explicitly authorizes replacement. Older bundles remain viewable with warnings about
-missing checksums, but cannot be automatically reused without the new input signature.
+explicitly authorizes replacement. Version-one metadata paths and missing checksums
+remain readable with warnings only when the underlying checkpoint already has the
+fields required by the current loader. Older incompatible checkpoints are not migrated
+implicitly and cannot be reused without the new input signature.
 Starting a later run never rewrites an earlier checkpoint, predictions, metrics,
 metadata, or checksums, even when the corpus grows and the old run count becomes
 historical. Only explicit `--overwrite` permits replacing a selected run.
@@ -494,8 +587,8 @@ python -m pricesanity.training.tuning \
 ```
 
 The first stage reruns the unchanged baseline and checks memorization of five
-sessions drawn only from training. If that diagnostic succeeds, add `--resume
---full-checklist` to continue controlled validation comparisons. The snapshot
+sessions drawn only from training. If that diagnostic succeeds, add
+`--resume --full-checklist` to continue controlled validation comparisons. The snapshot
 contains the first run's 100 training and 20 validation sessions; the ten test
 sessions are reserved and never evaluated by this command. A resumed pass reads
 its frozen snapshot, so additional annotation work cannot change a comparison.
@@ -506,8 +599,23 @@ epoch losses, per-class precision/recall/F1, confusion matrices, class counts,
 training-only majority baselines, and validation scores near human transitions
 (exact candle and neighborhoods of one/two candles). Neighborhoods never cross
 sessions. Diagnostic weights use a separate filename and are not official test
-bundles for the GUI. Completed experiments are reused only with matching settings
-and execution environment; existing reports are not overwritten.
+bundles for the GUI. Completed experiments are reused only when their checksums,
+frozen-snapshot identity, settings, and execution environment match. A compatible
+interrupted experiment restarts from epoch one; completed reports are not overwritten.
+When adopting older diagnostic bundles without checksums, the loader first reproduces
+their recorded scores and training statistics from the frozen snapshot. It then adds
+an identity sidecar without rewriting the historical report or weights.
+Resume with the same explicit device as the saved experiments. The existing
+`tuning_pass_001` uses `--device cpu`; selecting `auto` on an MPS-capable host can
+choose a different device and will correctly fail the environment identity check.
+
+The ledger records both the raw validation winner and the practical selection. Mean
+current/anticipated validation macro-F1 is the primary score; validation loss breaks
+exact score ties. Within 0.005 of the raw winner, context sweeps prefer shorter history
+and width/depth/feed-forward sweeps prefer fewer parameters. Other settings retain
+the reference unless the gain reaches 0.005. For this pass, context 32 scored 0.590212
+and context 16 scored 0.589932, so context 16 is the practical choice. Historical
+context-32 width results remain valid diagnostics but do not drive the context-16 sweep.
 
 Context experiments keep each candle's original session position and restrict its
 complete receptive field to the trailing 16, 32, or 64 candles. This requires
@@ -523,6 +631,25 @@ ablations; ordinary training retains its equal two-head loss. No class or recenc
 weighting is added automatically, and no chosen settings replace production defaults.
 Repeated comparisons on 20 validation sessions can overfit validation itself; selected
 settings remain provisional until confirmed on additional chronological data.
+
+### Fixed training-size study
+
+The separate `data/models/training_size_study_001/` experiment freezes 176 annotated
+sessions. Its epoch-cap check uses only the original 100/20 tuning snapshot. Phase 2
+then trains independent 100-, 120-, 140-, and 150-session prefixes for the frozen
+number of epochs and compares them on the same sessions 151–176. Each model fits
+its own training-only standardizer; the forward holdout never selects checkpoints.
+
+Resume the already-initialized study with:
+
+```zsh
+python -m pricesanity.training.training_size_study data/models/training_size_study_001
+```
+
+This command reads the frozen study snapshot and recipe, reuses checksum-validated
+completed candidates, and rebuilds matching incomplete candidates from epoch one.
+It does not read newer annotations or change the completed tuning pass. Reports,
+checkpoints, per-candle predictions, and checksums remain in the study directory.
 
 ### Inspect saved test results
 

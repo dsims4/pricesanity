@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pricesanity"
 version = "0.1.0"
-description = "A Transformer for learning candle-by-candle market interpretation."
+description = "A leakage-safe educational time-series ML benchmark for annotated ES regimes."
 readme = "README.md"
 requires-python = ">=3.11"
 
@@ -29,6 +29,9 @@ pricesanity-download = "pricesanity.data.databento_fetch:download_main"
 pricesanity-annotate = "pricesanity.gui.annotation_launcher:main"
 pricesanity-train = "pricesanity.training.training_cli:main"
 pricesanity-test = "pricesanity.gui.test_results_launcher:main"
+pricesanity-benchmark = "pricesanity.benchmark.cli:main"
+pricesanity-benchmark-report = "pricesanity.benchmark.report:main"
+pricesanity-compare = "pricesanity.gui.model_comparison_launcher:main"
 
 [project.optional-dependencies]
 # Tests and exploratory notebooks are development tools rather than runtime requirements.
@@ -47,6 +50,20 @@ gui = [
 # Model training needs tensors and automatic differentiation, but data preparation does not.
 training = [
     "torch>=2.4",
+]
+
+# Classical estimators and small hyperparameter studies remain optional until the full
+# annotation corpus is ready; existing download, annotation, and Transformer paths stay lean.
+benchmark = [
+    "scikit-learn>=1.5",
+    "optuna>=4.0",
+    "threadpoolctl>=3.5",
+    "psutil>=6.0",
+]
+
+notebooks = [
+    "jupyterlab>=4.2",
+    "matplotlib>=3.8",
 ]
 
 # Discover packages under src so repository utilities are not installed as application code.

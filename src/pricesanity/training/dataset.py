@@ -10,15 +10,8 @@ import torch
 
 from pricesanity.annotation.schema import CandlestickAnnotation, MarketRegime
 from pricesanity.data.identifiers import build_candlestick_id
+from pricesanity.features import FEATURE_COLUMNS
 
-
-# Preserve one fixed feature order because tensor columns have no names after conversion.
-FEATURE_COLUMNS = (
-    "open_gap",
-    "body",
-    "high_from_close",
-    "low_from_close",
-)
 
 # Convert categorical judgements into the class indices expected by cross-entropy loss.
 REGIME_TO_CLASS = {

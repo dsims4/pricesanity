@@ -173,3 +173,38 @@ def test_annotation_store_loads_all_annotations(tmp_path) -> None:
         loaded_annotations = store.load_all()
 
     assert set(loaded_annotations) == set(annotations)
+
+
+def test_annotation_store_loads_only_requested_saved_annotations(tmp_path) -> None:
+    """A chart redraw can load one session without inventing unsaved labels."""
+
+    from contextlib import closing
+
+    from pricesanity.annotation.store import AnnotationStore
+
+    database_path = tmp_path / "annotations.sqlite3"
+    first_annotation = CandlestickAnnotation(
+        "candle-1",
+        MarketRegime.BULL,
+        MarketRegime.RANGE,
+    )
+    later_annotation = CandlestickAnnotation(
+        "candle-3",
+        MarketRegime.BEAR,
+        MarketRegime.BULL,
+    )
+
+    with closing(AnnotationStore(database_path)) as store:
+        store.save(first_annotation)
+        store.save(later_annotation)
+
+        # The absent middle candle stays absent so the chart can leave a visible gap.
+        loaded_annotations = store.load_many(
+            ["candle-1", "candle-2", "candle-3"],
+        )
+
+        assert loaded_annotations == {
+            "candle-1": first_annotation,
+            "candle-3": later_annotation,
+        }
+        assert store.load_many([]) == {}

@@ -717,6 +717,7 @@ class AnnotationWindow(QMainWindow):
             self.candlestick_data,
             self.active_candlestick_position,
         )
+        self._refresh_annotation_regime_bar()
         self._load_active_annotation()
 
     def select_regime(self, regime: MarketRegime) -> None:
@@ -779,6 +780,10 @@ class AnnotationWindow(QMainWindow):
 
         self.statusBar().clearMessage()
 
+        # Show the completed current-regime choice immediately. Unsaved candles remain
+        # blank, so the bar never presents an unfinished first key as stored evidence.
+        self._refresh_annotation_regime_bar()
+
         # Begin the next two-key annotation with its current-regime choice.
         self.is_selecting_current_regime = True
 
@@ -795,6 +800,24 @@ class AnnotationWindow(QMainWindow):
             self._load_active_annotation()
         else:
             self.move_to_next_candlestick()
+
+    def _refresh_annotation_regime_bar(self) -> None:
+        """Draw saved current-regime annotations for the complete active session."""
+
+        candlestick_ids = tuple(
+            self.candlestick_data["candlestick_id"].astype(str)
+        )
+        annotations = self.annotation_store.load_many(candlestick_ids)
+        current_regimes = [
+            annotations[candlestick_id].current_regime.value
+            if candlestick_id in annotations
+            else None
+            for candlestick_id in candlestick_ids
+        ]
+        self.chart.set_regime_labels(
+            current_regimes,
+            legend_title="Human current regime",
+        )
 
     def _active_candlestick_id(self) -> str:
         """Return the stable identifier for the active candlestick."""

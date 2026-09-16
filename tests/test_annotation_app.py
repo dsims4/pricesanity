@@ -104,6 +104,7 @@ def test_regime_hotkeys_save_then_restore_both_choices(
     assert window.anticipated_regime_value.text() == "Not selected"
     assert window.selection_prompt.text().startswith("Step 1 of 2")
     assert "press 1 for Bull" in window.selection_prompt.text()
+    assert window.chart.regime_labels == (None, None, None)
 
     # The first key fills only the current-regime scalar.
     window.regime_shortcuts["1"].activated.emit()
@@ -126,6 +127,10 @@ def test_regime_hotkeys_save_then_restore_both_choices(
     assert saved_annotation is not None
     assert saved_annotation.current_regime is MarketRegime.BULL
     assert saved_annotation.anticipated_regime is MarketRegime.BEAR
+    assert window.chart.regime_labels == ("bull", None, None)
+    assert window.chart.axes.get_legend().get_title().get_text() == (
+        "Human current regime"
+    )
 
     # Returning to the completed candle restores both saved choices.
     window.move_to_previous_candlestick()

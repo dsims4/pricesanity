@@ -1,0 +1,61 @@
+format_version: 1
+
+# These bounded spaces are proposals for the completed corpus. They are readable inputs to a
+# later tuning engine, not evidence that searches or final evaluations have been run.
+gaussian_naive_bayes:
+  var_smoothing: {type: log_float, low: 1.0e-12, high: 1.0e-6}
+logistic_regression:
+  C: {type: log_float, low: 1.0e-3, high: 100.0}
+  class_weight: {type: categorical, values: [null, balanced]}
+polynomial_logistic:
+  degree: {type: fixed, value: 2}
+  C: {type: log_float, low: 1.0e-3, high: 10.0}
+knn:
+  n_neighbors: {type: integer, low: 3, high: 75, step: 2}
+  weights: {type: categorical, values: [uniform, distance]}
+decision_tree:
+  max_depth: {type: integer, low: 2, high: 24}
+  min_samples_leaf: {type: integer, low: 2, high: 100}
+random_forest:
+  n_estimators: {type: integer, low: 150, high: 600, step: 50}
+  max_depth: {type: integer, low: 4, high: 24}
+  min_samples_leaf: {type: integer, low: 1, high: 40}
+gradient_boosting:
+  max_iter: {type: integer, low: 100, high: 500, step: 50}
+  learning_rate: {type: log_float, low: 0.01, high: 0.2}
+  max_leaf_nodes: {type: integer, low: 7, high: 63}
+rbf_svm:
+  C: {type: log_float, low: 1.0e-2, high: 100.0}
+  gamma: {type: log_float, low: 1.0e-4, high: 1.0}
+mlp:
+  hidden_width: {type: categorical, values: [32, 64, 128]}
+  hidden_layers: {type: categorical, values: [1, 2, 3]}
+  learning_rate_init: {type: log_float, low: 1.0e-4, high: 1.0e-2}
+tcn:
+  context_length: {type: categorical, values: [16, 32, 64]}
+  channel_width: {type: categorical, values: [16, 32, 64]}
+  kernel_size: {type: categorical, values: [2, 3, 5]}
+  layer_count: {type: integer, low: 2, high: 5}
+  learning_rate: {type: log_float, low: 1.0e-4, high: 3.0e-3}
+  epochs: {type: categorical, values: [20, 40, 60]}
+  batch_size: {type: categorical, values: [8, 16, 32]}
+  weight_decay: {type: log_float, low: 1.0e-5, high: 1.0e-2}
+gru:
+  context_length: {type: categorical, values: [16, 32, 64]}
+  hidden_size: {type: categorical, values: [16, 32, 64, 96]}
+  layer_count: {type: integer, low: 1, high: 3}
+  learning_rate: {type: log_float, low: 1.0e-4, high: 3.0e-3}
+  epochs: {type: categorical, values: [20, 40, 60]}
+  batch_size: {type: categorical, values: [8, 16, 32]}
+  weight_decay: {type: log_float, low: 1.0e-5, high: 1.0e-2}
+transformer:
+  context_length: {type: categorical, values: [16, 32, 64]}
+  model_dimension: {type: categorical, values: [12, 24, 48, 96]}
+  attention_head_count: {type: categorical, values: [3, 4]}
+  layer_count: {type: integer, low: 1, high: 4}
+  feedforward_dimension: {type: categorical, values: [24, 48, 96, 192]}
+  dropout: {type: float, low: 0.0, high: 0.35}
+  learning_rate: {type: log_float, low: 1.0e-4, high: 3.0e-3}
+  epochs: {type: categorical, values: [20, 40, 60]}
+  batch_size: {type: categorical, values: [8, 16, 32]}
+  weight_decay: {type: log_float, low: 1.0e-5, high: 1.0e-2}

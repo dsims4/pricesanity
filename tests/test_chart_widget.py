@@ -166,3 +166,30 @@ def test_regime_strips_include_start_and_replace_without_vertical_lines(qt_appli
     assert [label.get_text() for label in chart.axes.texts] == ["Active", "Range"]
     assert chart.regime_change_markers == ()
     chart.close()
+
+
+def test_regime_labels_leave_unannotated_candles_blank(qt_application) -> None:
+    """Human annotation strips preserve gaps instead of implying a regime through them."""
+
+    candles = pd.DataFrame({
+        "ts_event": pd.date_range("2026-09-09T13:30:00Z", periods=4, freq="5min"),
+        "open": [100.0] * 4, "high": [102.0] * 4,
+        "low": [99.0] * 4, "close": [101.0] * 4,
+    })
+    chart = CandlestickChart()
+    chart.draw_session(candles, 0)
+    chart.set_regime_labels(
+        ["bull", "bull", None, "bear"],
+        legend_title="Human current regime",
+    )
+
+    strips = list(chart.axes.patches)[4:]
+    assert [(strip.get_x(), strip.get_width()) for strip in strips] == [
+        (-0.5, 2),
+        (2.5, 1),
+    ]
+    assert chart.regime_labels == ("bull", "bull", None, "bear")
+    assert chart.regime_change_markers == ()
+    assert chart.axes.get_legend().get_title().get_text() == "Human current regime"
+
+    chart.close()

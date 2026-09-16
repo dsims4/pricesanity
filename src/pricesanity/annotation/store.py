@@ -1,6 +1,7 @@
 """Persist candlestick annotations without altering market data."""
 
 from contextlib import closing
+from collections.abc import Sequence
 import sqlite3
 from pathlib import Path
 
@@ -129,6 +130,51 @@ class AnnotationStore:
             )
             for row in rows
         ]
+
+    def load_many(
+        self,
+        candlestick_ids: Sequence[str],
+    ) -> dict[str, CandlestickAnnotation]:
+        """Load the saved judgments for one displayed group of candles.
+
+        Args:
+            candlestick_ids: Unique candle identifiers requested by the caller.
+
+        Returns:
+            Saved annotations keyed by identifier; unsaved candles are omitted.
+
+        Raises:
+            ValueError: If an identifier is empty or repeated.
+        """
+
+        requested_ids = tuple(str(candlestick_id) for candlestick_id in candlestick_ids)
+        if any(not candlestick_id.strip() for candlestick_id in requested_ids):
+            raise ValueError("Candlestick identifiers cannot be empty.")
+        if len(requested_ids) != len(set(requested_ids)):
+            raise ValueError("Requested candlestick identifiers must be unique.")
+        if not requested_ids:
+            return {}
+
+        # One query keeps a session redraw inexpensive and gives every colored span one
+        # consistent SQLite snapshot rather than reading its candles independently.
+        placeholders = ", ".join("?" for _ in requested_ids)
+        rows = self._connection.execute(
+            f"""
+            SELECT candlestick_id, current_regime, anticipated_regime
+            FROM annotations
+            WHERE candlestick_id IN ({placeholders})
+            """,
+            requested_ids,
+        ).fetchall()
+
+        return {
+            row[0]: CandlestickAnnotation(
+                candlestick_id=row[0],
+                current_regime=MarketRegime(row[1]),
+                anticipated_regime=MarketRegime(row[2]),
+            )
+            for row in rows
+        }
 
     def close(self) -> None:
         """Release the connection; calling this more than once is harmless."""

@@ -131,25 +131,15 @@ class RegimeTransformer(nn.Module):
             config.regime_count,
         )
 
-    def forward(
+    def _validate_inputs(
         self,
         features: torch.Tensor,
         padding_mask: torch.Tensor,
-    ) -> RegimeTransformerOutput:
-        """Classify every real candle using only its available history.
+    ) -> tuple[int, int, int]:
+        """Validate the common tensor contract before any attention path runs."""
 
-        Args:
-            features: Candle features shaped as batch, time, and feature dimensions.
-            padding_mask: Boolean batch-by-time mask with True at artificial positions.
-
-        Returns:
-            Current and anticipated regime scores for each candle and class.
-
-        Raises:
-            ValueError: If the tensors do not match the configured model dimensions.
-        """
-
-        # Require the exact three-dimensional layout produced by the session collator.
+        # Experimental subclasses use a different attention path, but malformed tensors
+        # should still fail with the same useful errors as the production Transformer.
         if features.ndim != 3:
             raise ValueError("Transformer features must have batch, time, and feature axes.")
 
@@ -168,7 +158,6 @@ class RegimeTransformer(nn.Module):
         if features.dtype is not torch.float32:
             raise ValueError("Transformer features must use torch.float32.")
 
-        # One mask value must describe every batch and time position exactly.
         if padding_mask.shape != (batch_size, session_length):
             raise ValueError(
                 "Transformer padding mask must match the batch and time dimensions."
@@ -177,6 +166,29 @@ class RegimeTransformer(nn.Module):
             raise ValueError("Transformer padding mask must use torch.bool.")
         if padding_mask.device != features.device:
             raise ValueError("Transformer features and padding mask must share a device.")
+
+        return batch_size, session_length, feature_count
+
+    def forward(
+        self,
+        features: torch.Tensor,
+        padding_mask: torch.Tensor,
+    ) -> RegimeTransformerOutput:
+        """Classify every real candle using only its available history.
+
+        Args:
+            features: Candle features shaped as batch, time, and feature dimensions.
+            padding_mask: Boolean batch-by-time mask with True at artificial positions.
+
+        Returns:
+            Current and anticipated regime scores for each candle and class.
+
+        Raises:
+            ValueError: If the tensors do not match the configured model dimensions.
+        """
+
+        # Require the exact tensor layout produced by the session collator.
+        _, session_length, _ = self._validate_inputs(features, padding_mask)
 
         # Number candles from the session open so the same position shares one
         # learned time-of-session representation across every training day.

@@ -64,8 +64,8 @@ def load_run_artifacts(
 ) -> tuple[dict, pd.DataFrame]:
     """Read a completed bundle and verify identities, ordering, and prediction integrity.
 
-    No inference or database access occurs. Older bundles remain readable with an
-    explicit warning when their original format lacks a prediction checksum.
+    No inference or database access occurs. Version-one metadata may omit checksums,
+    but its checkpoint must still satisfy the current model-artifact contract.
     """
 
     run_directory = Path(run_directory)

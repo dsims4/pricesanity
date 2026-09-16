@@ -1,0 +1,38 @@
+"""Small cross-library helpers for model cost reporting."""
+
+from pathlib import Path
+from time import perf_counter
+from typing import Callable, TypeVar
+
+
+Result = TypeVar("Result")
+
+
+def timed_call(function: Callable[[], Result]) -> tuple[Result, float]:
+    """Measure elapsed wall-clock seconds around one explicit operation."""
+
+    started_at = perf_counter()
+    result = function()
+    return result, perf_counter() - started_at
+
+
+def serialized_model_size(path: str | Path) -> int:
+    """Measure the actual persisted artifact rather than an in-memory estimate."""
+
+    model_path = Path(path)
+    if not model_path.is_file():
+        raise ValueError("Serialized model artifact does not exist.")
+    return model_path.stat().st_size
+
+
+def parameter_count(model: object) -> int | None:
+    """Count trainable PyTorch parameters when that concept applies."""
+
+    parameters = getattr(model, "parameters", None)
+    if not callable(parameters):
+        return None
+    return sum(
+        parameter.numel()
+        for parameter in parameters()
+        if getattr(parameter, "requires_grad", False)
+    )

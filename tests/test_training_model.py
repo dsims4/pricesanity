@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from pricesanity.training.model import RegimeTransformer, TransformerConfig
+from pricesanity.training.tuning_context import ContextExperimentTransformer
 
 
 def test_regime_transformer_returns_two_scores_per_candle() -> None:
@@ -132,3 +133,80 @@ def test_regime_transformer_rejects_invalid_batch_shapes(
 
     with pytest.raises(ValueError, match=message):
         model(features, padding_mask)
+
+
+@pytest.mark.parametrize(
+    ("features", "padding_mask", "message"),
+    [
+        (
+            torch.zeros(2, 4, dtype=torch.float32),
+            torch.zeros(2, 4, dtype=torch.bool),
+            "batch, time, and feature axes",
+        ),
+        (
+            torch.zeros(2, 5, 3, dtype=torch.float32),
+            torch.zeros(2, 5, dtype=torch.bool),
+            "expected 4 features",
+        ),
+        (
+            torch.zeros(2, 5, 4, dtype=torch.float64),
+            torch.zeros(2, 5, dtype=torch.bool),
+            "must use torch.float32",
+        ),
+        (
+            torch.zeros(2, 5, 4, dtype=torch.float32),
+            torch.zeros(2, 4, dtype=torch.bool),
+            "must match the batch and time dimensions",
+        ),
+        (
+            torch.zeros(2, 5, 4, dtype=torch.float32),
+            torch.zeros(2, 5, dtype=torch.int64),
+            "must use torch.bool",
+        ),
+    ],
+)
+def test_strict_context_model_uses_the_common_input_validation(
+    features: torch.Tensor,
+    padding_mask: torch.Tensor,
+    message: str,
+) -> None:
+    """Strict trailing windows reject malformed tensors before reshaping them."""
+
+    model = ContextExperimentTransformer(
+        TransformerConfig(dropout=0.0),
+        context_length=2,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        model(features, padding_mask)
+
+
+def test_strict_context_model_keeps_batch_sessions_independent() -> None:
+    """Changing one complete session cannot alter another session's logits."""
+
+    torch.manual_seed(42)
+    model = ContextExperimentTransformer(
+        TransformerConfig(dropout=0.0, layer_count=3),
+        context_length=4,
+    )
+    model.eval()
+    original_features = torch.randn(2, 7, 4, dtype=torch.float32)
+    changed_features = original_features.clone()
+
+    # Replace every candle in only the second session. The explicit window reshape must
+    # preserve the batch boundary rather than mixing either session's values into the other.
+    changed_features[1] = 1_000.0
+    padding_mask = torch.zeros(2, 7, dtype=torch.bool)
+
+    with torch.inference_mode():
+        original_output = model(original_features, padding_mask)
+        changed_output = model(changed_features, padding_mask)
+
+    torch.testing.assert_close(
+        original_output.current_logits[0],
+        changed_output.current_logits[0],
+    )
+    torch.testing.assert_close(
+        original_output.anticipated_logits[0],
+        changed_output.anticipated_logits[0],
+    )
