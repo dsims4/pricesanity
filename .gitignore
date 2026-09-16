@@ -253,3 +253,8 @@ data/models/
 __MACOSX/
 .DS_Store
 Archive.zip
+pricesanity-source.zip
+
+# Downloaded ROCm installer packages are environment setup artifacts, not source.
+rocdxg*.deb
+amd-smi*.deb

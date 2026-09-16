@@ -2,8 +2,8 @@
 
 `src/pricesanity/gui/theme.py` owns the shared light palette, semantic regime colors, typography,
 spacing, buttons, focus states, table styling, and Qt-drawn icons. Annotation, saved results,
-and Benchmark Explorer apply the same theme. Existing CLI launchers remain the entry points;
-a new hub is unnecessary for these three independent workflows.
+and Benchmark Explorer apply the same theme. The three independent workflows use their CLI
+launchers directly rather than a shared hub.
 
 Use 20 px outer margins, 12 px main spacing, a 24 px screen heading, and readable 13 px control
 text. Let Qt select an installed sans-serif system font; bundle no font or icon files. Primary
@@ -15,14 +15,14 @@ remain unchanged so the complete annotation workflow fits without clipping.
 
 Current and anticipated annotation choices occupy separate cards. Each Bull/Bear/Range button
 has text, a direction/range icon, a visible shortcut, and a checked border; color alone never
-communicates selection. The original two-key chart workflow and automatic advance after a
+communicates selection. The two-key chart workflow and automatic advance after a
 successful atomic pair save remain intact. Clicking a regime button follows that same save
 path and returns keyboard focus to the chart. Date inputs retain their own key handling.
 
 Progress counts only eligible sessions supplied by the validated loader. A complete session
 requires every candle's pair to be saved. The header shows completed/total sessions, percentage,
 remaining sessions, active date, and candle position; the session bar counts saved candles.
-Unsaved first choices are distinct from a committed pair. Database errors retain the existing
+Unsaved first choices are distinct from a committed pair. Database errors use the defined
 retry behavior. No success modal interrupts repeated annotation.
 
 Read-only windows say READ ONLY in their title area. Tables cannot edit stored values. They
@@ -44,7 +44,7 @@ uncertainty semantics, and empty artifacts. Visual review must additionally insp
 rendering at 1080p, 1440p, and scaled layouts; tests are not a substitute for checking clipping.
 
 
-# GUI and report architecture
+## GUI and report architecture
 
 The Benchmark Explorer is read-only and artifact-only. It recursively discovers final metadata,
 verifies checksums, and initially loads only small metadata/metric JSON. Prediction Parquet is read

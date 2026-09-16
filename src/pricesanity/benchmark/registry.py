@@ -83,7 +83,7 @@ MODEL_FAMILIES = (
     ModelFamily(
         "transformer", "Causal Transformer", "attention_sequence", "sequential",
         "existing_native_adapter", True, True, True,
-        "Reuses the existing tested Price Sanity Transformer.",
+        "Adapts the tested Price Sanity Transformer.",
     ),
 )
 
@@ -358,8 +358,8 @@ def _sklearn_factory(
                 conceptual_parameters.get("learning_rate_init", 1e-3)
             ),
             "max_iter": int(conceptual_parameters.get("max_iter", 300)),
-            # MLP early stopping randomly withholds overlapping rows. Epoch count is selected
-            # by the outer chronological folds instead.
+            # MLP early stopping randomly withholds overlapping rows. The active search space
+            # keeps max_iter fixed at this value while outer folds select the exposed settings.
             "early_stopping": False,
             "random_state": random_seed,
         }

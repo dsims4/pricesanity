@@ -173,11 +173,11 @@ family name.
 flattened causal window. Fit uses backpropagation; inference runs the transforms forward. It is a
 nonlinear parametric model.
 
-**Controls and behavior.** Width, layer count, learning rate, and training duration control
-capacity and optimization. Training-only standardization is important. Random row-level early
-stopping is disabled because overlapping time-series rows would create a leaky internal split;
-duration is selected by chronological outer folds. Too little capacity/duration underfits, while
-large networks or long training can memorize.
+**Controls and behavior.** Width, layer count, and learning rate are selected on chronological
+outer folds. Training-only standardization is important. The active search space does not expose
+training duration: `max_iter` is fixed at 300 by the adapter. Random row-level early stopping is
+disabled because overlapping time-series rows would create a leaky internal split. Too little
+capacity underfits, while large networks or a long fixed fit can memorize.
 
 **Cost and lesson.** Dense layer cost follows rows × connected weights; stored memory follows
 parameter count. It tests whether generic nonlinearity on ordered lag columns can match dedicated
@@ -259,6 +259,6 @@ memory estimates before allowing the search. Exact RBF SVM and kNN likewise reta
 algorithms: an approximation or a sampled corpus would answer a different question and must
 not be substituted silently.
 
-Histogram gradient boosting's training duration and the MLP epoch limit are selected on the
-outer chronological folds. Their internal random-row early stopping is disabled. Model-family
-comparisons therefore retain the same chronology contract despite different library defaults.
+Histogram gradient boosting's iteration limit is selected on the outer chronological folds. The
+MLP uses its fixed 300-iteration limit. Their internal random-row early stopping is disabled, so
+neither model creates a row-randomized validation partition inside a chronological fold.

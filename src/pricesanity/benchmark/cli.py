@@ -20,13 +20,10 @@ from pricesanity.config import load_config
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
-    """Build safe preparation commands separate from future benchmark execution."""
+    """Build benchmark inspection, initialization, and execution commands."""
 
     parser = argparse.ArgumentParser(
-        description=(
-            "Inspect Price Sanity benchmark plans. This preparation command does not "
-            "train models or expose the final holdout."
-        )
+        description="Inspect and execute leakage-safe Price Sanity benchmark studies."
     )
     parser.add_argument(
         "--config",
@@ -114,7 +111,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     run_parser = subparsers.add_parser(
         "run",
-        help="Validate one future benchmark action without launching it during preparation.",
+        help="Validate one benchmark action without launching model execution.",
     )
     model_selection = run_parser.add_mutually_exclusive_group(required=True)
     model_selection.add_argument("--model", choices=[
@@ -132,7 +129,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Required during this preparation pass; validates without training.",
+        help="Required for this validation-only command; never launches training.",
     )
     run_parser.add_argument(
         "--search-spaces",
@@ -143,7 +140,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
-    """Print registry or split evidence without running inference or training."""
+    """Inspect, initialize, execute, or report one benchmark action."""
 
     parser = build_argument_parser()
     parsed = parser.parse_args(arguments)

@@ -31,10 +31,10 @@ and seeds appear the same.
 
 ## Partitioned snapshot and study records
 
-New executor snapshots use format 2. `benchmark_snapshot.json` binds
+Protected executor snapshots use format 2. `benchmark_snapshot.json` binds
 `development.parquet`, `sealed_holdout.parquet`, their checksums, partition/total counts,
 columns, and source identities. Loading development never opens or hashes the sealed file.
-The old format-1 snapshot loader remains available for archived standalone inspection;
+The format-1 snapshot loader is available for archived standalone inspection;
 protected study execution requires the partitioned format.
 
 `study_scope.json` declares families and tracks before tuning. Each Optuna fold scope has

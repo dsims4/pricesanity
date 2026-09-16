@@ -11,7 +11,7 @@ PRIMARY_HEIGHT = 44
 
 STYLE = '''
 QMainWindow, QDialog { background: #f4f6f8; color: #172b3a; }
-QWidget { font-family: sans-serif; font-size: 13px; }
+QWidget { font-size: 13px; }
 QLabel { color: #172b3a; }
 QLabel[role="title"] { font-size: 24px; font-weight: 600; padding: 4px 0; }
 QLabel[role="muted"] { color: #506473; }

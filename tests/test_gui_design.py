@@ -6,7 +6,7 @@ import pandas as pd
 from PySide6.QtWidgets import QApplication, QPushButton, QAbstractItemView
 from pricesanity.annotation.schema import MarketRegime
 from pricesanity.gui.annotation_app import AnnotationWindow
-from pricesanity.gui.theme import regime_icon
+from pricesanity.gui.theme import STYLE, regime_icon
 from pricesanity.gui.model_comparison import ModelComparisonWindow, _ABSessionCanvas
 from test_annotation_app import qt_application, candlestick_data
 
@@ -38,6 +38,12 @@ def test_icons_and_readonly_tables(qt_application):
         assert window.leaderboard.editTriggers()==QAbstractItemView.EditTrigger.NoEditTriggers
         assert window.property('pricesanityTheme')=='shared-v1'
     finally:window.close()
+
+
+def test_theme_inherits_qt_platform_font(qt_application):
+    """Avoid asking Qt to resolve a generic family that may not be installed."""
+    assert 'font-family' not in STYLE
+    assert 'font-size: 13px' in STYLE
 
 
 def test_annotation_fits_scaled_1080p(qt_application,candlestick_data,tmp_path):

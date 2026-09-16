@@ -13,15 +13,14 @@ status evidence must support session boundaries, the dataset condition must be `
 and the configured candle grid must be complete. Reject degraded, missing, unavailable, or
 otherwise invalid sessions. Complete-looking OHLC data cannot establish a schedule. Do not
 guess early closes or apply a historical fallback before scheduled status coverage. Preserve
-the data pipeline's existing trust chain for previous-session closing references.
+the data pipeline's trust chain for previous-session closing references. No historical fallback
+is part of this policy.
 
-The earlier conservative historical fallback is retired; it is not an unresolved option.
-The intended corpus begins in November 2015. Recompute and verify the exact eligible count
-with the current preparation pipeline before freezing a fully annotated benchmark. The
-count recomputed from the current pipeline on September 15, 2026 is 2,690 (214,791 candles,
-November 23, 2015 through September 11, 2026); this is an expected count to verify, not a reason to add
-or discard sessions. If verification changes the count, investigate and explicitly update
-the session accounting without weakening eligibility.
+The configured strict corpus begins in November 2015 and contains 2,690 sessions (214,791
+candles, November 23, 2015 through September 11, 2026). Recompute and verify that count before
+freezing the fully annotated benchmark. It is an expected validation result, not a reason to add
+or discard sessions. If verification changes the count, investigate and explicitly update the
+session accounting without weakening eligibility.
 
 For that verified count, the configured plan requires 2,690 complete annotated sessions:
 
@@ -29,9 +28,9 @@ For that verified count, the configured plan requires 2,690 complete annotated s
 - sessions 2,191–2,690 are the untouched final holdout;
 - expanding chronological training blocks are followed by future development validation blocks.
 
-No annotated session disappears because an earlier proposal used a round number. Configuration
-validation rejects a fold reaching the holdout and rejects any corpus count different from the
-frozen plan. Tuning APIs do not reveal holdout indices without an explicit final-evaluation call.
+Configuration validation rejects a fold reaching the holdout and rejects any corpus count
+different from the frozen plan. Tuning APIs do not reveal holdout indices without an explicit
+final-evaluation call.
 
 ## Controlled and best-of-family tracks
 
@@ -76,13 +75,12 @@ prefix. The final holdout never enters this experiment.
 6. Aggregate seeds before ranking while retaining individual run artifacts.
 
 Stochastic finalists report mean, standard deviation, and every configured seed result. The
-luckiest seed is never selected. This additional study does not replace the existing expanding
+luckiest seed is never selected. This fixed benchmark does not replace the expanding
 walk-forward Transformer evaluation.
 
+## Experiment design and reporting
 
-# Experiment design and reporting
-
-## Three different evaluations
+### Three different evaluations
 
 **Controlled benchmark:** same 16-by-4 information for every learner; isolates algorithmic
 inductive bias.
@@ -90,13 +88,13 @@ inductive bias.
 **Best-of-family benchmark:** appropriate causal representation and validation-selected
 context for each family; measures a practical representative.
 
-**Production walk-forward evaluation:** the existing expanding Transformer workflow, where
+**Production walk-forward evaluation:** the expanding Transformer workflow, where
 historical test periods may become legal training history after time advances. It remains the
 operational simulation and is not replaced by the fixed final benchmark.
 
 Comparing numbers across these categories without naming the category is misleading.
 
-## Tuning
+### Tuning
 
 Candidate budgets are modest and configured by family. Mean macro-F1 across chronological
 development folds selects hyperparameters. The current and anticipated heads remain separately
@@ -104,23 +102,29 @@ reported even though selection averages their macro-F1 values. No tuning result 
 the final holdout. Three final seeds measure stochastic variation after selection rather than
 tripling the search.
 
-## Artifacts
+### Artifacts
 
-Completed runs live beneath:
+One initialized study has this layout:
 
 ```text
-data/models/benchmark/
-    controlled/MODEL/RUN/
-    best_of_family/MODEL/RUN/
+data/models/benchmark/STUDY/
+    snapshot/
+    tuning/
+    selected/
+    runs/TRACK/MODEL/RUN/
+    learning_curves/TRACK/MODEL/RUN/
+    study_scope.json
+    development_frozen.json
 ```
 
-Each run reserves `run_identity.json`, then writes a model, predictions, metrics, and final
+The freeze file appears only after successful development sealing. Each run reserves
+`run_identity.json`, then writes a model, predictions, metrics, and final
 `benchmark_metadata.json`. The final metadata binds artifacts with SHA-256 checksums and records
 track, model, representation, session ranges, seed, library versions, and dataset description.
 Exclusive file creation prevents silent overwrite. An interrupted directory can resume only
 when its stored identity exactly matches.
 
-## Reporting
+### Reporting
 
 `pricesanity-benchmark-report` reads completed, checksummed runs. The comparison GUI does the
 same and remains usable as an honest empty state before any benchmark exists. Notebook templates

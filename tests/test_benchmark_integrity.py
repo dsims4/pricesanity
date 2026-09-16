@@ -1,4 +1,4 @@
-"""Study boundaries and crash recovery exercised only with synthetic sessions."""
+"""Benchmark integrity boundaries and crash recovery using synthetic sessions."""
 from dataclasses import replace
 import json
 from pathlib import Path

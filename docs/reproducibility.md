@@ -42,14 +42,14 @@ remain portable wherever their formats can be read.
 
 ## Source identity and study sealing
 
-Partial execution now also records the installed package's canonical Python-source hash,
+Partial execution records the installed package's canonical Python-source hash,
 Git revision and dirty state, actual device, hardware, and thread budget. The source hash
 identifies dirty source bytes; a Boolean dirty flag alone cannot distinguish two edits.
 Completed artifacts remain readable; unfinished execution through changed source is refused.
 
 Each Optuna study binds snapshot, protocol, effective track-specific search space, family,
-track, exact fold scope, tuning seed, objective version, and selection source. Existing studies
-without this identity are refused. Candidate-fold artifacts checkpoint completed fits and
+track, exact fold scope, tuning seed, objective version, and selection source. Studies without
+this identity are refused. Candidate-fold artifacts checkpoint completed fits and
 predictions, so retrying an interrupted trial reuses its completed folds. A study-level advisory
 lock serializes tuning, freezing, and final publication within the same study directory.
 

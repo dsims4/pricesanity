@@ -7,9 +7,11 @@ corpus and publishes one immutable, physically partitioned snapshot.
 `snapshot/development.parquet` and `snapshot/sealed_holdout.parquet` are bound by
 `benchmark_snapshot.json`. Development loading verifies only development bytes. The sealed file
 is neither read nor checksummed by development commands. Legacy single-file snapshots remain
-readable for archive inspection, but must be regenerated for the protected execution workflow. Pass the paired clean OHLC Parquet with `--candlesticks`: initialization verifies its strict
+readable for archive inspection, but must be regenerated for the protected execution workflow.
+Pass the paired clean OHLC Parquet with `--candlesticks`: initialization verifies its strict
 scheduled-status evidence and reference chain against the normalized artifact before copying
-any benchmark rows. The same recorded source supports price candles in the A/B Explorer. Source paths and SHA-256 identities are recorded.
+any benchmark rows. The same recorded source supports price candles in the A/B Explorer. Source
+paths and SHA-256 identities are recorded.
 
 ## 2. Pilot and tune development history
 
@@ -36,7 +38,6 @@ and exploratory learning curves for **both** tracks. Every declared family needs
 selection. A one-fold diagnostic cannot freeze a winner or a study. The seal binds selected
 configuration and representation hashes, protocol, effective search spaces, source, and snapshot.
 Tuning and other development mutations are refused after the seal exists.
-
 
 `final` refuses to reveal holdout indices without `--confirm-final-holdout`. It also refuses a
 configuration selected from fewer than all development folds. Deterministic families fit once;
@@ -89,7 +90,6 @@ pricesanity-benchmark final --study-directory data/models/benchmark/study_001 \
   --all-models --track best_of_family --confirm-final-holdout
 ```
 
-Both tracks must finish development before either final command. Exact RBF SVM, large kNN, or large polynomial designs
-may require `--acknowledge-scaling-risk` after the pilot. This acknowledgement accepts compute
-risk, not scientific leakage.
-
+Both tracks must finish development before either final command. Exact RBF SVM, large kNN, or
+large polynomial designs may require `--acknowledge-scaling-risk` during tuning after a pilot.
+This acknowledgement accepts compute risk, not scientific leakage.

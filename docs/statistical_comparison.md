@@ -31,7 +31,7 @@ statistics, so the estimate is unchanged; tests compare deterministic draws agai
 row resampling. Paired draws use the same session multiplicities and also reject different
 human targets.
 
-Current-regime event timing remains under `transitions`; new artifacts additionally contain
+Current-regime event timing is stored under `transitions`; artifacts also contain
 `anticipated_transitions`. Neighborhood classification is reported around both human current
 and human anticipated transitions, with explicit field names identifying the anchor. These
 classification neighborhoods are distinct from matching the event's timing and direction.
