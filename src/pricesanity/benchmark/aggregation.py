@@ -35,6 +35,8 @@ def aggregate_seed_results(
         raise ValueError("Seed results are missing columns: " + ", ".join(sorted(missing)))
     if runs.empty:
         return pd.DataFrame()
+    # Optional hashes become part of identity when present so results from different source
+    # snapshots or protocols can never collapse into one apparently replicated experiment.
     identity_keys = (*AGGREGATION_KEYS, *(key for key in (
         "protocol_sha256", "annotation_snapshot_sha256", "normalized_dataset_sha256", "label_mapping_sha256"
     ) if key in runs.columns))
@@ -59,6 +61,8 @@ def aggregate_seed_results(
                     raise ValueError("Completed results do not match the declared final seed set.")
                 expected_count = len(expected_seeds)
         if len(group) != expected_count:
+            # Partial stochastic seed sets stay off the leaderboard: reporting their mean
+            # would let an interrupted or selectively completed configuration look stronger.
             raise ValueError(
                 f"{model_name} requires {expected_count} frozen seed result(s), "
                 f"but {len(group)} were provided."
@@ -127,6 +131,8 @@ def add_baseline_deltas(leaderboard: pd.DataFrame) -> pd.DataFrame:
     population_keys = ["track", "test_session_ids_sha256"] + [key for key in (
         "protocol_sha256", "annotation_snapshot_sha256", "normalized_dataset_sha256", "label_mapping_sha256"
     ) if key in result.columns]
+    # Deltas are meaningful only against baselines that saw the exact same ordered population
+    # under the same frozen scientific identities.
     for _, group in result.groupby(population_keys, dropna=False):
         majority = group.loc[
             group["model_name"] == "majority_class", "mean_head_macro_f1"
@@ -146,6 +152,8 @@ def add_baseline_deltas(leaderboard: pd.DataFrame) -> pd.DataFrame:
 
 
 def _canonical_hardware(value: object) -> str:
+    """Normalize stored hardware evidence before deciding whether timings can be averaged."""
+
     if isinstance(value, str):
         try:
             value = json.loads(value)
@@ -161,6 +169,8 @@ def partition_seed_results(runs: pd.DataFrame, *, stochastic_models: Sequence[st
     ) if key in runs.columns]
     complete = []
     incomplete = []
+    # Reuse the strict aggregator per identity so this reporting helper cannot silently
+    # weaken the completeness rules used by the official leaderboard.
     for _, group in runs.groupby(keys, sort=True, dropna=False):
         try:
             complete.append(aggregate_seed_results(group, stochastic_models=stochastic_models,

@@ -82,6 +82,8 @@ def run_model_once(
         training_seconds = perf_counter() - training_started
 
     if checkpoint_fitted is not None:
+        # Persist exact post-fit state before evaluation. A crash can resume inference from
+        # these weights without training a nominally identical stochastic model again.
         checkpoint_fitted(model, {
             "training_seconds": training_seconds,
             "training_sample_count": len(training_features),
@@ -130,6 +132,8 @@ def evaluate_fitted_model(
     # A combined output avoids running an expensive estimator twice. Native predictions stay
     # authoritative even when a model also exposes auxiliary probability estimates or scores.
     with controlled_thread_budget(cpu_worker_count):
+        # The first unmeasured call absorbs lazy libraries and accelerator setup. The median
+        # then limits one scheduling interruption from dominating the reported inference time.
         model.predict_output(evaluation_features, context=evaluation_context)
         inference_timings = []
         output = None
@@ -212,6 +216,8 @@ def build_benchmark_prediction_frame(
 
     probability_values = result.probabilities
     score_values = result.output.scores
+    # Keep one stable prediction schema across probabilistic and score-only models. NaN means
+    # that uncertainty type is unavailable; it must not be interpreted as zero confidence.
     missing_values = np.full((sample_count, 3), np.nan, dtype=np.float64)
     current_probabilities = (
         probability_values.current if probability_values is not None else missing_values

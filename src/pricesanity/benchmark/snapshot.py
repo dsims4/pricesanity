@@ -60,6 +60,8 @@ def freeze_benchmark_snapshot(
     if not normalized[app_config.data.timestamp_column].equals(ohlc[app_config.data.timestamp_column]):
         raise ValueError("Normalized and OHLC snapshot inputs must have exactly aligned timestamps.")
     validate_annotation_evidence(ohlc, normalized, config=app_config)
+    # Read annotations once before hashing and joining. A later GUI edit must create a new
+    # snapshot rather than changing the scientific population midway through a study.
     with closing(AnnotationStore(database_path)) as store:
         annotations = store.load_all()
     sessions = build_complete_annotated_sessions(
@@ -169,6 +171,8 @@ def freeze_benchmark_snapshot_from_sessions(
         snapshot_data.loc[snapshot_data.session_index < development_session_count]
         if isolated else snapshot_data
     )
+    # The holdout is placed in a physically separate file so routine development loaders
+    # cannot expose its rows merely by applying the wrong in-memory index selection.
     development_data.to_parquet(temporary_data, index=False)
     validate_snapshot_data(pd.read_parquet(temporary_data))
     _publish(temporary_data, data_path)
@@ -189,6 +193,8 @@ def freeze_benchmark_snapshot_from_sessions(
             "holdout_row_count": len(holdout_data),
         }
     identity = canonical_sha256({
+        # Hash file content and source identities together: identical rows derived from a
+        # different annotation snapshot remain a distinct, auditable experiment.
         "format_version": 2 if isolated else 1,
         "data_sha256": file_sha256(data_path),
         "source_identities": sources,
@@ -331,12 +337,16 @@ def validate_snapshot_data(data: pd.DataFrame) -> pd.DataFrame:
 
 
 def _publish(temporary: Path, final: Path) -> None:
+    """Durably flush snapshot bytes before exposing the final filename."""
+
     with temporary.open("rb") as input_file:
         os.fsync(input_file.fileno())
     os.replace(temporary, final)
 
 
 def _write_json_atomic(path: Path, values: dict[str, Any]) -> None:
+    """Publish the manifest last so interrupted snapshots never appear complete."""
+
     temporary = path.with_name(f".{path.name}.partial")
     with temporary.open("x", encoding="utf-8") as output_file:
         json.dump(values, output_file, indent=2, sort_keys=True)

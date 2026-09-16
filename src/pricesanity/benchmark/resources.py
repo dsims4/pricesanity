@@ -31,6 +31,8 @@ def controlled_thread_budget(worker_count: int):
             torch.set_num_threads(worker_count)
         yield
     finally:
+        # This is a process-wide benchmark control, so always restore the caller's PyTorch
+        # setting even when fitting raises and the surrounding run is being checkpointed.
         if torch is not None and previous_torch_threads is not None:
             torch.set_num_threads(previous_torch_threads)
         if limits is not None:
@@ -154,6 +156,8 @@ def smoke_devices(*, device: str = 'auto', compare: bool = False) -> dict[str, A
             if family == 'transformer': settings.update(model_dimension=12,layer_count=4,attention_head_count=4,feedforward_dimension=48,dropout=.1)
             model = build_model(family,random_seed=42,parameters=settings,device=current_device)
             with controlled_thread_budget(1):
+                # The unmeasured fit absorbs lazy backend initialization so startup overhead
+                # does not masquerade as a family or device training difference.
                 warmup = build_model(family,random_seed=42,parameters={**settings, 'epochs': 1},device=current_device)
                 warmup.fit(features,targets,(targets+1)%3)
                 warmup.synchronize()

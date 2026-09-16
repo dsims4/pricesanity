@@ -141,6 +141,8 @@ def classification_metrics(
     ):
         raise ValueError("Classification targets contain an unknown regime class.")
 
+    # Encoding each truth/prediction pair as one integer builds the full confusion matrix
+    # without a Python loop and fixes the row=true, column=predicted convention explicitly.
     confusion = np.bincount(
         human_targets * class_count + predicted_targets,
         minlength=class_count**2,
@@ -193,6 +195,8 @@ def evaluate_benchmark_predictions(
 
     human_anticipated = np.asarray(human_anticipated, dtype=np.int64)
     predicted_anticipated = np.asarray(predicted_anticipated, dtype=np.int64)
+    # Neighborhoods are anchored to human transitions. Anchoring them to model predictions
+    # would give each model a different and potentially easier diagnostic population.
     transition_masks = {
         tolerance: _human_transition_neighborhood_mask(
             human_current,
@@ -302,6 +306,7 @@ def _probability_metrics(
         or not np.allclose(probabilities.sum(axis=1), 1.0, atol=1e-6)
     ):
         raise ValueError("Probability estimates must be finite rows summing to one.")
+    # Clipping protects log(0) numerically; Brier score still uses the original probabilities.
     clipped = np.clip(probabilities, 1e-15, 1.0)
     one_hot_targets = np.eye(3, dtype=np.float64)[targets]
     return ProbabilityMetrics(
@@ -379,6 +384,8 @@ def _transition_metrics(
             and abs(human_transitions[human_index][1] - predicted_position) <= tolerance
         ]
         if candidates:
+            # Consuming the nearest compatible event enforces one-to-one credit: several
+            # noisy predicted flips cannot all claim the same human regime transition.
             nearest = min(
                 candidates,
                 key=lambda index: abs(human_transitions[index][1] - predicted_position),

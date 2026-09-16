@@ -35,6 +35,8 @@ class MajorityClassBaseline:
         """Learn both class frequencies only from the supplied training labels."""
 
         _validate_fit_arrays(features, current_targets, anticipated_targets)
+        # The annotation questions have different class distributions, so one shared
+        # majority would weaken the baseline and obscure which head is genuinely difficult.
         self._current_class = _majority_class(current_targets)
         self._anticipated_class = _majority_class(anticipated_targets)
 
@@ -157,6 +159,8 @@ class PreviousRegimeBaseline:
         """Use only labels from the immediately preceding candle."""
 
         sample_count = _sample_count(features)
+        # Prior human labels are passed as audit context rather than market features. This
+        # deliberately strong persistence reference is not deployable without annotations.
         if (
             context is None
             or context.previous_current_targets is None
@@ -246,6 +250,8 @@ def _validate_fit_arrays(
 ) -> None:
     """Keep baseline alignment under the same contract as learned models."""
 
+    # Baselines must fail on the same malformed corpus as learned models; otherwise their
+    # apparently valid scores could come from a different or misaligned evaluation problem.
     sample_count = _sample_count(features)
     current_targets = np.asarray(current_targets)
     anticipated_targets = np.asarray(anticipated_targets)
@@ -271,12 +277,14 @@ def _sample_count(features: np.ndarray) -> int:
 def _majority_class(targets: np.ndarray) -> int:
     """Use the lowest class index as the deterministic tie breaker."""
 
+    # np.argmax returns the first maximum, making tied training frequencies reproducible.
     return int(np.bincount(np.asarray(targets, dtype=np.int64), minlength=3).argmax())
 
 
 def _one_hot(predictions: np.ndarray) -> np.ndarray:
     """Convert deterministic predictions into the common probability shape."""
 
+    # These rows express a deterministic strategy, not calibrated confidence estimates.
     probabilities = np.zeros((len(predictions), 3), dtype=np.float64)
     probabilities[np.arange(len(predictions)), predictions] = 1.0
     return probabilities

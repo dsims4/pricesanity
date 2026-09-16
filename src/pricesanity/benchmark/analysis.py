@@ -122,6 +122,8 @@ def cluster_bootstrap_pooled_f1(
     current_values = np.empty(repetitions)
     anticipated_values = np.empty(repetitions)
     for repetition in range(repetitions):
+        # Resampling cached confusion counts is equivalent to resampling every candle row,
+        # while avoiding a costly DataFrame reconstruction on each bootstrap repetition.
         sampled = generator.choice(len(session_ids), size=len(session_ids), replace=True)
         scores = _confusion_f1(matrices[sampled].sum(axis=0))
         current_values[repetition], anticipated_values[repetition] = scores
@@ -209,6 +211,8 @@ def _prediction_arrays(predictions: pd.DataFrame) -> dict[str, np.ndarray]:
 
 
 def _mean_head_score(arrays: dict[str, np.ndarray], positions: np.ndarray) -> float:
+    """Score both annotation questions equally on one selected candle population."""
+
     current = classification_metrics(
         arrays["human_current"][positions], arrays["predicted_current"][positions]
     ).macro_f1
@@ -224,6 +228,8 @@ def _interval(
     bootstrap_values: np.ndarray,
     session_count: int,
 ) -> BootstrapInterval:
+    """Summarize an empirical bootstrap distribution with percentile bounds."""
+
     lower, upper = np.quantile(bootstrap_values, [0.025, 0.975])
     return BootstrapInterval(
         estimate=float(estimate), lower=float(lower), upper=float(upper),
@@ -244,6 +250,8 @@ def _session_confusions(arrays: dict, session_ids: tuple) -> np.ndarray:
 
 
 def _confusion_f1(matrices: np.ndarray) -> np.ndarray:
+    """Recover macro-F1 directly from one or more two-head confusion matrices."""
+
     true_positive = np.diagonal(matrices, axis1=-2, axis2=-1)
     denominator = matrices.sum(axis=-1) + matrices.sum(axis=-2)
     per_class = np.divide(2.0 * true_positive, denominator,

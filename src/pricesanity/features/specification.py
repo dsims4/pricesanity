@@ -60,6 +60,8 @@ def build_representation_corpus(
         specification.padding_policy == "none"
         and specification.window_length - 1 > universe.first_scored_candle_position
     ):
+        # Silently dropping early targets would let longer-context models face a different
+        # evaluation population, so an incompatible unpadded representation fails instead.
         raise ValueError(
             "Representation context does not fit before the common first target candle."
         )
@@ -79,6 +81,8 @@ def assert_same_evaluation_universe(
 ) -> None:
     """Reject comparisons that differ in target identities, order, or human labels."""
 
+    # Values may differ by representation; target identities and labels may not. Checking
+    # both prevents a reordered or relabeled corpus from passing as a fair paired comparison.
     if (
         first.candlestick_ids != second.candlestick_ids
         or first.timestamps != second.timestamps

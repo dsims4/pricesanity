@@ -54,6 +54,8 @@ def load_aligned_comparison_predictions(
 
     _, first_predictions, _ = load_benchmark_run(first.directory)
     _, second_predictions, _ = load_benchmark_run(second.directory)
+    # Side-by-side colors imply a paired candle comparison. Refuse two individually valid
+    # runs if their population, ordering, or human targets differ by even one row.
     identity_columns = [
         "candlestick_id", "timestamp", "session_date", "session_index",
         "candle_position", "human_current_regime", "human_anticipated_regime",
@@ -697,6 +699,8 @@ def _draw_candles(axes: Any, candles: pd.DataFrame) -> None:
 
 
 def _uncertainty_series(predictions: pd.DataFrame, *, head: str) -> np.ndarray:
+    """Select the strongest native uncertainty value without relabeling scores as certainty."""
+
     kind = str(predictions["uncertainty_kind"].iloc[0])
     value_kind = "score" if kind == "uncalibrated_decision_score" else "probability"
     columns = [f"{head}_{value_kind}_{regime}" for regime in ("bull", "bear", "range")]

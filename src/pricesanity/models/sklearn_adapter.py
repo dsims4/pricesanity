@@ -59,6 +59,8 @@ class SklearnDualHeadAdapter:
             raise ValueError("Estimator targets must align with feature samples.")
 
         if self.standardize:
+            # Fit location and scale from training observations only. Validation and test
+            # distributions must never influence preprocessing learned by an estimator.
             market, validity, indicators = _market_features(features, context)
             self._standardizer = ArrayStandardizer.fit(market, valid_values=validity)
             fitted_features = self._transform(features, context)
@@ -244,6 +246,8 @@ def _tabular_features(features: np.ndarray) -> np.ndarray:
 
 
 def _market_features(features: np.ndarray, context: PredictionContext | None):
+    """Separate OHLC values from optional history-validity indicators."""
+
     if context is None or context.valid_history_mask is None:
         return features, None, None
     history = np.asarray(context.valid_history_mask, dtype=bool)
@@ -265,6 +269,8 @@ def _ordered_probabilities(estimator: Any, features: np.ndarray) -> np.ndarray:
     if raw_probabilities.shape != (len(features), len(classes)):
         raise ValueError("Estimator returned malformed class probabilities.")
     probabilities = np.zeros((len(features), 3), dtype=np.float64)
+    # A training fold may omit one regime. Preserve the global three-column contract and
+    # leave that absent estimator class at zero instead of shifting the remaining columns.
     for source_index, class_index in enumerate(classes):
         if class_index not in (0, 1, 2):
             raise ValueError("Estimator returned an unknown regime class.")
@@ -282,6 +288,8 @@ def _ordered_decision_scores(estimator: Any, features: np.ndarray) -> np.ndarray
     raw_scores = np.asarray(estimator.decision_function(features), dtype=np.float64)
     classes = np.asarray(estimator.classes_, dtype=np.int64)
     if raw_scores.ndim == 1 and len(classes) == 2:
+        # Binary scikit-learn margins describe the positive class; opposing signs recover
+        # two ordered class scores without pretending that either value is a probability.
         raw_scores = np.column_stack((-raw_scores, raw_scores))
     if raw_scores.shape != (len(features), len(classes)):
         raise ValueError("Estimator returned malformed class scores.")

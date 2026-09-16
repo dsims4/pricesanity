@@ -54,6 +54,8 @@ def load_search_spaces(path: str | Path) -> dict[str, dict[str, dict[str, Any]]]
                     raise ValueError("Log-float search parameters require a positive low.")
             validated_parameters[str(parameter_name)] = dict(specification)
         spaces[str(model_name)] = validated_parameters
+        # Registry validation applies model-specific relationships (for example compatible
+        # attention dimensions) that a generic distribution-shape check cannot express.
         validate_conceptual_parameters(str(model_name), validated_parameters)
     return spaces
 
@@ -85,7 +87,10 @@ def track_search_space(model_name: str, space: dict, track: str) -> dict:
 
     result = {key: dict(value) for key, value in space.items()}
     if track == "controlled":
+        # Controlled comparisons hold representation context outside family-specific tuning.
         result.pop("context_length", None)
     elif model_name not in {"majority_class", "previous_regime"}:
+        # Best-of-family asks how much historical context helps each learned family; the
+        # parameter-free baselines have no representation capacity to tune.
         result.setdefault("context_length", {"type": "categorical", "values": [16, 32, 64]})
     return result
