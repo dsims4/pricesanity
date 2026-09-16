@@ -35,16 +35,29 @@ def aggregate_seed_results(
         raise ValueError("Seed results are missing columns: " + ", ".join(sorted(missing)))
     if runs.empty:
         return pd.DataFrame()
-    if runs.duplicated([*AGGREGATION_KEYS, "seed"]).any():
+    identity_keys = (*AGGREGATION_KEYS, *(key for key in (
+        "protocol_sha256", "annotation_snapshot_sha256", "normalized_dataset_sha256", "label_mapping_sha256"
+    ) if key in runs.columns))
+    if runs.duplicated([*identity_keys, "seed"]).any():
         raise ValueError("One frozen configuration cannot contain a duplicate seed.")
 
     stochastic_models = set(stochastic_models)
     rows: list[dict[str, object]] = []
-    for keys, group in runs.groupby(list(AGGREGATION_KEYS), sort=True, dropna=False):
+    for keys, group in runs.groupby(list(identity_keys), sort=True, dropna=False):
         model_name = str(group["model_name"].iloc[0])
         expected_count = (
             expected_stochastic_seed_count if model_name in stochastic_models else 1
         )
+        if "declared_final_seeds" in group:
+            declared = group["declared_final_seeds"].dropna()
+            if not declared.empty:
+                sets = {tuple(sorted(int(seed) for seed in seeds)) for seeds in declared}
+                if len(sets) != 1 or len(declared) != len(group):
+                    raise ValueError("Runs disagree about the declared final seed set.")
+                expected_seeds = next(iter(sets))
+                if tuple(sorted(int(seed) for seed in group["seed"])) != expected_seeds:
+                    raise ValueError("Completed results do not match the declared final seed set.")
+                expected_count = len(expected_seeds)
         if len(group) != expected_count:
             raise ValueError(
                 f"{model_name} requires {expected_count} frozen seed result(s), "
@@ -52,7 +65,7 @@ def aggregate_seed_results(
             )
         current = group["current_macro_f1"].to_numpy(dtype=float)
         anticipated = group["anticipated_macro_f1"].to_numpy(dtype=float)
-        row = dict(zip(AGGREGATION_KEYS, keys, strict=True))
+        row = dict(zip(identity_keys, keys, strict=True))
         row.update({
             "seed_count": len(group),
             "seeds": tuple(int(value) for value in group["seed"]),
@@ -111,7 +124,10 @@ def add_baseline_deltas(leaderboard: pd.DataFrame) -> pd.DataFrame:
     result = leaderboard.copy()
     result["delta_vs_majority"] = np.nan
     result["delta_vs_persistence"] = np.nan
-    for _, group in result.groupby(["track", "test_session_ids_sha256"], dropna=False):
+    population_keys = ["track", "test_session_ids_sha256"] + [key for key in (
+        "protocol_sha256", "annotation_snapshot_sha256", "normalized_dataset_sha256", "label_mapping_sha256"
+    ) if key in result.columns]
+    for _, group in result.groupby(population_keys, dropna=False):
         majority = group.loc[
             group["model_name"] == "majority_class", "mean_head_macro_f1"
         ]
@@ -136,3 +152,22 @@ def _canonical_hardware(value: object) -> str:
         except json.JSONDecodeError:
             return value
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def partition_seed_results(runs: pd.DataFrame, *, stochastic_models: Sequence[str], expected_stochastic_seed_count: int):
+    """Keep incomplete configurations visible without assigning partial-seed scores."""
+    keys = list(AGGREGATION_KEYS) + [key for key in (
+        'protocol_sha256', 'annotation_snapshot_sha256', 'normalized_dataset_sha256', 'label_mapping_sha256'
+    ) if key in runs.columns]
+    complete = []
+    incomplete = []
+    for _, group in runs.groupby(keys, sort=True, dropna=False):
+        try:
+            complete.append(aggregate_seed_results(group, stochastic_models=stochastic_models,
+                                                   expected_stochastic_seed_count=expected_stochastic_seed_count))
+        except ValueError as error:
+            first = group.iloc[0]
+            incomplete.append({'track': first['track'], 'model_name': first['model_name'],
+                               'model_configuration': first.get('model_configuration'),
+                               'seed_count': len(group), 'reason': str(error)})
+    return (pd.concat(complete, ignore_index=True) if complete else pd.DataFrame(), incomplete)

@@ -27,3 +27,10 @@ Retrospective human labeling is a property of the annotation method: the annotat
 completed session. It does not permit a model input to see future candles. Results describe
 agreement with those labels and temporal generalization within this dataset; they do not by
 themselves establish a profitable trading strategy.
+
+Histogram gradient boosting explicitly disables internal early stopping. MLP also disables
+random-row internal early stopping, and SVM retains native scores without internal probability
+calibration. Outer chronological folds select training duration. Tabular scaling excludes
+invalid history, restores padding to neutral zeros, and leaves Boolean validity indicators
+unstandardized. Global development sealing and physical holdout isolation enforce the final
+boundary before any final bytes are read.

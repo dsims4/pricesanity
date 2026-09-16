@@ -99,6 +99,8 @@ class BenchmarkMetrics:
     current_probability: ProbabilityMetrics | None = None
     anticipated_probability: ProbabilityMetrics | None = None
     efficiency: EfficiencyMetrics | None = None
+    anticipated_transitions: TransitionMetrics | None = None
+    anticipated_transition_neighborhoods: TransitionNeighborhoodMetrics | None = None
 
     @property
     def mean_head_macro_f1(self) -> float:
@@ -200,6 +202,11 @@ def evaluate_benchmark_predictions(
         for tolerance in (0, 1, 2)
     }
 
+    anticipated_masks = {
+        tolerance: _human_transition_neighborhood_mask(human_anticipated, session_indices, tolerance=tolerance)
+        for tolerance in (0, 1, 2)
+    }
+
     return BenchmarkMetrics(
         current=classification_metrics(human_current, predicted_current),
         anticipated=classification_metrics(
@@ -234,6 +241,37 @@ def evaluate_benchmark_predictions(
             ),
             within_two_anticipated=_masked_classification(
                 human_anticipated, predicted_anticipated, transition_masks[2]
+            ),
+        ),
+        anticipated_transitions=TransitionMetrics(
+            exact=_transition_metrics(
+                human_anticipated, predicted_anticipated, session_indices, tolerance=0
+            ),
+            within_one_candle=_transition_metrics(
+                human_anticipated, predicted_anticipated, session_indices, tolerance=1
+            ),
+            within_two_candles=_transition_metrics(
+                human_anticipated, predicted_anticipated, session_indices, tolerance=2
+            ),
+        ),
+        anticipated_transition_neighborhoods=TransitionNeighborhoodMetrics(
+            exact_current=_masked_classification(
+                human_current, predicted_current, anticipated_masks[0]
+            ),
+            exact_anticipated=_masked_classification(
+                human_anticipated, predicted_anticipated, anticipated_masks[0]
+            ),
+            within_one_current=_masked_classification(
+                human_current, predicted_current, anticipated_masks[1]
+            ),
+            within_one_anticipated=_masked_classification(
+                human_anticipated, predicted_anticipated, anticipated_masks[1]
+            ),
+            within_two_current=_masked_classification(
+                human_current, predicted_current, anticipated_masks[2]
+            ),
+            within_two_anticipated=_masked_classification(
+                human_anticipated, predicted_anticipated, anticipated_masks[2]
             ),
         ),
         current_probability=_probability_metrics(

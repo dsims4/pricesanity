@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from time import perf_counter
 from statistics import median
+from typing import Callable, Any
 
 import numpy as np
 import pandas as pd
@@ -61,6 +62,7 @@ def run_model_once(
     device: str = "cpu",
     cpu_worker_count: int = 1,
     inference_timing_repetitions: int = 3,
+    checkpoint_fitted: Callable[[Any, dict], None] | None = None,
 ) -> BenchmarkRunResult:
     """Fit on one historical partition and evaluate one later partition."""
 
@@ -68,6 +70,7 @@ def run_model_once(
     training_context = _context(training)
 
     with controlled_thread_budget(cpu_worker_count):
+        _synchronize_model(model)
         training_started = perf_counter()
         model.fit(
             training_features,
@@ -75,7 +78,18 @@ def run_model_once(
             training.anticipated_targets,
             context=training_context,
         )
+        _synchronize_model(model)
         training_seconds = perf_counter() - training_started
+
+    if checkpoint_fitted is not None:
+        checkpoint_fitted(model, {
+            "training_seconds": training_seconds,
+            "training_sample_count": len(training_features),
+            "training_samples_per_second": len(training_features) / training_seconds,
+            "parameter_count": int(model.parameter_count()) if hasattr(model, "parameter_count") else None,
+            "hardware_fingerprint": hardware_fingerprint(device=device, cpu_worker_count=cpu_worker_count),
+            "device": device, "cpu_worker_count": cpu_worker_count,
+        })
 
     return evaluate_fitted_model(
         model,

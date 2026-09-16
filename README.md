@@ -18,10 +18,13 @@ and attention-based learners under one chronological protocol.
 ## Multi-model benchmark status
 
 **Execution engine ready / awaiting completed annotation corpus.** Price Sanity now has an
-immutable benchmark snapshot, resumable Optuna tuning, shared causal representations,
-chronological folds, frozen winner files, explicitly locked final evaluation, stage-coherent
-checksummed artifacts, and artifact-only result views. A tiny synthetic six-family acceptance
+immutable benchmark snapshot with physically separate development and holdout files, resumable
+Optuna tuning, shared causal representations, chronological folds, a global development seal,
+explicitly locked final evaluation, stage-coherent checksummed artifacts, and artifact-only
+result views. A tiny synthetic six-family acceptance
 test exercises this machinery. The real 2,690-session search and final holdout have not been run.
+The [final preparation report](docs/final_preparation_report.md) records validation and the
+remaining local accelerator caveat: CPU execution works; RX 7800 XT acceleration is unverified.
 
 ```text
 Databento market data
@@ -295,6 +298,13 @@ The default pipeline filters to the configured New York intraday window,
 combines one-minute candles into complete five-minute candles, and validates
 exact timestamps against status-derived closing boundaries and daily quality.
 Scheduled early closes retain their shorter sessions.
+
+The intended corpus policy is strict status-validated eligibility. This is a deliberate
+research boundary, including for dates before authoritative scheduled status coverage.
+The older conservative historical fallback is retired and must not be restored to expand
+the corpus. Apparently complete OHLC prices alone cannot establish trading hours, and
+early closes must never be guessed. Preserve the previous-session reference-chain rules
+below when preparing or validating data.
 
 Every eligible session requires a scheduled status-derived closing boundary,
 an `available` dataset condition, and its complete configured candle grid.
@@ -729,3 +739,10 @@ edits. Zipping the whole working directory does not honor `.gitignore`.
 Generated Parquet, SQLite databases and sidecars, common model files, macOS
 archive metadata, caches, environments, and build output are ignored; source
 files already tracked by Git are retained.
+
+### Preparation guides
+
+See [WSL / AMD training](docs/wsl_amd_training.md), [GUI design](docs/gui_design.md), and
+[benchmark lifecycle](docs/benchmark_execution.md). Finish development in both tracks, then
+run `pricesanity-benchmark freeze-development` before any explicitly confirmed final evaluation.
+The accepted corpus policy is strict status-validated eligibility; historical fallback is retired.

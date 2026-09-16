@@ -39,3 +39,22 @@ whether it is safe to continue a partially serialized Python model. The latter r
 NumPy, pandas, scikit-learn, PyTorch, device/backend, and platform. A mismatch blocks partial
 resume without pretending the scientific question changed. Fully committed checksummed artifacts
 remain portable wherever their formats can be read.
+
+## Source identity and study sealing
+
+Partial execution now also records the installed package's canonical Python-source hash,
+Git revision and dirty state, actual device, hardware, and thread budget. The source hash
+identifies dirty source bytes; a Boolean dirty flag alone cannot distinguish two edits.
+Completed artifacts remain readable; unfinished execution through changed source is refused.
+
+Each Optuna study binds snapshot, protocol, effective track-specific search space, family,
+track, exact fold scope, tuning seed, objective version, and selection source. Existing studies
+without this identity are refused. Candidate-fold artifacts checkpoint completed fits and
+predictions, so retrying an interrupted trial reuses its completed folds. A study-level advisory
+lock serializes tuning, freezing, and final publication within the same study directory.
+
+The declared models and tracks are stored in `study_scope.json`. The default scope contains all
+configured families and both tracks. `freeze-development` verifies all selections and publishes
+`development_frozen.json`, binding configuration/representation/search-space hashes, snapshot,
+protocol, scope, and source. Tuning, pilots, and learning-curve mutation then refuse to run.
+Final evaluation rechecks the seal and requires explicit confirmation before opening holdout.

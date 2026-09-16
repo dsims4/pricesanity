@@ -12,6 +12,9 @@ dataset:
     - low_from_close
 
 protocol:
+  # Strict scheduled-status evidence, available condition, complete grid, and the existing
+  # prior-close trust chain define eligibility. Historical fallback is intentionally retired.
+  # Reverify this count with the current pipeline before freezing the fully annotated corpus.
   # The validated corpus currently has 2,690 annotation-eligible sessions. Every session is
   # accounted for: the first 2,190 are development history and the last 500 stay untouched.
   expected_session_count: 2690
@@ -38,7 +41,7 @@ protocol:
     - training_end: 2000
       validation_start: 2000
       validation_end: 2100
-  learning_curve_session_counts: [250, 500, 1000, 1500, 2000]
+  learning_curve_session_counts: [250, 500, 1000, 1500, 2000, 2100]
 
 tuning:
   primary_metric: mean_head_macro_f1

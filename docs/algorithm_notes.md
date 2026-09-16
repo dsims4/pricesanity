@@ -237,3 +237,28 @@ persistence deltas, chronological folds, complete final seed sets, parameter/mod
 curves, pooled session-bootstrap intervals, and compatible-hardware runtime. This benchmark asks
 which learner reproduces the two annotation tasks from causal candle geometry; it does not by
 itself prove trading profitability or market causality.
+
+## Reading a best-of-family example
+
+The controlled example stays at 16 × 4, with a single candle-level standardizer fitted to
+unique training candles before window duplication. Best-of-family search adds a causal context
+choice of 16, 32, or 64 for every learned family listed above. Baselines do not waste a context
+trial, and controlled searches omit the context parameter entirely. The named Transformer
+incumbent remains guaranteed rather than depending on a lucky random suggestion.
+
+At the second session candle, a 64-candle example contains two real candles and 62 absent
+history positions. The mask distinguishes them from real standardized zeros. Tabular examples
+append 64 validity bits to 256 market values; their scaler fits each market lag using only its
+real observations and leaves the bits unchanged. Sequence models consume masks or lengths.
+The same target candle ID remains in every context, including short scheduled sessions.
+
+This distinction matters for cost as well as fairness. A degree-2 expansion of 320 tabular
+inputs has 51,680 nonconstant columns, so even a compact causal representation can produce a
+large dense polynomial design. Read preflight's transformed dimension and float32/float64
+memory estimates before allowing the search. Exact RBF SVM and kNN likewise retain their stated
+algorithms: an approximation or a sampled corpus would answer a different question and must
+not be substituted silently.
+
+Histogram gradient boosting's training duration and the MLP epoch limit are selected on the
+outer chronological folds. Their internal random-row early stopping is disabled. Model-family
+comparisons therefore retain the same chronology contract despite different library defaults.

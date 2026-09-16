@@ -14,6 +14,9 @@ from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QWidget
 
 
+from pricesanity.gui.theme import REGIME_COLORS
+
+
 class CandlestickChart(FigureCanvasQTAgg):
     """Matplotlib chart that can be placed inside a PySide6 window."""
 
@@ -51,6 +54,7 @@ class CandlestickChart(FigureCanvasQTAgg):
         super().__init__(figure)
 
         self.setParent(parent)
+        self.setMinimumHeight(280)
 
         # Allow a mouse click to give the chart keyboard focus so annotation
         # shortcuts remain inactive while the user is typing into date fields.
@@ -311,11 +315,7 @@ class CandlestickChart(FigureCanvasQTAgg):
             artist.remove()
         self._regime_artists = []
 
-        regime_colors = {
-            "bull": "tab:green",
-            "bear": "tab:red",
-            "range": "tab:orange",
-        }
+        regime_colors = REGIME_COLORS
         short_labels = {"bull": "Bu", "bear": "Be", "range": "R"}
         spans: list[tuple[int, int, str]] = []
         change_markers: list[tuple[int, str]] = []

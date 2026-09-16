@@ -3,8 +3,13 @@
 ## 1. Initialize once
 
 `pricesanity-benchmark initialize` joins the completed annotation database with the normalized
-corpus and publishes one immutable snapshot. Pass the clean OHLC Parquet with `--candlesticks` if
-the A/B Explorer should display price candles. Source paths and SHA-256 identities are recorded.
+corpus and publishes one immutable, physically partitioned snapshot.
+`snapshot/development.parquet` and `snapshot/sealed_holdout.parquet` are bound by
+`benchmark_snapshot.json`. Development loading verifies only development bytes. The sealed file
+is neither read nor checksummed by development commands. Legacy single-file snapshots remain
+readable for archive inspection, but must be regenerated for the protected execution workflow. Pass the paired clean OHLC Parquet with `--candlesticks`: initialization verifies its strict
+scheduled-status evidence and reference chain against the normalized artifact before copying
+any benchmark rows. The same recorded source supports price candles in the A/B Explorer. Source paths and SHA-256 identities are recorded.
 
 ## 2. Pilot and tune development history
 
@@ -24,7 +29,14 @@ final random seeds apply only after selection.
 scored on zero-based sessions 2100–2189, a fixed block after every tuning fold. This keeps curve
 changes attributable to training-history size rather than changing evaluation days.
 
-## 4. Explicit final execution
+## 4. Freeze the entire study, then explicitly evaluate
+
+Run `pricesanity-benchmark freeze-development --study-directory STUDY` after completing tuning
+and exploratory learning curves for **both** tracks. Every declared family needs an all-fold
+selection. A one-fold diagnostic cannot freeze a winner or a study. The seal binds selected
+configuration and representation hashes, protocol, effective search spaces, source, and snapshot.
+Tuning and other development mutations are refused after the seal exists.
+
 
 `final` refuses to reveal holdout indices without `--confirm-final-holdout`. It also refuses a
 configuration selected from fewer than all development folds. Deterministic families fit once;
@@ -36,11 +48,11 @@ the configuration hash, so the three runs aggregate as one configuration.
 ```text
 reserved identity
       ↓
-model checkpoint ── crash → reload exact model
+model + training timing ── crash → reload exact model; inference only
       ↓
-predictions ─────── crash → derive metrics from persisted predictions
+predictions + inference timing ── crash → derive metrics without inference
       ↓
-metrics
+metrics ────────── crash → verify and publish metadata only
       ↓ coherent hashes verified
 benchmark_metadata.json (commit marker)
 ```
@@ -66,11 +78,18 @@ pricesanity-benchmark tune --study-directory data/models/benchmark/study_001 \
   --all-models --track controlled
 pricesanity-benchmark learning-curve --study-directory data/models/benchmark/study_001 \
   --all-models --track controlled
+pricesanity-benchmark tune --study-directory data/models/benchmark/study_001 \
+  --all-models --track best_of_family
+pricesanity-benchmark learning-curve --study-directory data/models/benchmark/study_001 \
+  --all-models --track best_of_family
+pricesanity-benchmark freeze-development --study-directory data/models/benchmark/study_001
 pricesanity-benchmark final --study-directory data/models/benchmark/study_001 \
   --all-models --track controlled --confirm-final-holdout
+pricesanity-benchmark final --study-directory data/models/benchmark/study_001 \
+  --all-models --track best_of_family --confirm-final-holdout
 ```
 
-Repeat tuning/final for `best_of_family`. Exact RBF SVM, large kNN, or large polynomial designs
+Both tracks must finish development before either final command. Exact RBF SVM, large kNN, or large polynomial designs
 may require `--acknowledge-scaling-risk` after the pilot. This acknowledgement accepts compute
 risk, not scientific leakage.
 

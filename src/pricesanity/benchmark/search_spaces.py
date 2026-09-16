@@ -78,3 +78,14 @@ def representative_candidate(
             value = specification["low"]
         candidate[parameter_name] = value
     return candidate
+
+
+def track_search_space(model_name: str, space: dict, track: str) -> dict:
+    """Context is a representation choice only in the best-of-family research question."""
+
+    result = {key: dict(value) for key, value in space.items()}
+    if track == "controlled":
+        result.pop("context_length", None)
+    elif model_name not in {"majority_class", "previous_regime"}:
+        result.setdefault("context_length", {"type": "categorical", "values": [16, 32, 64]})
+    return result

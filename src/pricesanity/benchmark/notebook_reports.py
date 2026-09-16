@@ -39,10 +39,10 @@ def final_report_tables(
     final = raw.loc[raw["run_name"].astype(str).str.startswith("final_seed_")].copy()
     return {
         "leaderboard": leaderboard,
-        "controlled": leaderboard.loc[leaderboard["track"] == "controlled"].copy(),
+        "controlled": leaderboard.loc[leaderboard["track"] == "controlled"].copy() if not leaderboard.empty else leaderboard.copy(),
         "best_of_family": leaderboard.loc[
             leaderboard["track"] == "best_of_family"
-        ].copy(),
+        ].copy() if not leaderboard.empty else leaderboard.copy(),
         "baseline_deltas": leaderboard.loc[:, [
             column for column in (
                 "track", "model_name", "mean_head_macro_f1",
@@ -110,6 +110,8 @@ def error_analysis_tables(run_directory: str | Path) -> dict[str, Any]:
             for head in ("current", "anticipated")
         }, names=["head", "regime"]),
         "transition_neighborhoods": metrics["transition_neighborhoods"],
+        "anticipated_transitions": metrics.get("anticipated_transitions"),
+        "anticipated_transition_neighborhoods": metrics.get("anticipated_transition_neighborhoods"),
         "hardest_sessions": session_scores.sort_values("mean_head_macro_f1").head(20),
         "head_difficulty": pd.DataFrame([{
             "current_macro_f1": metrics["current"]["macro_f1"],
@@ -118,7 +120,11 @@ def error_analysis_tables(run_directory: str | Path) -> dict[str, Any]:
                 metrics["anticipated"]["macro_f1"] - metrics["current"]["macro_f1"]
             ),
         }]),
-        "pooled_session_bootstrap": cluster_bootstrap_pooled_f1(predictions),
+        "pooled_session_bootstrap": (
+            cluster_bootstrap_pooled_f1(predictions)
+            if predictions["session_index"].nunique() >= 2 else None
+        ),
+        "bootstrap_note": "A session-bootstrap interval requires at least two evaluated sessions.",
         "predictions": predictions,
     }
 

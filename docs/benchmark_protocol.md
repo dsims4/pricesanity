@@ -8,7 +8,22 @@ one opaque score.
 
 ## Corpus boundary
 
-The frozen plan requires exactly 2,690 complete annotated sessions:
+The accepted corpus policy is **strict status-validated eligibility**. Trustworthy scheduled
+status evidence must support session boundaries, the dataset condition must be `available`,
+and the configured candle grid must be complete. Reject degraded, missing, unavailable, or
+otherwise invalid sessions. Complete-looking OHLC data cannot establish a schedule. Do not
+guess early closes or apply a historical fallback before scheduled status coverage. Preserve
+the data pipeline's existing trust chain for previous-session closing references.
+
+The earlier conservative historical fallback is retired; it is not an unresolved option.
+The intended corpus begins in November 2015. Recompute and verify the exact eligible count
+with the current preparation pipeline before freezing a fully annotated benchmark. The
+count recomputed from the current pipeline on September 15, 2026 is 2,690 (214,791 candles,
+November 23, 2015 through September 11, 2026); this is an expected count to verify, not a reason to add
+or discard sessions. If verification changes the count, investigate and explicitly update
+the session accounting without weakening eligibility.
+
+For that verified count, the configured plan requires 2,690 complete annotated sessions:
 
 - sessions 1–2,190 are development history;
 - sessions 2,191–2,690 are the untouched final holdout;
@@ -43,7 +58,9 @@ gets one vote in preprocessing rather than one vote per overlapping window.
 
 ## Learning curves
 
-Training prefixes contain 250, 500, 1,000, 1,500, and 2,000 sessions. Every point is evaluated
+Training prefixes contain 250, 500, 1,000, 1,500, 2,000, and 2,100 sessions (the largest valid
+prefix before this fixed evaluation block). Curves use one fixed tuning seed and are explicitly
+exploratory. Every point is evaluated
 on the same future development block, sessions 2,101–2,190 (zero-based indices 2,100–2,189). This
 block begins after the final tuning-validation fold ends. Preprocessing is re-fitted for each
 prefix. The final holdout never enters this experiment.

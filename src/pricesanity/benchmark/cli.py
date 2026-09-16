@@ -35,6 +35,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Benchmark YAML configuration.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("hardware", help="Inspect Python, WSL, PyTorch build, and detected accelerators.")
+    smoke_parser = subparsers.add_parser("device-smoke", help="Synthetic neural fit/save/reload and machine-specific timing.")
+    smoke_parser.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"), default="auto")
+    smoke_parser.add_argument("--compare", action="store_true")
     subparsers.add_parser("models", help="List registered model families and readiness.")
     profile_parser = subparsers.add_parser(
         "profile", help="Measure benchmark infrastructure without training study models."
@@ -52,10 +56,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
     initialize_parser.add_argument(
         "--candlesticks",
         type=Path,
-        help="Optional clean OHLC Parquet retained by identity for artifact-only charts.",
+        required=True,
+        help="Paired clean OHLC Parquet proving strict session/reference eligibility.",
     )
     initialize_parser.add_argument("--project-config", type=Path, required=True)
     initialize_parser.add_argument("--study-directory", type=Path, required=True)
+    freeze_parser = subparsers.add_parser("freeze-development", help="Seal winners across both declared tracks before final access.")
+    freeze_parser.add_argument("--study-directory", type=Path, required=True)
+    freeze_parser.add_argument("--search-spaces", type=Path, default=Path("configs/benchmark/search_spaces.yaml"))
 
     for command, help_text in (
         ("tune", "Run or resume chronological development tuning."),
@@ -139,6 +147,11 @@ def main(arguments: Sequence[str] | None = None) -> int:
 
     parser = build_argument_parser()
     parsed = parser.parse_args(arguments)
+    if parsed.command in {"hardware", "device-smoke"}:
+        from pricesanity.benchmark.resources import hardware_diagnostic, smoke_devices
+        report = hardware_diagnostic() if parsed.command == "hardware" else smoke_devices(device=parsed.device, compare=parsed.compare)
+        print(json.dumps(report, indent=2, default=str))
+        return 0
     config = load_benchmark_config(parsed.config)
     if parsed.command == "profile":
         report = profile_synthetic_infrastructure(
@@ -159,6 +172,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             output_directory=parsed.study_directory / "snapshot",
             expected_session_count=config.expected_session_count,
             candlestick_path=parsed.candlesticks,
+            development_session_count=config.development_session_count,
         )
         print(
             f"Frozen {snapshot.session_count} sessions and {snapshot.row_count} candles "
@@ -166,15 +180,18 @@ def main(arguments: Sequence[str] | None = None) -> int:
         )
         return 0
 
-    if parsed.command in {"tune", "pilot", "final", "learning-curve"}:
+    if parsed.command in {"tune", "pilot", "final", "learning-curve", "freeze-development"}:
         snapshot = load_benchmark_snapshot(parsed.study_directory / "snapshot")
         executor = BenchmarkExecutor(
             snapshot=snapshot,
             config=config,
             search_spaces=load_search_spaces(parsed.search_spaces),
             study_root=parsed.study_directory,
-            device=parsed.device,
+            device=getattr(parsed, "device", "cpu"),
         )
+        if parsed.command == "freeze-development":
+            print(json.dumps(executor.freeze_development(), indent=2, sort_keys=True))
+            return 0
         track = BenchmarkTrack(parsed.track)
         model_names = (
             [family.name for family in list_model_families()]

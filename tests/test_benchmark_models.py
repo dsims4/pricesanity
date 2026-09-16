@@ -1,7 +1,11 @@
 import numpy as np
 import pytest
 
-from pricesanity.benchmark.registry import build_model, list_model_families
+from pricesanity.benchmark.registry import (
+    build_model,
+    get_model_family,
+    list_model_families,
+)
 from pricesanity.models.baselines import MajorityClassBaseline, PreviousRegimeBaseline
 from pricesanity.models.protocol import PredictionContext
 from pricesanity.models.sklearn_adapter import SklearnDualHeadAdapter
@@ -32,6 +36,38 @@ def test_registry_contains_each_requested_family_once() -> None:
     assert len(names) == len(set(names)) == 14
     assert {"tcn", "gru", "transformer", "gradient_boosting"}.issubset(names)
     assert all(family.available for family in families)
+
+
+def test_histogram_boosting_is_seed_invariant_at_benchmark_scale() -> None:
+    """No configured HGB random path is active for the benchmark's maximum fit size."""
+
+    # WHY: 2,190 development sessions have at most 80 scored five-minute candles each,
+    # staying below sklearn's 200,000-row randomized histogram-binning threshold.
+    sample_count = 2_190 * 80
+    generator = np.random.default_rng(20260915)
+    features = generator.normal(size=(sample_count, 4)).astype(np.float32)
+    current = ((features[:, 0] > 0).astype(int) + (features[:, 1] > 0).astype(int)) % 3
+    anticipated = np.roll(current, 1)
+    models = [
+        build_model(
+            "gradient_boosting",
+            random_seed=seed,
+            parameters={"max_iter": 2, "max_leaf_nodes": 7},
+        )
+        for seed in (11, 29)
+    ]
+    for model in models:
+        estimator = model.estimator_factory()
+        assert estimator.early_stopping is False
+        assert estimator.max_features == 1.0
+        model.fit(features, current, anticipated)
+
+    assert get_model_family("gradient_boosting").stochastic is False
+    sample = features[::997]
+    first = models[0].predict_output(sample).probabilities
+    second = models[1].predict_output(sample).probabilities
+    np.testing.assert_array_equal(first.current, second.current)
+    np.testing.assert_array_equal(first.anticipated, second.anticipated)
 
 
 def test_majority_baseline_is_deterministic_and_training_only(tmp_path) -> None:

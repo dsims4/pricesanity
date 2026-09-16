@@ -14,6 +14,7 @@ import pandas as pd
 from pricesanity.annotation.store import AnnotationStore
 from pricesanity.benchmark.artifacts import canonical_sha256, file_sha256
 from pricesanity.config import AppConfig
+from pricesanity.data.annotation_evidence import validate_annotation_evidence, EVIDENCE_POLICY
 from pricesanity.features import FEATURE_COLUMNS
 from pricesanity.training.dataset import build_complete_annotated_sessions
 
@@ -35,6 +36,7 @@ class BenchmarkSnapshot:
     session_count: int
     row_count: int
     source_identities: dict[str, Any]
+    development_session_count: int | None = None
 
 
 def freeze_benchmark_snapshot(
@@ -45,12 +47,19 @@ def freeze_benchmark_snapshot(
     output_directory: str | Path,
     expected_session_count: int | None = None,
     candlestick_path: str | Path | None = None,
+    development_session_count: int | None = None,
 ) -> BenchmarkSnapshot:
     """Join private source artifacts once and atomically publish benchmark-only rows."""
 
     normalized_path = Path(normalized_path)
     database_path = Path(annotation_database_path)
     normalized = pd.read_parquet(normalized_path)
+    if candlestick_path is None:
+        raise ValueError("Strict benchmark initialization requires the paired validated OHLC artifact.")
+    ohlc = pd.read_parquet(candlestick_path)
+    if not normalized[app_config.data.timestamp_column].equals(ohlc[app_config.data.timestamp_column]):
+        raise ValueError("Normalized and OHLC snapshot inputs must have exactly aligned timestamps.")
+    validate_annotation_evidence(ohlc, normalized, config=app_config)
     with closing(AnnotationStore(database_path)) as store:
         annotations = store.load_all()
     sessions = build_complete_annotated_sessions(
@@ -76,6 +85,7 @@ def freeze_benchmark_snapshot(
         "instrument": app_config.data.instrument,
         "target_interval": app_config.data.target_interval,
         "session_timezone": app_config.data.session_timezone,
+        "eligibility_policy": EVIDENCE_POLICY,
     }
     if candlestick_path is not None:
         candlestick_path = Path(candlestick_path)
@@ -91,6 +101,7 @@ def freeze_benchmark_snapshot(
         timestamp_column=app_config.data.timestamp_column,
         expected_session_count=expected_session_count,
         source_identities=source_identities,
+        development_session_count=development_session_count,
     )
 
 
@@ -101,6 +112,7 @@ def freeze_benchmark_snapshot_from_sessions(
     timestamp_column: str = "ts_event",
     expected_session_count: int | None = None,
     source_identities: dict[str, Any] | None = None,
+    development_session_count: int | None = None,
 ) -> BenchmarkSnapshot:
     """Publish a validated synthetic or prejoined session collection for one study."""
 
@@ -144,23 +156,47 @@ def freeze_benchmark_snapshot_from_sessions(
     snapshot_data = validate_snapshot_data(pd.DataFrame(rows, columns=SNAPSHOT_COLUMNS))
     output_directory = Path(output_directory)
     output_directory.mkdir(parents=True, exist_ok=True)
-    data_path = output_directory / "benchmark_snapshot.parquet"
+    isolated = development_session_count is not None
+    if isolated and not 0 < development_session_count < len(sessions):
+        raise ValueError("Development partition must leave nonempty development and holdout.")
+    data_path = output_directory / ("development.parquet" if isolated else "benchmark_snapshot.parquet")
     manifest_path = output_directory / "benchmark_snapshot.json"
-    if data_path.exists() or manifest_path.exists():
+    holdout_path = output_directory / "sealed_holdout.parquet"
+    if data_path.exists() or manifest_path.exists() or holdout_path.exists():
         raise FileExistsError("Benchmark snapshot already exists and is immutable.")
     temporary_data = output_directory / ".benchmark_snapshot.parquet.partial"
-    snapshot_data.to_parquet(temporary_data, index=False)
+    development_data = (
+        snapshot_data.loc[snapshot_data.session_index < development_session_count]
+        if isolated else snapshot_data
+    )
+    development_data.to_parquet(temporary_data, index=False)
     validate_snapshot_data(pd.read_parquet(temporary_data))
     _publish(temporary_data, data_path)
     sources = dict(source_identities or {"kind": "synthetic"})
+    partition = {}
+    if isolated:
+        temporary_holdout = output_directory / ".sealed_holdout.parquet.partial"
+        holdout_data = snapshot_data.loc[snapshot_data.session_index >= development_session_count]
+        holdout_data.to_parquet(temporary_holdout, index=False)
+        _publish(temporary_holdout, holdout_path)
+        partition = {
+            "session_count": len(sessions),
+            "row_count": len(snapshot_data),
+            "development_session_count": development_session_count,
+            "development_row_count": len(development_data),
+            "holdout_file": holdout_path.name,
+            "holdout_sha256": file_sha256(holdout_path),
+            "holdout_row_count": len(holdout_data),
+        }
     identity = canonical_sha256({
-        "format_version": 1,
+        "format_version": 2 if isolated else 1,
         "data_sha256": file_sha256(data_path),
         "source_identities": sources,
         "columns": SNAPSHOT_COLUMNS,
+        **partition,
     })
     manifest = {
-        "format_version": 1,
+        "format_version": 2 if isolated else 1,
         "state": "complete",
         "identity_sha256": identity,
         "data_file": data_path.name,
@@ -169,6 +205,7 @@ def freeze_benchmark_snapshot_from_sessions(
         "row_count": len(snapshot_data),
         "columns": list(SNAPSHOT_COLUMNS),
         "source_identities": sources,
+        **partition,
     }
     _write_json_atomic(manifest_path, manifest)
     return load_benchmark_snapshot(output_directory)
@@ -181,16 +218,21 @@ def load_benchmark_snapshot(directory: str | Path) -> BenchmarkSnapshot:
     manifest_path = directory / "benchmark_snapshot.json"
     with manifest_path.open(encoding="utf-8") as input_file:
         manifest = json.load(input_file)
-    if manifest.get("format_version") != 1 or manifest.get("state") != "complete":
+    if manifest.get("format_version") not in (1, 2) or manifest.get("state") != "complete":
         raise ValueError("Benchmark snapshot is not complete or supported.")
     data_path = directory / str(manifest.get("data_file", ""))
     if data_path.parent != directory or file_sha256(data_path) != manifest.get("data_sha256"):
         raise ValueError("Benchmark snapshot data checksum does not match its manifest.")
     expected_identity = canonical_sha256({
-        "format_version": 1,
+        "format_version": manifest["format_version"],
         "data_sha256": manifest["data_sha256"],
         "source_identities": manifest["source_identities"],
         "columns": tuple(manifest["columns"]),
+        **({key: manifest[key] for key in (
+            "session_count", "row_count",
+            "development_session_count", "development_row_count", "holdout_file",
+            "holdout_sha256", "holdout_row_count",
+        )} if manifest["format_version"] == 2 else {}),
     })
     if expected_identity != manifest.get("identity_sha256"):
         raise ValueError("Benchmark snapshot identity is inconsistent.")
@@ -202,6 +244,7 @@ def load_benchmark_snapshot(directory: str | Path) -> BenchmarkSnapshot:
         session_count=int(manifest["session_count"]),
         row_count=int(manifest["row_count"]),
         source_identities=dict(manifest["source_identities"]),
+        development_session_count=manifest.get("development_session_count"),
     )
 
 
@@ -209,8 +252,58 @@ def load_snapshot_sessions(snapshot: BenchmarkSnapshot) -> tuple[pd.DataFrame, .
     """Load and validate frozen rows, then restore their chronological session grouping."""
 
     data = validate_snapshot_data(pd.read_parquet(snapshot.data_path))
-    if len(data) != snapshot.row_count or data["session_index"].nunique() != snapshot.session_count:
+    manifest = json.loads(snapshot.manifest_path.read_text())
+    expected_rows = manifest.get("development_row_count", snapshot.row_count)
+    expected_sessions = snapshot.development_session_count or snapshot.session_count
+    if len(data) != expected_rows or data["session_index"].nunique() != expected_sessions:
         raise ValueError("Benchmark snapshot counts changed after publication.")
+    return tuple(
+        session.rename(columns={"timestamp": "ts_event"}).reset_index(drop=True)
+        for _, session in data.groupby("session_index", sort=True)
+    )
+
+
+def load_sealed_holdout(
+    snapshot: BenchmarkSnapshot, *, seal_path: Path, confirm_final_holdout: bool,
+) -> tuple[pd.DataFrame, ...]:
+    """Open holdout bytes only after the executor verifies the global development seal."""
+
+    if not confirm_final_holdout or not seal_path.is_file():
+        raise PermissionError("Final holdout is locked until global development freeze and confirmation.")
+    seal = json.loads(seal_path.read_text())
+    # A per-model winner also has state="frozen" and a snapshot hash. It is not a global
+    # development seal, even when a caller passes it to this lower-level API by mistake.
+    scope = seal.get("scope", {})
+    models = scope.get("models", [])
+    tracks = scope.get("tracks", [])
+    if (seal_path.name != "development_frozen.json" or not models or not tracks
+            or any(Path(name).name != name for name in (*models, *tracks))):
+        raise PermissionError("Final holdout requires the global development seal, not a model winner.")
+    expected = {f"{track}/{model}" for track in tracks for model in models}
+    if set(seal.get("selected", {})) != expected:
+        raise ValueError("Development seal does not bind every declared model and track.")
+    for key in expected:
+        selected_path = seal_path.parent / "selected" / f"{key}.json"
+        selected = json.loads(selected_path.read_text())
+        if (canonical_sha256(selected) != seal["selected"][key]["configuration_sha256"]
+                or selected.get("state") != "frozen"
+                or not selected.get("all_development_folds")
+                or selected.get("fold_count", 0) < 2
+                or selected.get("protocol_sha256") != seal.get("protocol_sha256")):
+            raise ValueError("Development seal contains an incompatible or incomplete selection.")
+    if seal.get("snapshot_sha256") != snapshot.identity_sha256 or seal.get("state") != "frozen":
+        raise ValueError("Development seal belongs to another snapshot or is not frozen.")
+    manifest = json.loads(snapshot.manifest_path.read_text())
+    if manifest.get("format_version") != 2:
+        raise ValueError("Final evaluation requires a physically isolated snapshot.")
+    path = snapshot.directory / manifest["holdout_file"]
+    if path.parent != snapshot.directory or file_sha256(path) != manifest["holdout_sha256"]:
+        raise ValueError("Sealed holdout checksum does not match its immutable snapshot.")
+    data = validate_snapshot_data(pd.read_parquet(path))
+    if len(data) != manifest["holdout_row_count"]:
+        raise ValueError("Sealed holdout row count changed.")
+    if data["session_index"].drop_duplicates().tolist() != list(range(snapshot.development_session_count, snapshot.session_count)):
+        raise ValueError("Sealed holdout session accounting changed.")
     return tuple(
         session.rename(columns={"timestamp": "ts_event"}).reset_index(drop=True)
         for _, session in data.groupby("session_index", sort=True)

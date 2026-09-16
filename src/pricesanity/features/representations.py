@@ -39,7 +39,7 @@ class ArrayStandardizer:
     scale: np.ndarray
 
     @classmethod
-    def fit(cls, training_features: np.ndarray) -> "ArrayStandardizer":
+    def fit(cls, training_features: np.ndarray, *, valid_values: np.ndarray | None = None) -> "ArrayStandardizer":
         """Fit only values explicitly assigned to model training."""
 
         training_features = np.asarray(training_features)
@@ -50,8 +50,18 @@ class ArrayStandardizer:
         ).all():
             raise ValueError("Standardization requires finite numeric features.")
 
-        mean = training_features.mean(axis=0, dtype=np.float64)
-        scale = training_features.std(axis=0, dtype=np.float64)
+        if valid_values is None:
+            mean = training_features.mean(axis=0, dtype=np.float64)
+            scale = training_features.std(axis=0, dtype=np.float64)
+        else:
+            if valid_values.shape != training_features.shape:
+                raise ValueError("Validity must align with every market feature.")
+            # Absent history is not a market observation. Empty lag columns stay neutral
+            # until inference supplies real history, using a unit scale rather than NaN.
+            counts = np.maximum(valid_values.sum(axis=0), 1)
+            mean = np.where(valid_values, training_features, 0).sum(axis=0, dtype=np.float64) / counts
+            variance = np.where(valid_values, (training_features - mean) ** 2, 0).sum(axis=0) / counts
+            scale = np.sqrt(variance)
         scale = np.where(scale > np.finfo(np.float64).eps, scale, 1.0)
         return cls(mean=mean, scale=scale)
 

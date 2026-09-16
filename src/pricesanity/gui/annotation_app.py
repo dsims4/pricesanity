@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QProgressBar,
     QMenu,
     QPushButton,
     QSizePolicy,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
 from pricesanity.annotation.schema import CandlestickAnnotation, MarketRegime
 from pricesanity.annotation.store import AnnotationStore
 from pricesanity.gui.chart_widget import CandlestickChart
+from pricesanity.gui.theme import apply_theme, heading, regime_icon
 
 # Use one key map for shortcut creation and visible selection feedback.
 REGIME_SHORTCUT_OPTIONS = {
@@ -186,6 +188,7 @@ class AnnotationWindow(QMainWindow):
 
         central_widget = QWidget(self)
         window_layout = QVBoxLayout(central_widget)
+        window_layout.addWidget(heading("Annotate market regimes"))
 
         # Keep the date range above the chart so changing the loaded sessions
         # does not require closing or restarting the application.
@@ -288,11 +291,21 @@ class AnnotationWindow(QMainWindow):
             ),
         )
 
+        navigation_layout = QHBoxLayout()
+        window_layout.addLayout(navigation_layout)
+
+        self.previous_candle_button = QPushButton("Previous candle · ←")
+        self.next_candle_button = QPushButton("Next candle · →")
+        self.previous_candle_button.clicked.connect(self.move_to_previous_candlestick)
+        self.next_candle_button.clicked.connect(self.move_to_next_candlestick)
+        navigation_layout.addWidget(self.previous_candle_button)
+        navigation_layout.addWidget(self.next_candle_button)
+
         # Restore chart focus after navigation so number-key annotation can resume immediately.
         for button, navigation_action, tooltip in navigation_buttons:
             button.setToolTip(tooltip)
             button.clicked.connect(navigation_action)
-            date_range_layout.addWidget(button)
+            navigation_layout.addWidget(button)
 
         date_range_layout.addStretch()
 
@@ -349,35 +362,52 @@ class AnnotationWindow(QMainWindow):
         # Place each value below its label so their left edges remain aligned.
         current_regime_layout = QVBoxLayout()
         current_regime_layout.setSpacing(3)
-        self.current_regime_label = QLabel("Current regime:")
+        self.current_regime_label = heading("CURRENT REGIME", role="muted")
         current_regime_layout.addWidget(self.current_regime_label)
         self.current_regime_value = QLabel(UNSELECTED_REGIME_TEXT)
         self.current_regime_value.setFrameStyle(
             QFrame.Shape.Panel | QFrame.Shadow.Sunken
         )
-        self.current_regime_value.setFixedWidth(130)
+        self.current_regime_value.setMinimumWidth(160)
         self.current_regime_value.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
         current_regime_layout.addWidget(self.current_regime_value)
-        regime_layout.addLayout(current_regime_layout)
+        self.current_card = QFrame()
+        self.current_card.setProperty("role", "card")
+        self.current_card.setLayout(current_regime_layout)
+        regime_layout.addWidget(self.current_card, stretch=1)
 
         # A separate classification head is planned for this future target.
         anticipated_regime_layout = QVBoxLayout()
         anticipated_regime_layout.setSpacing(3)
-        self.anticipated_regime_label = QLabel("Anticipated regime:")
+        self.anticipated_regime_label = heading("ANTICIPATED REGIME", role="muted")
         anticipated_regime_layout.addWidget(self.anticipated_regime_label)
         self.anticipated_regime_value = QLabel(UNSELECTED_REGIME_TEXT)
         self.anticipated_regime_value.setFrameStyle(
             QFrame.Shape.Panel | QFrame.Shadow.Sunken
         )
-        self.anticipated_regime_value.setFixedWidth(130)
+        self.anticipated_regime_value.setMinimumWidth(160)
         self.anticipated_regime_value.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
         anticipated_regime_layout.addWidget(self.anticipated_regime_value)
-        regime_layout.addLayout(anticipated_regime_layout)
-        regime_layout.addStretch()
+        self.anticipated_card = QFrame()
+        self.anticipated_card.setProperty("role", "card")
+        self.anticipated_card.setLayout(anticipated_regime_layout)
+        regime_layout.addWidget(self.anticipated_card, stretch=1)
+        self.regime_buttons = {}
+        for head, target_layout in (("current", current_regime_layout), ("anticipated", anticipated_regime_layout)):
+            buttons = QHBoxLayout()
+            target_layout.addLayout(buttons)
+            for key, regime in REGIME_SHORTCUT_OPTIONS.items():
+                button = QPushButton(f"{regime.value.title()} · {key}")
+                button.setIcon(regime_icon(regime.value, device_pixel_ratio=self.devicePixelRatioF()))
+                button.setCheckable(True)
+                button.setProperty("regime", regime.value)
+                button.clicked.connect(partial(self._click_regime, head, regime))
+                buttons.addWidget(button)
+                self.regime_buttons[head, regime] = button
 
         # Explain the complete keyboard workflow while identifying which of the
         # two choices the next number key will fill.
@@ -385,15 +415,30 @@ class AnnotationWindow(QMainWindow):
         self.selection_prompt.setWordWrap(True)
         window_layout.addWidget(self.selection_prompt)
 
+        self.progress_label = heading("", role="muted")
+        window_layout.insertWidget(2, self.progress_label)
+        self.session_progress = QProgressBar()
+        window_layout.insertWidget(3, self.session_progress)
+        self.commit_state = heading("", role="readonly")
+        window_layout.addWidget(self.commit_state)
         self.setCentralWidget(central_widget)
+        apply_theme(self)
 
         # Begin with the complete available range and its first trading session.
         self.annotation_store = AnnotationStore(self.database_path)
         self._annotation_load_failed = False
-
-        # Initial navigation can fail after SQLite opens, so protect that connection during
-        # setup.
+        # Initial progress and navigation both read SQLite; close the connection if either
+        # fails so a partially constructed window cannot retain a database handle.
         try:
+            self._saved_ids = self.annotation_store.load_annotated_ids()
+            self._session_ids_for_progress = {
+                day: set(self.all_candlestick_data.iloc[indices]["candlestick_id"])
+                for day, indices in self._session_indices.items()
+            }
+            self._completed_session_dates = {
+                day for day, ids in self._session_ids_for_progress.items()
+                if ids.issubset(self._saved_ids)
+            }
             self.apply_date_range()
 
         # Release the store when construction fails because no window will exist to close it
@@ -446,6 +491,14 @@ class AnnotationWindow(QMainWindow):
                 partial(self.select_regime, regime)
             )
             self.regime_shortcuts[number_key] = regime_shortcut
+
+    def _click_regime(self, head, regime, checked=False):
+        if head == "current":
+            self.is_selecting_current_regime = True
+        elif self.selected_current_regime is not None:
+            self.is_selecting_current_regime = False
+        self.select_regime(regime)
+        self.chart.setFocus()
 
     @staticmethod
     def _configure_date_calendar(
@@ -514,18 +567,7 @@ class AnnotationWindow(QMainWindow):
         # The complete month and year button surfaces open their menus, so an
         # extra indicator is unnecessary. Centering the text keeps both compact
         # controls balanced in the calendar heading.
-        calendar.setStyleSheet("""
-            QToolButton#qt_calendar_monthbutton,
-            QToolButton#qt_calendar_yearbutton {
-                padding: 0px;
-                text-align: center;
-            }
-            QToolButton#qt_calendar_monthbutton::menu-indicator,
-            QToolButton#qt_calendar_yearbutton::menu-indicator {
-                image: none;
-                width: 0px;
-            }
-            """)
+
 
         # QDateEdit's date range prevents out-of-corpus cells from being
         # selected. Qt's disabled palette does not reliably color calendar
@@ -778,6 +820,10 @@ class AnnotationWindow(QMainWindow):
 
             return
 
+        self._saved_ids.add(self._active_candlestick_id())
+        day = self.selected_session_dates[self.active_session_position]
+        if self._session_ids_for_progress[day].issubset(self._saved_ids):
+            self._completed_session_dates.add(day)
         self.statusBar().clearMessage()
 
         # Show the completed current-regime choice immediately. Unsaved candles remain
@@ -926,6 +972,21 @@ class AnnotationWindow(QMainWindow):
             )
 
         self.selection_prompt.setText(instruction)
+        for (head, regime), button in self.regime_buttons.items():
+            selected = self.selected_current_regime if head == "current" else self.selected_anticipated_regime
+            button.setChecked(selected == regime)
+            button.setEnabled(not self._annotation_load_failed and (head == "current" or self.selected_current_regime is not None))
+        day = self.selected_session_dates[self.active_session_position]
+        ids = self._session_ids_for_progress[day]
+        saved = len(ids.intersection(self._saved_ids))
+        completed = len(self._completed_session_dates)
+        total = len(self.available_session_dates)
+        self.progress_label.setText(f"{day} · {completed:,} / {total:,} sessions complete ({completed / total:.1%}) · {total-completed:,} remaining · Candle {self.active_candlestick_position+1} / {len(ids)}")
+        self.session_progress.setRange(0,len(ids))
+        self.session_progress.setValue(saved)
+        self.session_progress.setFormat(f"Session: {saved} / {len(ids)} candles saved")
+        committed = self.is_selecting_current_regime and self._active_candlestick_id() in self._saved_ids
+        self.commit_state.setText("✓ Pair saved · ready to advance" if committed else "Current chosen · choose anticipated to save" if not self.is_selecting_current_regime else "Choose current, then anticipated · both labels save together")
 
     def _move_session(self, direction: int) -> None:
         """Open the adjacent eligible session at its first candlestick.

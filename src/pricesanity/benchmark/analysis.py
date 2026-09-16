@@ -117,23 +117,14 @@ def cluster_bootstrap_pooled_f1(
     session_ids = tuple(dict.fromkeys(arrays["session_index"].tolist()))
     if len(session_ids) < 2 or repetitions <= 0:
         raise ValueError("Cluster bootstrap needs two sessions and positive repetitions.")
+    matrices = _session_confusions(arrays, session_ids)
     generator = np.random.default_rng(random_seed)
     current_values = np.empty(repetitions)
     anticipated_values = np.empty(repetitions)
     for repetition in range(repetitions):
-        sampled_sessions = generator.choice(session_ids, size=len(session_ids), replace=True)
-        sampled_positions = np.concatenate([
-            np.flatnonzero(arrays["session_index"] == session_id)
-            for session_id in sampled_sessions
-        ])
-        current_values[repetition] = classification_metrics(
-            arrays["human_current"][sampled_positions],
-            arrays["predicted_current"][sampled_positions],
-        ).macro_f1
-        anticipated_values[repetition] = classification_metrics(
-            arrays["human_anticipated"][sampled_positions],
-            arrays["predicted_anticipated"][sampled_positions],
-        ).macro_f1
+        sampled = generator.choice(len(session_ids), size=len(session_ids), replace=True)
+        scores = _confusion_f1(matrices[sampled].sum(axis=0))
+        current_values[repetition], anticipated_values[repetition] = scores
     current_estimate = classification_metrics(
         arrays["human_current"], arrays["predicted_current"]
     ).macro_f1
@@ -170,17 +161,21 @@ def paired_cluster_bootstrap_difference(
     session_ids = tuple(dict.fromkeys(first_arrays["session_index"].tolist()))
     if len(session_ids) < 2:
         raise ValueError("Paired pooled bootstrap requires at least two sessions.")
+    if repetitions <= 0:
+        raise ValueError("Bootstrap repetitions must be positive.")
+    for head in ("current", "anticipated"):
+        if not np.array_equal(first_arrays[f"human_{head}"], second_arrays[f"human_{head}"]):
+            raise ValueError("Paired bootstrap requires identical human targets.")
+    first_matrices = _session_confusions(first_arrays, session_ids)
+    second_matrices = _session_confusions(second_arrays, session_ids)
     generator = np.random.default_rng(random_seed)
     differences = np.empty(repetitions)
     for repetition in range(repetitions):
-        sampled = generator.choice(session_ids, size=len(session_ids), replace=True)
-        positions = np.concatenate([
-            np.flatnonzero(first_arrays["session_index"] == session_id)
-            for session_id in sampled
-        ])
+        # The same session draw preserves pairing, including repeated copies of a session.
+        sampled = generator.choice(len(session_ids), size=len(session_ids), replace=True)
         differences[repetition] = (
-            _mean_head_score(first_arrays, positions)
-            - _mean_head_score(second_arrays, positions)
+            _confusion_f1(first_matrices[sampled].sum(axis=0)).mean()
+            - _confusion_f1(second_matrices[sampled].sum(axis=0)).mean()
         )
     all_positions = np.arange(len(first))
     estimate = (
@@ -234,3 +229,23 @@ def _interval(
         estimate=float(estimate), lower=float(lower), upper=float(upper),
         session_count=session_count, bootstrap_repetitions=len(bootstrap_values),
     )
+
+
+def _session_confusions(arrays: dict, session_ids: tuple) -> np.ndarray:
+    """Three-class confusion counts are exact sufficient statistics for pooled F1."""
+
+    indices = {value: index for index, value in enumerate(session_ids)}
+    row_sessions = np.array([indices[value] for value in arrays["session_index"]])
+    matrices = np.zeros((len(session_ids), 2, 3, 3), dtype=np.int64)
+    for head_index, head in enumerate(("current", "anticipated")):
+        np.add.at(matrices[:, head_index],
+                  (row_sessions, arrays[f"human_{head}"], arrays[f"predicted_{head}"]), 1)
+    return matrices
+
+
+def _confusion_f1(matrices: np.ndarray) -> np.ndarray:
+    true_positive = np.diagonal(matrices, axis1=-2, axis2=-1)
+    denominator = matrices.sum(axis=-1) + matrices.sum(axis=-2)
+    per_class = np.divide(2.0 * true_positive, denominator,
+                          out=np.zeros_like(denominator, dtype=float), where=denominator != 0)
+    return per_class.mean(axis=-1)

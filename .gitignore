@@ -248,3 +248,8 @@ data/annotations/*
 
 # Run metadata and predictions belong with local model artifacts, not source control.
 data/models/
+
+# Review archive and operating-system debris
+__MACOSX/
+.DS_Store
+Archive.zip

@@ -47,6 +47,7 @@ def _tiny_study(tmp_path):
         sessions,
         output_directory=tmp_path / "study" / "snapshot",
         expected_session_count=10,
+        development_session_count=8,
         source_identities={"kind": "tiny_acceptance"},
     )
     base = load_benchmark_config("configs/benchmark/default.yaml")
@@ -116,11 +117,12 @@ def test_tiny_multimodel_executor_tunes_finalizes_and_resumes(tmp_path) -> None:
     """Prove the launch-time machine without touching the real annotated corpus."""
 
     executor = _tiny_study(tmp_path)
-    for model_name in MODEL_NAMES:
-        selected = executor.tune_model(model_name, track=BenchmarkTrack.CONTROLLED)
-        assert selected["all_development_folds"] is True
-        assert selected["fold_count"] == 2
-        assert selected["tuning_seed"] == 5
+    for track in BenchmarkTrack:
+        for model_name in MODEL_NAMES:
+            selected = executor.tune_model(model_name, track=track)
+            assert selected["all_development_folds"] is True
+            assert selected["fold_count"] == 2
+            assert selected["tuning_seed"] == 5
 
     # Resuming the persistent study does not add a second completed trial.
     first_selection = executor.tune_model(
@@ -132,14 +134,16 @@ def test_tiny_multimodel_executor_tunes_finalizes_and_resumes(tmp_path) -> None:
     )
     assert json.loads(selected_path.read_text())["parameters"]["model_dimension"] == 4
 
+    for track in BenchmarkTrack:
+        executor.run_learning_curve("logistic_regression", track=track)
+    executor.freeze_development()
     completed = []
-    for model_name in MODEL_NAMES:
-        paths = executor.run_final(
-            model_name,
-            track=BenchmarkTrack.CONTROLLED,
-            confirm_final_holdout=True,
-        )
-        completed.extend(paths)
+    for track in BenchmarkTrack:
+        for model_name in MODEL_NAMES:
+            paths = executor.run_final(
+                model_name, track=track, confirm_final_holdout=True,
+            )
+            completed.extend(paths)
     mtimes = {path: (path / "benchmark_metadata.json").stat().st_mtime_ns for path in completed}
     for model_name in MODEL_NAMES:
         executor.run_final(
@@ -155,7 +159,12 @@ def test_tiny_multimodel_executor_tunes_finalizes_and_resumes(tmp_path) -> None:
         tmp_path / "study" / "runs", expected_stochastic_seed_count=2
     )
     assert set(leaderboard["model_name"]) == set(MODEL_NAMES)
-    assert len(leaderboard) == len(MODEL_NAMES)
+    assert len(leaderboard) == len(MODEL_NAMES) * 2
+    from pricesanity.benchmark.notebook_reports import final_report_tables
+    tables = final_report_tables(executor.paths.root, expected_stochastic_seed_count=2)
+    assert not tables["controlled"].empty
+    assert not tables["best_of_family"].empty
+    assert not tables["learning_curves"].empty
 
 
 def test_focused_fold_cannot_freeze_or_unlock_final(tmp_path) -> None:

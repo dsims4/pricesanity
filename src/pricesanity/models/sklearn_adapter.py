@@ -59,8 +59,9 @@ class SklearnDualHeadAdapter:
             raise ValueError("Estimator targets must align with feature samples.")
 
         if self.standardize:
-            self._standardizer = ArrayStandardizer.fit(features)
-            fitted_features = self._standardizer.transform(features)
+            market, validity, indicators = _market_features(features, context)
+            self._standardizer = ArrayStandardizer.fit(market, valid_values=validity)
+            fitted_features = self._transform(features, context)
         else:
             fitted_features = features
 
@@ -103,7 +104,7 @@ class SklearnDualHeadAdapter:
     ) -> DualRegimeOutput:
         """Run each fitted head once and preserve its native prediction semantics."""
 
-        transformed, current_estimator, anticipated_estimator = self._prepare(features)
+        transformed, current_estimator, anticipated_estimator = self._prepare(features, context)
         current_predictions = np.asarray(
             current_estimator.predict(transformed), dtype=np.int64
         )
@@ -206,7 +207,7 @@ class SklearnDualHeadAdapter:
         model._require_fitted()
         return model
 
-    def _prepare(self, features: np.ndarray) -> tuple[np.ndarray, Any, Any]:
+    def _prepare(self, features: np.ndarray, context: PredictionContext | None = None) -> tuple[np.ndarray, Any, Any]:
         """Apply frozen training preprocessing before inference."""
 
         current_estimator, anticipated_estimator = self._require_fitted()
@@ -214,8 +215,16 @@ class SklearnDualHeadAdapter:
         if self.standardize:
             if self._standardizer is None:
                 raise RuntimeError("Fitted estimator is missing its standardizer.")
-            features = self._standardizer.transform(features)
+            features = self._transform(features, context)
         return features, current_estimator, anticipated_estimator
+
+    def _transform(self, features: np.ndarray, context: PredictionContext | None) -> np.ndarray:
+        market, validity, indicators = _market_features(features, context)
+        transformed = self._standardizer.transform(market)
+        if validity is not None:
+            transformed = np.where(validity, transformed, 0).astype(np.float32)
+        # Boolean history indicators carry availability, not OHLC geometry. Keep 0/1 intact.
+        return np.concatenate([transformed, indicators], axis=1) if indicators is not None else transformed
 
     def _require_fitted(self) -> tuple[Any, Any]:
         """Reject partially fitted or uninitialized adapters."""
@@ -232,6 +241,18 @@ def _tabular_features(features: np.ndarray) -> np.ndarray:
     if features.ndim != 2 or features.shape[0] == 0 or not np.isfinite(features).all():
         raise ValueError("Scikit-learn adapters require finite nonempty tabular features.")
     return features
+
+
+def _market_features(features: np.ndarray, context: PredictionContext | None):
+    if context is None or context.valid_history_mask is None:
+        return features, None, None
+    history = np.asarray(context.valid_history_mask, dtype=bool)
+    length = history.shape[1]
+    has_indicators = features.shape[1] == length * 5
+    market = features[:, :length * 4] if has_indicators else features
+    if market.shape[1] != length * 4:
+        raise ValueError("Tabular OHLC and history mask dimensions disagree.")
+    return market, np.repeat(history, 4, axis=1), features[:, length * 4:] if has_indicators else None
 
 
 def _ordered_probabilities(estimator: Any, features: np.ndarray) -> np.ndarray:

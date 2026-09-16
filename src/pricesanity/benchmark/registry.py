@@ -61,8 +61,8 @@ MODEL_FAMILIES = (
     ),
     ModelFamily(
         "gradient_boosting", "Gradient-boosted trees", "boosting", "tabular",
-        "scikit-learn", True, True, True,
-        "One histogram-gradient boosting implementation.",
+        "scikit-learn", True, False, True,
+        "Deterministic histogram-gradient boosting at the benchmark's row scale.",
     ),
     ModelFamily(
         "rbf_svm", "RBF SVM", "kernel", "tabular", "scikit-learn",
@@ -153,6 +153,8 @@ def validate_conceptual_parameters(
     """Reject unsupported conceptual settings before constructing a library estimator."""
 
     accepted_parameters = MODEL_CONCEPTUAL_PARAMETERS.get(name, frozenset())
+    if name in MODEL_CONCEPTUAL_PARAMETERS:
+        accepted_parameters = accepted_parameters | {"context_length"}
     unknown_parameters = set(parameters).difference(accepted_parameters)
     if unknown_parameters:
         raise ValueError(
@@ -322,6 +324,11 @@ def _sklearn_factory(
             "max_iter": 200,
             "learning_rate": 0.05,
             "max_leaf_nodes": 31,
+            # Random internal validation leaks overlapping windows across its row split.
+            # Chronological outer folds select max_iter instead.
+            "early_stopping": False,
+            # WHY: This seed is inert for the current <200k-row benchmark with full feature
+            # use, but retaining it keeps existing configurations/artifacts compatible.
             "random_state": random_seed,
             **conceptual_parameters,
         }

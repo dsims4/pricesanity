@@ -22,6 +22,7 @@ from pricesanity.gui.model_comparison import (
     _ABSessionCanvas,
     ComparisonRun,
     ModelComparisonWindow,
+    _format_run_details,
     format_uncertainty_values,
     load_aligned_comparison_predictions,
     load_comparison_runs,
@@ -171,6 +172,28 @@ def test_uncertainty_display_distinguishes_scores_from_probabilities() -> None:
     assert format_uncertainty_values(score_row, head="current").startswith(
         "Uncalibrated score"
     )
+
+
+def test_run_details_display_current_and_anticipated_transition_diagnostics() -> None:
+    """The explorer reports each persisted head with the same exact/±1/±2 semantics."""
+
+    metrics = evaluate_benchmark_predictions(
+        human_current=np.array([0, 0, 1, 1, 2, 2]),
+        predicted_current=np.array([0, 0, 0, 1, 2, 2]),
+        human_anticipated=np.array([0, 1, 1, 2, 2, 0]),
+        predicted_anticipated=np.array([0, 0, 1, 1, 2, 0]),
+        session_indices=np.zeros(6, dtype=np.int64),
+    ).to_dict()
+    details = _format_run_details(
+        ComparisonRun("diagnostic run", Path("/unused"), {}, metrics)
+    )
+
+    assert "Current exact transitions: 1" in details
+    assert "Current transitions within ±1 candle: 2" in details
+    assert "Current transitions within ±2 candles: 2" in details
+    assert "Anticipated exact transitions: 1" in details
+    assert "Anticipated transitions within ±1 candle: 3" in details
+    assert "Anticipated transitions within ±2 candles: 3" in details
 
 
 def test_ab_canvas_draws_exact_aligned_regimes_uncertainty_and_ohlc() -> None:

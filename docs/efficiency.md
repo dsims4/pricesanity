@@ -16,3 +16,19 @@ scale with trees/iterations; neural models scale with context, width, layers, ep
 Causal windows use NumPy stride views within each session and concatenate once into an immutable
 corpus. Fold selection owns its rows. Standardizers are never reused across folds because their
 values belong only to each fold's training history.
+
+The preparation executor bounds its immutable representation cache at 512 MiB. Cache eviction
+is safe and may reduce speedup in large studies. Best-of-family contexts share a maximum-context
+window and exact target/mask identities. Training-fitted model state remains specific to each
+fold. See [the measured optimization audit](optimization_audit.md) for the local probes.
+
+Before tuning, preflight counts actual eligible training and validation windows from the
+largest development fold. For best-of-family it uses the largest declared context and includes
+explicit validity indicators in tabular dimension estimates. Polynomial memory is estimated for
+both float32 and float64. These estimates exclude estimator workspaces and are lower bounds on
+peak resident memory. No exact SVM substitution or silent downsampling is performed.
+
+Use `pricesanity-benchmark hardware` and `device-smoke --compare` for device/build evidence and
+small synchronized CPU/accelerator timing. CPU estimators record CPU even when a mixed-family
+invocation assigns an accelerator to neural models. Fits and inference retain their original
+measurements through model/prediction/metadata crash recovery.

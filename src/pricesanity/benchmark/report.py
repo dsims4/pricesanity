@@ -29,6 +29,8 @@ def collect_completed_runs(artifact_root: str | Path) -> pd.DataFrame:
             "model_configuration_sha256": identity["model_configuration_sha256"],
             "representation_sha256": identity["representation_sha256"],
             "test_session_ids_sha256": identity["test_session_ids_sha256"],
+            **{key: identity.get(key) for key in ("protocol_sha256", "annotation_snapshot_sha256", "normalized_dataset_sha256", "label_mapping_sha256")},
+            "declared_final_seeds": metadata.get("dataset", {}).get("declared_final_seeds"),
             "current_macro_f1": metrics["current"]["macro_f1"],
             "anticipated_macro_f1": metrics["anticipated"]["macro_f1"],
             "mean_head_macro_f1": metrics["mean_head_macro_f1"],

@@ -253,6 +253,24 @@ def save_benchmark_run(
         )
 
 
+def checkpoint_fitted_model(paths: BenchmarkRunPaths, model: Any, timing: dict) -> None:
+    """Publish model and original fitting evidence before inference can fail."""
+
+    with _run_lock(paths.lock):
+        if paths.progress.exists() or paths.metadata.exists():
+            raise ValueError("A fitted stage is already checkpointed.")
+        _remove_stale_partial(paths.model)
+        temporary = _temporary_path(paths.model)
+        model.save(temporary)
+        _validate_nonempty_file(temporary, "model")
+        _publish_atomic(temporary, paths.model)
+        _write_json_atomic(paths.progress, {
+            "format_version": 1,
+            "completed": {"model": file_sha256(paths.model), "model_state_sha256": model.state_fingerprint()},
+            "training_evidence": timing,
+        })
+
+
 def _save_benchmark_run_locked(
     paths: BenchmarkRunPaths,
     identity: BenchmarkRunIdentity,
@@ -294,6 +312,7 @@ def _save_benchmark_run_locked(
         _publish_atomic(temporary_model, paths.model)
         completed["model"] = file_sha256(paths.model)
         completed["model_state_sha256"] = model_state_sha256
+        progress["training_evidence"] = asdict(metrics.efficiency) if metrics.efficiency else None
         _write_json_atomic(paths.progress, progress)
     elif completed.get("model_state_sha256") != model_state_sha256:
         # A new stochastic instance is not equivalent merely because it has the same settings.
@@ -307,6 +326,7 @@ def _save_benchmark_run_locked(
         _publish_atomic(temporary_predictions, paths.predictions)
         completed["predictions"] = file_sha256(paths.predictions)
         completed["predictions_source_model_state_sha256"] = model_state_sha256
+        progress["efficiency"] = asdict(metrics.efficiency) if metrics.efficiency else None
         _write_json_atomic(paths.progress, progress)
     elif completed.get("predictions_source_model_state_sha256") != model_state_sha256:
         raise ValueError("Checkpointed predictions were not produced by this fitted model.")
@@ -341,6 +361,23 @@ def _save_benchmark_run_locked(
         == completed.get("metrics_source_predictions_sha256")
     ):
         raise ValueError("Benchmark components do not form one coherent fitted-model chain.")
+    return publish_checkpointed_run(paths, identity, model_configuration, dataset_description)
+
+
+def publish_checkpointed_run(paths, identity, model_configuration, dataset_description):
+    """Finish a metrics-complete run by verifying its chain and publishing metadata only."""
+    if _read_json(paths.identity, "run identity") != _json_compatible(identity.to_dict()):
+        raise ValueError("Checkpoint identity changed.")
+    if canonical_sha256(model_configuration) != identity.model_configuration_sha256:
+        raise ValueError("Checkpoint model configuration changed.")
+    progress = _read_json(paths.progress, "run progress")
+    completed = progress.get("completed", {})
+    for name in ("model", "predictions", "metrics"):
+        if not _component_is_complete(getattr(paths, name), completed.get(name)):
+            raise ValueError("Checkpoint component is incomplete: " + name)
+    if (completed.get("model_state_sha256") != completed.get("predictions_source_model_state_sha256")
+            or completed.get("predictions") != completed.get("metrics_source_predictions_sha256")):
+        raise ValueError("Checkpoint components are not a coherent chain.")
     metadata = {
         "format_version": 1,
         "state": "complete",
@@ -357,7 +394,7 @@ def _save_benchmark_run_locked(
             "metrics_sha256": file_sha256(paths.metrics),
         },
         "library_versions": _library_versions(),
-        "git": _git_identity(paths.directory),
+        "git": source_identity(),
         "resume_environment": _read_json(
             paths.resume_environment, "benchmark resume environment"
         ),
@@ -417,6 +454,11 @@ def audit_benchmark_run(
     saved_scientific_metrics = dict(metrics)
     saved_scientific_metrics.pop("efficiency", None)
     recomputed.pop("efficiency", None)
+    # Additive diagnostics do not make an older completed result unreadable. Audit every
+    # field it actually recorded; new runs always include both transition anchors.
+    for added in ("anticipated_transitions", "anticipated_transition_neighborhoods"):
+        if added not in saved_scientific_metrics:
+            recomputed.pop(added, None)
     if canonical_sha256(saved_scientific_metrics) != canonical_sha256(recomputed):
         raise ValueError("Saved benchmark metrics do not match recomputed predictions.")
     return metadata, predictions, metrics
@@ -588,7 +630,20 @@ def resume_environment_fingerprint(
 ) -> dict[str, Any]:
     """Describe execution compatibility separately from scientific identity."""
 
-    return {**_library_versions(), "device": device}
+    return {**_library_versions(), "device": device, "source": source_identity()}
+
+
+def source_identity() -> dict[str, Any]:
+    """Bind partial execution to installed source bytes, including uncommitted edits."""
+
+    source_root = Path(__file__).resolve().parents[1]
+    files = {
+        str(path.relative_to(source_root)): file_sha256(path)
+        for path in sorted(source_root.rglob("*.py"))
+    }
+    # Scientific identity describes the question; this stricter identity describes the code
+    # that produced an unfinished checkpoint. Dirty Git state alone cannot identify its bytes.
+    return {**_git_identity(source_root), "source_sha256": canonical_sha256(files)}
 
 
 def _write_json_atomic(

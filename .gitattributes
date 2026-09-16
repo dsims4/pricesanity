@@ -1,0 +1,14 @@
+# Review archives contain source and documentation, never local corpus or environment files.
+Archive.zip export-ignore
+.venv export-ignore
+.env export-ignore
+__MACOSX export-ignore
+.DS_Store export-ignore
+__pycache__ export-ignore
+.pytest_cache export-ignore
+*.egg-info export-ignore
+data/models export-ignore
+data/raw export-ignore
+data/interim export-ignore
+data/processed export-ignore
+data/annotations export-ignore

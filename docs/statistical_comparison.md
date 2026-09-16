@@ -23,3 +23,15 @@ at and within ±1/±2 candles of human transitions.
 Stochastic finalists report every frozen seed plus mean and standard deviation. Chronological
 folds share expanding training history and are not independent experiments; their mean is a
 selection summary, not an independent-sample confidence interval.
+
+The optimized bootstrap precomputes each session's 3×3 confusion matrix for each head. A
+replicate samples the same session indices as the reference row implementation, adds their
+matrices (including multiplicities), and computes pooled macro-F1. These are sufficient
+statistics, so the estimate is unchanged; tests compare deterministic draws against reference
+row resampling. Paired draws use the same session multiplicities and also reject different
+human targets.
+
+Current-regime event timing remains under `transitions`; new artifacts additionally contain
+`anticipated_transitions`. Neighborhood classification is reported around both human current
+and human anticipated transitions, with explicit field names identifying the anchor. These
+classification neighborhoods are distinct from matching the event's timing and direction.

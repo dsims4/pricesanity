@@ -4,6 +4,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import perf_counter
 from typing import Any
+from functools import wraps
+from collections import OrderedDict
+from dataclasses import replace
 import json
 import os
 import tempfile
@@ -17,8 +20,17 @@ from pricesanity.benchmark.artifacts import (
     prepare_benchmark_run,
     resume_environment_fingerprint,
     save_benchmark_run,
+    source_identity,
+    _run_lock,
+    checkpoint_fitted_model,
+    _component_is_complete,
+    _metrics_from_prediction_frame,
+    load_benchmark_summary,
+    publish_checkpointed_run,
 )
 from pricesanity.benchmark.learning_curve import plan_learning_curve
+from pricesanity.benchmark.metrics import EfficiencyMetrics
+from pricesanity.benchmark.resources import hardware_fingerprint
 from pricesanity.benchmark.preflight import build_scalability_preflight
 from pricesanity.benchmark.protocol import (
     BenchmarkConfig,
@@ -37,10 +49,11 @@ from pricesanity.benchmark.runner import (
     evaluate_fitted_model,
     run_model_once,
 )
-from pricesanity.benchmark.search_spaces import representative_candidate
+from pricesanity.benchmark.search_spaces import representative_candidate, track_search_space
 from pricesanity.benchmark.snapshot import (
     BenchmarkSnapshot,
     load_snapshot_sessions,
+    load_sealed_holdout,
 )
 from pricesanity.features import (
     EvaluationUniverse,
@@ -73,6 +86,14 @@ def study_paths(root: str | Path) -> BenchmarkStudyPaths:
     )
 
 
+def _study_locked(method):
+    @wraps(method)
+    def locked(self, *args, **kwargs):
+        with _run_lock(self.paths.root / ".study.lock"):
+            return method(self, *args, **kwargs)
+    return locked
+
+
 class BenchmarkExecutor:
     """Coordinate tuning, frozen final fits, learning curves, and crash recovery."""
 
@@ -84,19 +105,106 @@ class BenchmarkExecutor:
         search_spaces: dict[str, dict[str, dict[str, Any]]],
         study_root: str | Path,
         device: str = "cpu",
+        declared_tracks: tuple[str, ...] = ("controlled", "best_of_family"),
     ) -> None:
         self.snapshot = snapshot
         self.config = config
         self.search_spaces = search_spaces
         self.paths = study_paths(study_root)
         self.device = device
+        if device != "cpu":
+            from pricesanity.models.sequence import _resolve_device
+            _resolve_device(device)
+        self.execution_source = source_identity()
+        self._representation_cache = OrderedDict()
+        self._representation_cache_bytes = 0
+        self.representation_cache_limit_bytes = 512 * 1024**2
+        if snapshot.development_session_count != config.development_session_count:
+            raise ValueError("Benchmark execution requires a physically isolated snapshot matching the protocol.")
         self.sessions = load_snapshot_sessions(snapshot)
         self.plan = plan_benchmark(snapshot.session_count, config)
         self.paths.tuning.mkdir(parents=True, exist_ok=True)
         self.paths.selected.mkdir(parents=True, exist_ok=True)
         self.paths.runs.mkdir(parents=True, exist_ok=True)
         self.paths.learning_curves.mkdir(parents=True, exist_ok=True)
+        self.scope = {
+            "models": sorted(config.model_tuning_budgets),
+            "tracks": sorted(declared_tracks),
+            "snapshot_sha256": snapshot.identity_sha256,
+        }
+        scope_path = self.paths.root / "study_scope.json"
+        with _run_lock(self.paths.root / ".study.lock"):
+            if scope_path.exists():
+                if _read_optional_json(scope_path) != self.scope:
+                    raise ValueError("Declared study scope is immutable; use a new study directory.")
+            else:
+                _write_json_replace(scope_path, self.scope)
 
+    def _require_source(self) -> None:
+        if source_identity() != self.execution_source:
+            raise ValueError("Source changed while this executor was active; restart with compatible source.")
+
+    def _require_development(self) -> None:
+        self._require_source()
+        if (self.paths.root / "development_frozen.json").exists():
+            raise PermissionError("Study development is frozen; tuning and diagnostics cannot mutate it.")
+
+    def _space(self, model_name: str, track: BenchmarkTrack) -> dict:
+        if model_name not in self.scope["models"] or track.value not in self.scope["tracks"]:
+            raise ValueError("Model and track must belong to the declared study scope.")
+        return track_search_space(model_name, self.search_spaces.get(model_name, {}), track.value)
+
+    def _selection_identity(self, model_name: str, track: BenchmarkTrack, parameters: dict) -> dict:
+        return {
+            "snapshot_sha256": self.snapshot.identity_sha256,
+            "protocol_sha256": canonical_sha256(asdict(self.config)),
+            "search_space_sha256": canonical_sha256(self._space(model_name, track)),
+            "model_name": model_name,
+            "track": track.value,
+            "parameters_sha256": canonical_sha256(parameters),
+            "selection_source": source_identity(),
+            "representation_sha256": canonical_sha256({
+                "context": self.config.window_length if track is BenchmarkTrack.CONTROLLED
+                else parameters.get("context_length", self.config.window_length),
+                "features": self.config.feature_columns,
+                "track": track.value,
+                "preprocessing_version": 2,
+            }),
+        }
+
+    def _freeze_contents(self) -> dict:
+        self._require_source()
+        selections = {}
+        for track in self.scope["tracks"]:
+            for model in self.scope["models"]:
+                selected = self.load_selected(model, BenchmarkTrack(track))
+                selections[f"{track}/{model}"] = {
+                    "configuration_sha256": canonical_sha256(selected),
+                    "representation_sha256": selected["representation_sha256"],
+                    "search_space_sha256": selected["search_space_sha256"],
+                }
+        return {
+            "state": "frozen", "format_version": 1,
+            "scope": self.scope,
+            "snapshot_sha256": self.snapshot.identity_sha256,
+            "protocol_sha256": canonical_sha256(asdict(self.config)),
+            "selected": selections, "source": source_identity(),
+        }
+
+    @_study_locked
+    def freeze_development(self) -> dict:
+        # Every declared track freezes together: inspecting one final track must never
+        # influence continued selection in the other.
+        contents = self._freeze_contents()
+        path = self.paths.root / "development_frozen.json"
+        if path.exists():
+            if _read_optional_json(path) != contents:
+                raise ValueError("Frozen study identity changed.")
+        else:
+            _write_json_replace(path, contents)
+        return contents
+
+    @_study_locked
     def tune_model(
         self,
         model_name: str,
@@ -107,6 +215,7 @@ class BenchmarkExecutor:
     ) -> dict[str, Any]:
         """Tune one family using only configured chronological development folds."""
 
+        self._require_development()
         family = get_model_family(model_name)
         folds = self._selected_folds(fold_indices)
         selected_fold_indices = (
@@ -116,9 +225,9 @@ class BenchmarkExecutor:
         )
         all_development_folds = selected_fold_indices == tuple(
             range(len(self.plan.chronological_validation_folds))
-        )
+        ) and len(folds) >= 2
         budget = self.config.model_tuning_budgets[model_name]
-        space = self.search_spaces.get(model_name, {})
+        space = self._space(model_name, track)
         self._require_scaling_acknowledgement(
             model_name, track, max(1, budget), len(folds), acknowledge_scaling_risk
         )
@@ -150,6 +259,21 @@ class BenchmarkExecutor:
         tuning_directory = self.paths.tuning / track.value / model_name / fold_scope
         tuning_directory.mkdir(parents=True, exist_ok=True)
         storage_path = tuning_directory / "optuna.sqlite3"
+        tuning_identity = {
+            **self._selection_identity(model_name, track, {}),
+            "fold_indices": list(selected_fold_indices),
+            "tuning_seed": self.config.tuning_seed,
+            "objective": "mean_chronological_fold_mean_head_macro_f1_v1",
+            "source": source_identity(),
+        }
+        identity_path = tuning_directory / "study_identity.json"
+        if identity_path.exists():
+            if _read_optional_json(identity_path) != tuning_identity:
+                raise ValueError("Optuna study identity changed; create a distinct study.")
+        elif storage_path.exists():
+            raise ValueError("Legacy Optuna study lacks immutable identity; create a distinct study.")
+        else:
+            _write_json_replace(identity_path, tuning_identity)
         study = optuna.create_study(
             study_name=(
                 f"{track.value}_{model_name}_{fold_scope}_"
@@ -210,6 +334,7 @@ class BenchmarkExecutor:
             self._write_selected(selected)
         return selected
 
+    @_study_locked
     def run_final(
         self,
         model_name: str,
@@ -225,10 +350,16 @@ class BenchmarkExecutor:
                 "Final holdout remains locked; pass the explicit confirmation only after freeze."
             )
         selected = self.load_selected(model_name, track)
+        seal_path = self.paths.root / "development_frozen.json"
+        if not seal_path.exists():
+            raise PermissionError("Final holdout is locked until global development freeze.")
+        if _read_optional_json(seal_path) != self._freeze_contents():
+            raise ValueError("Frozen study identity changed; final holdout remains locked.")
         parameters = dict(selected["parameters"])
         development = tuple(self.sessions[self.plan.development.start_index:self.plan.development.end_index])
-        holdout_range = self.plan.holdout_indices(final_evaluation=True)
-        holdout = tuple(self.sessions[index] for index in holdout_range)
+        holdout = load_sealed_holdout(
+            self.snapshot, seal_path=seal_path, confirm_final_holdout=confirm_final_holdout,
+        )
         representation, training, evaluation, model_representation = self._corpora(
             model_name, parameters, track, development, holdout
         )
@@ -253,6 +384,7 @@ class BenchmarkExecutor:
             ))
         return tuple(output_directories)
 
+    @_study_locked
     def run_learning_curve(
         self,
         model_name: str,
@@ -262,6 +394,7 @@ class BenchmarkExecutor:
     ) -> tuple[Path, ...]:
         """Fit growing development prefixes against one unchanged future block."""
 
+        self._require_development()
         selected = self.load_selected(model_name, track)
         parameters = dict(selected["parameters"])
         points = plan_learning_curve(
@@ -297,6 +430,7 @@ class BenchmarkExecutor:
             ))
         return tuple(outputs)
 
+    @_study_locked
     def pilot(
         self,
         model_name: str,
@@ -305,10 +439,11 @@ class BenchmarkExecutor:
     ) -> dict[str, Any]:
         """Time one representative candidate on one fold without publishing a result."""
 
+        self._require_development()
         parameters = (
             dict(self.config.transformer_incumbent)
             if model_name == "transformer"
-            else representative_candidate(self.search_spaces.get(model_name, {}))
+            else representative_candidate(self._space(model_name, track))
         )
         if model_name in {"tcn", "gru", "transformer"}:
             parameters["epochs"] = 1
@@ -327,7 +462,7 @@ class BenchmarkExecutor:
             training=training,
             evaluation=evaluation,
             representation=model_representation,
-            device=self.device,
+            device=self.device if get_model_family(model_name).representation == "sequential" else "cpu",
             cpu_worker_count=self.config.cpu_worker_count,
             inference_timing_repetitions=self.config.inference_timing_repetitions,
         )
@@ -394,6 +529,9 @@ class BenchmarkExecutor:
             raise ValueError(f"No frozen selected configuration exists: {path}") from error
         if selected.get("snapshot_sha256") != self.snapshot.identity_sha256:
             raise ValueError("Selected configuration belongs to another benchmark snapshot.")
+        expected = self._selection_identity(model_name, track, selected.get("parameters", {}))
+        if any(selected.get(key) != value for key, value in expected.items()):
+            raise ValueError("Selected configuration identity does not match the current protocol/search space/representation.")
         if not selected.get("all_development_folds"):
             raise ValueError(
                 "Final execution requires a winner selected across every development fold."
@@ -410,23 +548,21 @@ class BenchmarkExecutor:
         scores = []
         for fold in folds:
             training_sessions, evaluation_sessions = self._fold_sessions(fold)
-            _, training, evaluation, model_representation = self._corpora(
+            representation, training, evaluation, model_representation = self._corpora(
                 model_name, parameters, track, training_sessions, evaluation_sessions
             )
-            model = self._build_model(
-                model_name, parameters, self.config.tuning_seed,
-                prestandardized=(track is BenchmarkTrack.CONTROLLED),
-            )
-            result = run_model_once(
-                model,
+            directory = self._execute_persisted_run(
+                model_name=model_name, parameters=parameters, track=track,
+                seed=self.config.tuning_seed,
+                run_name=f"candidate_{canonical_sha256(parameters)[:16]}_train_{fold.training.end_index}",
+                training_sessions=training_sessions, evaluation_sessions=evaluation_sessions,
                 training=training,
                 evaluation=evaluation,
-                representation=model_representation,
-                device=self.device,
-                cpu_worker_count=self.config.cpu_worker_count,
-                inference_timing_repetitions=1,
+                representation=representation, model_representation=model_representation,
+                output_root=self.paths.tuning / "fold_runs", resume=True,
             )
-            scores.append(result.metrics.mean_head_macro_f1)
+            _, metrics = load_benchmark_summary(directory)
+            scores.append(metrics["mean_head_macro_f1"])
         return tuple(scores)
 
     def _corpora(
@@ -452,7 +588,20 @@ class BenchmarkExecutor:
             if track is BenchmarkTrack.CONTROLLED
             else self.config.best_of_family_first_scored_candle_position
         )
-        if track is BenchmarkTrack.CONTROLLED:
+        # These frames are owned by this executor's immutable snapshot. The key includes
+        # exact train/evaluation identities; no fitted state can cross a chronology boundary.
+        cache_key = (
+            self.snapshot.identity_sha256, track.value, self.config.feature_columns,
+            tuple(_session_ids(training_sessions)), tuple(_session_ids(evaluation_sessions)),
+            first_position, self.config.window_length,
+        )
+        cached = self._representation_cache.get(cache_key)
+        build_context = context_length if track is BenchmarkTrack.CONTROLLED else max(64, context_length)
+        if cached is not None and cached[0].window_length >= context_length:
+            self._representation_cache.move_to_end(cache_key)
+        else:
+            cached = None
+        if cached is None and track is BenchmarkTrack.CONTROLLED:
             standardizer = fit_unique_candle_standardizer(
                 training_sessions, feature_columns=self.config.feature_columns
             )
@@ -476,10 +625,32 @@ class BenchmarkExecutor:
             feature_columns=self.config.feature_columns,
         )
         universe = EvaluationUniverse(first_scored_candle_position=first_position)
+        if cached is None:
+            maximum = replace(representation, window_length=build_context)
+            cached = (
+                build_representation_corpus(training_sessions, maximum, universe),
+                build_representation_corpus(evaluation_sessions, maximum, universe),
+            )
+            size = sum(corpus.features.nbytes + corpus.valid_history_mask.nbytes for corpus in cached)
+            if size <= self.representation_cache_limit_bytes:
+                if cache_key in self._representation_cache:
+                    old = self._representation_cache.pop(cache_key)
+                    self._representation_cache_bytes -= sum(c.features.nbytes + c.valid_history_mask.nbytes for c in old)
+                while self._representation_cache and self._representation_cache_bytes + size > self.representation_cache_limit_bytes:
+                    _, old = self._representation_cache.popitem(last=False)
+                    self._representation_cache_bytes -= sum(c.features.nbytes + c.valid_history_mask.nbytes for c in old)
+                self._representation_cache[cache_key] = cached
+                self._representation_cache_bytes += size
+        def trailing(corpus):
+            if corpus.window_length == context_length:
+                return corpus
+            return replace(corpus, features=corpus.features[:, -context_length:],
+                           valid_history_mask=corpus.valid_history_mask[:, -context_length:],
+                           window_length=context_length)
         return (
             representation,
-            build_representation_corpus(training_sessions, representation, universe),
-            build_representation_corpus(evaluation_sessions, representation, universe),
+            trailing(cached[0]),
+            trailing(cached[1]),
             layout,
         )
 
@@ -500,6 +671,8 @@ class BenchmarkExecutor:
         output_root: Path,
         resume: bool,
     ) -> Path:
+        self._require_source()
+        actual_device = self.device if get_model_family(model_name).representation == "sequential" else "cpu"
         model_configuration = {
             "model_name": model_name,
             "parameters": parameters,
@@ -524,7 +697,7 @@ class BenchmarkExecutor:
                 "normalized_sha256", self.snapshot.identity_sha256
             ),
             protocol_configuration=asdict(self.config),
-            search_space=self.search_spaces.get(model_name, {}),
+            search_space=self._space(model_name, track),
             label_mapping={"bull": 0, "bear": 1, "range": 2},
             training_session_range=(
                 int(training.session_indices.min()),
@@ -536,7 +709,8 @@ class BenchmarkExecutor:
                 int(evaluation.session_indices.max()) + 1,
             ),
         )
-        environment = resume_environment_fingerprint(device=self.device)
+        environment = resume_environment_fingerprint(device=actual_device)
+        environment["hardware"] = hardware_fingerprint(device=actual_device, cpu_worker_count=self.config.cpu_worker_count)
         paths, state = prepare_benchmark_run(
             output_root,
             identity,
@@ -547,19 +721,45 @@ class BenchmarkExecutor:
             return paths.directory
 
         progress = _read_optional_json(paths.progress)
-        model_is_checkpointed = bool(progress.get("completed", {}).get("model"))
+        completed = progress.get("completed", {})
+        dataset_description = {
+            "snapshot_path": str(self.snapshot.data_path),
+            "snapshot_sha256": self.snapshot.identity_sha256,
+            **self.snapshot.source_identities,
+            "declared_final_seeds": list(self.config.final_seeds) if get_model_family(model_name).stochastic and run_name.startswith("final_seed_") else [seed],
+        }
+        if completed.get("metrics"):
+            publish_checkpointed_run(paths, identity, model_configuration, dataset_description)
+            return paths.directory
+        model_is_checkpointed = _component_is_complete(paths.model, completed.get("model"))
+        saved_predictions = None
         if model_is_checkpointed:
             # If the fitted model survived, missing downstream work must use that exact state.
-            model = load_model(model_name, str(paths.model), device=self.device)
-            result = evaluate_fitted_model(
-                model,
-                evaluation=evaluation,
-                representation=model_representation,
-                serialized_model_bytes=paths.model.stat().st_size,
-                device=self.device,
-                cpu_worker_count=self.config.cpu_worker_count,
-                inference_timing_repetitions=self.config.inference_timing_repetitions,
-            )
+            model = load_model(model_name, str(paths.model), device=actual_device)
+            if _component_is_complete(paths.predictions, completed.get("predictions")):
+                # Prediction publication includes timing in the same durable checkpoint.
+                # Recovering metrics must not measure a new inference pass and substitute it.
+                saved_predictions = pd.read_parquet(paths.predictions)
+                evidence = progress.get("efficiency")
+                persisted_metrics = _metrics_from_prediction_frame(
+                    saved_predictions,
+                    efficiency=EfficiencyMetrics(**evidence) if evidence else None,
+                )
+            else:
+                evidence = progress.get("training_evidence")
+                if not evidence:
+                    raise ValueError("Fitted checkpoint lacks original training timing evidence.")
+                result = evaluate_fitted_model(
+                    model,
+                    evaluation=evaluation,
+                    representation=model_representation,
+                    training_seconds=evidence["training_seconds"],
+                    training_sample_count=evidence["training_sample_count"],
+                    serialized_model_bytes=paths.model.stat().st_size,
+                    device=actual_device,
+                    cpu_worker_count=self.config.cpu_worker_count,
+                    inference_timing_repetitions=self.config.inference_timing_repetitions,
+                )
         else:
             model = self._build_model(
                 model_name,
@@ -572,22 +772,20 @@ class BenchmarkExecutor:
                 training=training,
                 evaluation=evaluation,
                 representation=model_representation,
-                device=self.device,
+                device=actual_device,
                 cpu_worker_count=self.config.cpu_worker_count,
                 inference_timing_repetitions=self.config.inference_timing_repetitions,
+                checkpoint_fitted=lambda fitted, evidence: checkpoint_fitted_model(paths, fitted, evidence),
             )
+        self._require_source()
         save_benchmark_run(
             paths,
             identity,
             model=model,
-            predictions=build_benchmark_prediction_frame(evaluation, result),
-            metrics=result.metrics,
+            predictions=(saved_predictions if saved_predictions is not None else build_benchmark_prediction_frame(evaluation, result)),
+            metrics=(persisted_metrics if saved_predictions is not None else result.metrics),
             model_configuration=model_configuration,
-            dataset_description={
-                "snapshot_path": str(self.snapshot.data_path),
-                "snapshot_sha256": self.snapshot.identity_sha256,
-                **self.snapshot.source_identities,
-            },
+            dataset_description=dataset_description,
         )
         return paths.directory
 
@@ -636,6 +834,7 @@ class BenchmarkExecutor:
         fold_indices: tuple[int, ...],
         all_development_folds: bool,
     ) -> dict[str, Any]:
+        self._require_source()
         return {
             "format_version": 1,
             "state": "frozen" if all_development_folds else "diagnostic",
@@ -652,6 +851,7 @@ class BenchmarkExecutor:
             "all_development_folds": all_development_folds,
             "fold_mean_head_macro_f1": list(fold_scores),
             "mean_validation_macro_f1": sum(fold_scores) / len(fold_scores),
+            **self._selection_identity(model_name, track, parameters),
         }
 
     def _write_tuning_result(self, selected: dict[str, Any]) -> None:
@@ -688,12 +888,22 @@ class BenchmarkExecutor:
         fold_count: int,
         acknowledged: bool,
     ) -> None:
-        estimated_rows = self.config.development_session_count * 66
+        first_position = (self.config.controlled_first_scored_candle_position
+                          if track is BenchmarkTrack.CONTROLLED
+                          else self.config.best_of_family_first_scored_candle_position)
+        largest_fold = max(self.plan.chronological_validation_folds, key=lambda fold: fold.training.end_index)
+        train_sessions, validation_sessions = self._fold_sessions(largest_fold)
+        estimated_rows = sum(max(0, len(session)-first_position) for session in train_sessions)
+        validation_rows = sum(max(0, len(session)-first_position) for session in validation_sessions)
+        context_space = self._space(model_name, track).get("context_length", {})
+        context = (self.config.window_length if track is BenchmarkTrack.CONTROLLED else
+                   max(context_space.get("values", [context_space.get("value", self.config.window_length)])))
+        dimension = context * (len(self.config.feature_columns) + (1 if track is BenchmarkTrack.BEST_OF_FAMILY else 0))
         preflight = build_scalability_preflight(
             model_name=model_name,
             training_samples=estimated_rows,
-            evaluation_samples=self.config.final_holdout_session_count * 66,
-            feature_dimension=self.config.window_length * len(self.config.feature_columns),
+            evaluation_samples=validation_rows,
+            feature_dimension=dimension,
             candidate_count=candidate_count,
             fold_count=fold_count,
             seed_count=(
@@ -707,6 +917,19 @@ class BenchmarkExecutor:
             preflight.evaluation_dense_float64_bytes,
         ) / (1024**3)
         exceeds_memory_budget = dense_memory_gib > self.config.pilot_max_dense_memory_gib
+        preflight_path = self.paths.root / "preflights" / track.value / f"{model_name}.json"
+        preflight_path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json_replace(preflight_path, preflight.to_dict())
+        actual_device = self.device if get_model_family(model_name).representation == "sequential" else "cpu"
+        print(
+            f"Preflight {track.value}/{model_name}: {estimated_rows:,} training rows, "
+            f"{validation_rows:,} validation rows, {dimension} input features, "
+            f"{preflight.transformed_feature_dimension:,} transformed features, "
+            f"{fold_count} folds × {candidate_count} candidates; "
+            f"{preflight.seed_count} final seeds; approximately {preflight.approximate_job_count} jobs; "
+            f"float64 dense matrix up to {dense_memory_gib:.2f} GiB; device={actual_device}. "
+            f"Details: {preflight_path}"
+        )
         # Best-of-family and controlled pilots can differ in context, so only a matching
         # track can justify a timing acknowledgement.
         pilot_path = self.paths.root / "pilots" / track.value / f"{model_name}.json"

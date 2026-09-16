@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from pricesanity.gui.theme import apply_theme, heading, REGIME_COLORS
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -247,6 +248,7 @@ class TestResultsWindow(QMainWindow):
 
         central_widget = QWidget(self)
         window_layout = QVBoxLayout(central_widget)
+        window_layout.addWidget(heading("Session results · READ ONLY"))
 
         navigation_layout = QHBoxLayout()
         window_layout.addLayout(navigation_layout)
@@ -301,7 +303,10 @@ class TestResultsWindow(QMainWindow):
         human_information_layout.addWidget(self.human_anticipated_label)
         human_information_layout.addStretch()
 
+        self.uncertainty_label = heading("", role="muted")
+        window_layout.addWidget(self.uncertainty_label)
         self.setCentralWidget(central_widget)
+        apply_theme(self)
         self._load_active_session()
 
         # Navigation reads saved rows only. No annotation store or write action
@@ -381,6 +386,10 @@ class TestResultsWindow(QMainWindow):
             "Model anticipated: "
             + str(active_candle["predicted_anticipated_regime"]).title()
         )
+
+        if "uncertainty_kind" in active_candle:
+            from pricesanity.gui.model_comparison import format_uncertainty_values
+            self.uncertainty_label.setText("Current — " + format_uncertainty_values(active_candle, head="current") + "\nAnticipated — " + format_uncertainty_values(active_candle, head="anticipated"))
 
         if self.show_human_annotations.isChecked():
             self.human_current_label.setText(

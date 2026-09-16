@@ -3,7 +3,7 @@
 ```text
 normalized candles + SQLite annotations
                  ↓ one validated join
-checksummed immutable snapshot
+checksummed immutable snapshot: development + sealed holdout
                  ↓
 chronological session partitions
                  ↓
@@ -39,3 +39,9 @@ The registry is the only family-to-adapter construction boundary. The runner own
 prediction framing, and metrics. Artifacts own durable identity and resumption. Reports and Qt
 views read completed artifacts only; they never fit or infer while a user navigates.
 
+
+Executor representations use a 512 MiB bounded LRU cache keyed by immutable snapshot, exact
+training/evaluation sessions, track, features, context contract, and target start. Controlled
+folds share fitted candle statistics and arrays across families. Best-of-family construction
+builds a maximum 64-candle masked representation and takes trailing views for 16/32 contexts.
+Models and fitted model-specific preprocessing are never cached across folds.

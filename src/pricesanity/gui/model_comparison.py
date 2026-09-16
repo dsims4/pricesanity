@@ -8,7 +8,8 @@ import json
 import numpy as np
 import pandas as pd
 
-from PySide6.QtCore import Qt
+from pricesanity.gui.theme import apply_theme, heading, REGIME_COLORS
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QGridLayout,
@@ -24,7 +25,7 @@ from PySide6.QtWidgets import (
 
 from pricesanity.benchmark.artifacts import load_benchmark_summary
 from pricesanity.benchmark.artifacts import load_benchmark_run
-from pricesanity.benchmark.aggregation import aggregate_seed_results, add_baseline_deltas
+from pricesanity.benchmark.aggregation import aggregate_seed_results, add_baseline_deltas, partition_seed_results
 from pricesanity.benchmark.registry import list_model_families
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -118,8 +119,11 @@ class ModelComparisonWindow(QMainWindow):
         super().__init__()
         self.runs = runs
         self._ohlc_cache: dict[Path, pd.DataFrame] = {}
+        self._comparison_pair = None
+        self._comparison_frames = None
         central_widget = QWidget(self)
         layout = QVBoxLayout(central_widget)
+        layout.addWidget(heading("Benchmark explorer · READ ONLY"))
         self.status_label = QLabel()
         layout.addWidget(self.status_label)
         self.tabs = QTabWidget()
@@ -127,17 +131,34 @@ class ModelComparisonWindow(QMainWindow):
 
         leaderboard_page = QWidget()
         leaderboard_layout = QVBoxLayout(leaderboard_page)
-        self.leaderboard = QTableWidget(0, 15)
+        self.leaderboard = QTableWidget(0, 16)
         self.leaderboard.setHorizontalHeaderLabels([
             "Track", "Model", "Configuration", "Seeds", "Current macro-F1",
             "Anticipated macro-F1", "Mean-head macro-F1", "Δ majority",
             "Δ persistence*", "Parameters", "Model bytes", "Training seconds",
-            "Inference rows/sec", "Device", "Runtime comparable",
+            "Inference rows/sec", "Device", "Runtime comparable", "State",
         ])
         self.leaderboard.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.ResizeToContents
         )
+        self.leaderboard.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        self.leaderboard.setColumnWidth(2, 360)
         self.leaderboard.setSortingEnabled(True)
+        self.track_filter = QComboBox()
+        self.track_filter.addItems(["All tracks", "controlled", "best_of_family"])
+        self.family_filter = QComboBox()
+        self.family_filter.addItem("All models")
+        self.family_filter.addItems(sorted({str(run.metadata["identity"]["model_name"]) for run in runs}))
+        filters = QGridLayout()
+        filters.addWidget(self.track_filter, 0, 0)
+        filters.addWidget(self.family_filter, 0, 1)
+        self.completion_filter = QComboBox()
+        self.completion_filter.addItems(["Complete configurations", "Incomplete configurations"])
+        filters.addWidget(self.completion_filter, 0, 2)
+        self.completion_filter.currentIndexChanged.connect(self._populate_leaderboard)
+        leaderboard_layout.addLayout(filters)
+        self.track_filter.currentTextChanged.connect(self._filter_leaderboard)
+        self.family_filter.currentTextChanged.connect(self._filter_leaderboard)
         leaderboard_layout.addWidget(self.leaderboard)
         leaderboard_layout.addWidget(QLabel(
             "* Persistence repeats the prior human regime and is a non-deployable reference."
@@ -159,6 +180,9 @@ class ModelComparisonWindow(QMainWindow):
         selectors.addWidget(self.session_selector, 1, 2)
         self.comparison_chart = _ABSessionCanvas()
         comparison_layout.addWidget(self.comparison_chart, stretch=1)
+        self.candle_evidence = heading("Click a candle to inspect both models' saved evidence.", role="muted")
+        comparison_layout.addWidget(self.candle_evidence)
+        self.comparison_chart.candle_selected.connect(self.candle_evidence.setText)
         self.model_a_details = QLabel()
         self.model_b_details = QLabel()
         self.model_a_details.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -177,18 +201,30 @@ class ModelComparisonWindow(QMainWindow):
         self.learning_curves.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
         )
-        self.tabs.addTab(self.learning_curves, "Learning Curves")
+        curve_page = QWidget()
+        curve_layout = QVBoxLayout(curve_page)
+        self.curve_filter = QComboBox()
+        self.curve_filter.addItem("Choose a model")
+        self.curve_filter.addItems(sorted({str(run.metadata["identity"]["model_name"]) for run in runs}))
+        curve_layout.addWidget(self.curve_filter)
+        self.curve_canvas = FigureCanvasQTAgg(Figure(figsize=(8, 4), tight_layout=True))
+        curve_layout.addWidget(self.curve_canvas, stretch=2)
+        curve_layout.addWidget(self.learning_curves, stretch=1)
+        self.curve_filter.currentTextChanged.connect(self._draw_learning_curve)
+        self.tabs.addTab(curve_page, "Learning Curves")
+        self._draw_learning_curve()
 
-        self.efficiency = QTableWidget(0, 7)
+        self.efficiency = QTableWidget(0, 8)
         self.efficiency.setHorizontalHeaderLabels([
             "Track", "Model", "Device", "Hardware", "Training seconds",
-            "Inference rows/sec", "Model bytes",
+            "Inference rows/sec", "Model bytes", "CPU threads",
         ])
         self.efficiency.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.ResizeToContents
         )
         self.tabs.addTab(self.efficiency, "Efficiency")
         self.setCentralWidget(central_widget)
+        apply_theme(self)
 
         if not runs:
             self.status_label.setText(
@@ -213,6 +249,7 @@ class ModelComparisonWindow(QMainWindow):
         self._populate_learning_curves()
         self._populate_efficiency()
         self._update_details()
+        self.tabs.currentChanged.connect(lambda index: self._load_comparison_sessions() if index == 1 else None)
 
     def _populate_leaderboard(self) -> None:
         """Render comparable saved fields without constructing an opaque score."""
@@ -224,21 +261,32 @@ class ModelComparisonWindow(QMainWindow):
             )
             return
         stochastic = [family.name for family in list_model_families() if family.stochastic]
-        try:
-            aggregated = add_baseline_deltas(aggregate_seed_results(
-                raw,
-                stochastic_models=stochastic,
-                expected_stochastic_seed_count=3,
-            ))
-        except ValueError as error:
-            # A partial seed collection is valid resumable work, but it is not a final result.
-            # Hiding that distinction would reward whichever random seed finished first.
-            self.status_label.setText(f"Incomplete final seed set: {error}")
-            self.leaderboard.setRowCount(0)
+        aggregated, incomplete = partition_seed_results(raw, stochastic_models=stochastic,
+                                                       expected_stochastic_seed_count=3)
+        if aggregated.empty:
+            self.status_label.setText("Incomplete final seed set: " + "; ".join(row["reason"] for row in incomplete))
+        else:
+            self.status_label.setText(f"{len(aggregated)} complete configuration(s); {len(incomplete)} incomplete; all values are saved artifacts.")
+        self.leaderboard.setSortingEnabled(False)
+        if self.completion_filter.currentIndex() == 1:
+            self.leaderboard.setRowCount(len(incomplete))
+            for index, row in enumerate(incomplete):
+                values = [row["track"], row["model_name"], _configuration_text(row["model_configuration"]), row["seed_count"]] + ["Pending"] * 11 + [row["reason"]]
+                for column, value in enumerate(values):
+                    item = QTableWidgetItem(str(value))
+                    item.setToolTip(str(value))
+                    self.leaderboard.setItem(index, column, item)
+            self.leaderboard.setSortingEnabled(True)
+            self._filter_leaderboard()
             return
-        self.status_label.setText(
-            f"{len(aggregated)} complete configuration(s); all values are saved artifacts."
-        )
+        if aggregated.empty:
+            self.leaderboard.setRowCount(0)
+            self.leaderboard.setSortingEnabled(True)
+            return
+        aggregated = add_baseline_deltas(aggregated)
+        # Sorting during insertion moves a row after its first cell is written, separating
+        # its model/configuration from its metrics. Populate complete rows before sorting.
+        self.leaderboard.setSortingEnabled(False)
         self.leaderboard.setRowCount(len(aggregated))
         for row_index, row in aggregated.iterrows():
             configuration = row.get("model_configuration") or {}
@@ -257,37 +305,36 @@ class ModelComparisonWindow(QMainWindow):
                 _optional_number(row.get("inference_samples_per_second_mean"), digits=1),
                 row.get("device") or "N/A",
                 "Yes" if row.get("hardware_compatible") else "No",
+                "Complete",
             )
             for column_index, value in enumerate(values):
-                self.leaderboard.setItem(
-                    row_index, column_index, QTableWidgetItem(str(value))
-                )
+                item = QTableWidgetItem(str(value))
+                item.setToolTip(str(value))
+                self.leaderboard.setItem(row_index, column_index, item)
+        self.leaderboard.setSortingEnabled(True)
+        self._filter_leaderboard()
 
     def _update_details(self) -> None:
         """Show per-class and transition evidence for the two selected runs."""
 
         if not self.runs:
             return
-        self.model_a_details.setText(
-            _format_run_details(self.runs[self.model_a.currentIndex()])
-        )
-        self.model_b_details.setText(
-            _format_run_details(self.runs[self.model_b.currentIndex()])
-        )
+        for selector, label in ((self.model_a, self.model_a_details), (self.model_b, self.model_b_details)):
+            run = self.runs[selector.currentIndex()]
+            label.setText(f"Current F1 {run.metrics['current']['macro_f1']:.3f} · Anticipated F1 {run.metrics['anticipated']['macro_f1']:.3f}")
+            label.setToolTip(_format_run_details(run))
         self.metrics_canvas.show_runs(
             self.runs[self.model_a.currentIndex()],
             self.runs[self.model_b.currentIndex()],
         )
-        self._load_comparison_sessions()
+        if self.tabs.currentIndex() == 1:
+            self._load_comparison_sessions()
 
     def _load_comparison_sessions(self) -> None:
         """List sessions only after strict row-for-row A/B compatibility succeeds."""
 
         try:
-            first, _ = load_aligned_comparison_predictions(
-                self.runs[self.model_a.currentIndex()],
-                self.runs[self.model_b.currentIndex()],
-            )
+            first, _ = self._selected_comparison()
         except ValueError as error:
             self.session_selector.clear()
             self.comparison_chart.show_message(str(error))
@@ -304,13 +351,25 @@ class ModelComparisonWindow(QMainWindow):
         self.session_selector.blockSignals(False)
         self._draw_comparison()
 
+    def _selected_comparison(self):
+        first = self.runs[self.model_a.currentIndex()]
+        second = self.runs[self.model_b.currentIndex()]
+        pair = (first.directory, second.directory)
+        if pair != self._comparison_pair:
+            # Completed artifacts are immutable. Cache only the selected pair so navigating
+            # sessions does not rehash and reload two full prediction files on every click.
+            frames = load_aligned_comparison_predictions(first, second)
+            self._comparison_pair = pair
+            self._comparison_frames = frames
+        return self._comparison_frames
+
     def _draw_comparison(self) -> None:
         if not self.runs or not self.session_selector.currentText():
             return
         first_run = self.runs[self.model_a.currentIndex()]
         second_run = self.runs[self.model_b.currentIndex()]
         try:
-            first, second = load_aligned_comparison_predictions(first_run, second_run)
+            first, second = self._selected_comparison()
             session_date = self.session_selector.currentText()
             mask = first["session_date"].astype(str).eq(session_date)
             session_first = first.loc[mask].reset_index(drop=True)
@@ -365,6 +424,29 @@ class ModelComparisonWindow(QMainWindow):
             return None
         return selected.rename(columns={timestamp_column: "timestamp"})
 
+    def _filter_leaderboard(self) -> None:
+        for row in range(self.leaderboard.rowCount()):
+            track = self.leaderboard.item(row, 0).text()
+            model = self.leaderboard.item(row, 1).text()
+            visible = (self.track_filter.currentIndex() == 0 or track == self.track_filter.currentText()) and (self.family_filter.currentIndex() == 0 or model == self.family_filter.currentText())
+            self.leaderboard.setRowHidden(row, not visible)
+
+    def _draw_learning_curve(self) -> None:
+        from pricesanity.benchmark.plots import plot_learning_curve
+        rows = []
+        for run in self.runs:
+            identity = run.metadata["identity"]
+            name = str(identity["run_name"])
+            if name.startswith("train_") and identity["model_name"] == self.curve_filter.currentText():
+                rows.append({"training_session_count": int(name.removeprefix("train_")),
+                             "macro_f1": run.metrics["mean_head_macro_f1"],
+                             "model_name": identity["track"]})
+        self.curve_canvas.figure.clear()
+        axis = self.curve_canvas.figure.add_subplot(111)
+        plot_learning_curve(pd.DataFrame(rows), axis=axis)
+        axis.set_title("Exploratory learning curve · fixed development evaluation")
+        self.curve_canvas.draw_idle()
+
     def _populate_learning_curves(self) -> None:
         rows = []
         for run in self.runs:
@@ -393,6 +475,7 @@ class ModelComparisonWindow(QMainWindow):
                 _optional_number(efficiency.get("training_seconds"), digits=3),
                 _optional_number(efficiency.get("inference_samples_per_second"), digits=1),
                 efficiency.get("serialized_model_bytes", "N/A"),
+                efficiency.get("cpu_worker_count", "N/A"),
             ))
         self.efficiency.setRowCount(len(rows))
         _fill_table(self.efficiency, rows)
@@ -401,9 +484,25 @@ class ModelComparisonWindow(QMainWindow):
 class _ABSessionCanvas(FigureCanvasQTAgg):
     """Render aligned prices, six regime rows, and persisted uncertainty evidence."""
 
+    candle_selected = Signal(str)
+
     def __init__(self) -> None:
         self.figure = Figure(figsize=(12, 7), tight_layout=True)
         super().__init__(self.figure)
+
+        self._session_frames = None
+        self.mpl_connect("button_press_event", self._select_candle)
+
+    def _select_candle(self, event) -> None:
+        if event.xdata is None or self._session_frames is None:
+            return
+        first, second = self._session_frames
+        position = int(np.clip(round(event.xdata), 0, len(first)-1))
+        lines = []
+        for prefix, frame in (("A", first), ("B", second)):
+            for head in ("current", "anticipated"):
+                lines.append(f"Candle {position+1} · {prefix} {head} · " + format_uncertainty_values(frame.iloc[position], head=head))
+        self.candle_selected.emit("\n".join(lines))
 
     def show_message(self, message: str) -> None:
         self.figure.clear()
@@ -421,10 +520,14 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
         second_name: str,
         ohlc: pd.DataFrame | None,
     ) -> None:
+        self._session_frames = (first, second)
         self.figure.clear()
-        price_axes, regime_axes, uncertainty_axes = self.figure.subplots(
-            3, 1, sharex=True, gridspec_kw={"height_ratios": [3, 1.7, 1]}
-        )
+        separate_scores = any(values["uncertainty_kind"].eq("uncalibrated_decision_score").any() for values in (first, second))
+        axes = self.figure.subplots(4 if separate_scores else 3, 1, sharex=True,
+            gridspec_kw={"height_ratios": [3, 1.7, 1, 1] if separate_scores else [3, 1.7, 1]})
+        price_axes, regime_axes = axes[:2]
+        uncertainty_axes = axes[2]
+        evidence_axes = (axes[2], axes[3]) if separate_scores else (axes[2], axes[2])
         positions = np.arange(len(first))
         if ohlc is None:
             price_axes.text(
@@ -456,7 +559,7 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
             matrix,
             aspect="auto",
             interpolation="nearest",
-            cmap=ListedColormap(["tab:green", "tab:red", "tab:orange"]),
+            cmap=ListedColormap(list(REGIME_COLORS.values())),
             vmin=0,
             vmax=2,
             extent=(-0.5, len(first) - 0.5, len(regime_columns) - 0.5, -0.5),
@@ -465,21 +568,31 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
             np.arange(len(regime_columns)), [row[2] for row in regime_columns]
         )
         regime_axes.set_ylabel("Saved labels")
-        for values, prefix, color in (
-            (first, "A", "tab:blue"), (second, "B", "tab:purple")
+        regime_axes.legend(
+            handles=[Rectangle((0, 0), 1, 1, facecolor=color, label=name.title()) for name, color in REGIME_COLORS.items()],
+            loc="upper center", bbox_to_anchor=(.5, 1.22), ncol=3, frameon=False, fontsize=8,
+        )
+        for row_index, (values, column, _) in enumerate(regime_columns):
+            changes = np.flatnonzero(values[column].to_numpy()[1:] != values[column].to_numpy()[:-1]) + 1
+            regime_axes.vlines(changes - 0.5, row_index - .45, row_index + .45, color="white", linewidth=2)
+        for axis, values, prefix, color in (
+            (evidence_axes[0], first, "A", "tab:blue"), (evidence_axes[1], second, "B", "tab:purple")
         ):
             for head, line_style in (("current", "-"), ("anticipated", "--")):
                 uncertainty = _uncertainty_series(values, head=head)
-                uncertainty_axes.plot(
+                axis.plot(
                     positions,
                     uncertainty,
                     line_style,
                     color=color,
                     label=f"{prefix} {head}",
                 )
-        uncertainty_axes.set_ylabel("Probability / score")
-        uncertainty_axes.set_xlabel("Candle position")
-        uncertainty_axes.legend(loc="upper left", ncol=4, fontsize=7)
+            is_score = values["uncertainty_kind"].eq("uncalibrated_decision_score").any()
+            axis.set_ylabel((prefix + " " if separate_scores else "") + ("uncalibrated score" if is_score else "probability"))
+            if not is_score:
+                axis.set_ylim(0, 1)
+            axis.legend(loc="upper left", ncol=2 if separate_scores else 4, fontsize=8)
+        axes[-1].set_xlabel("Candle position")
         session_date = str(first["session_date"].iloc[0])
         price_axes.set_title(
             f"{session_date} — A: {first_name}\nB: {second_name}", fontsize=9
@@ -528,6 +641,8 @@ def _runs_frame(runs: tuple[ComparisonRun, ...], *, final_only: bool) -> pd.Data
             "model_configuration_sha256": identity["model_configuration_sha256"],
             "representation_sha256": identity["representation_sha256"],
             "test_session_ids_sha256": identity["test_session_ids_sha256"],
+            **{key: identity.get(key) for key in ("protocol_sha256", "annotation_snapshot_sha256", "normalized_dataset_sha256", "label_mapping_sha256")},
+            "declared_final_seeds": run.metadata.get("dataset", {}).get("declared_final_seeds"),
             "seed": identity["seed"],
             "current_macro_f1": run.metrics["current"]["macro_f1"],
             "anticipated_macro_f1": run.metrics["anticipated"]["macro_f1"],
@@ -592,17 +707,21 @@ def _format_run_details(run: ComparisonRun) -> str:
     """Keep detail formatting independent from artifact loading and validation."""
 
     metrics = run.metrics
-    transition = metrics["transitions"]
     lines = [
         run.display_name,
         f"Current accuracy: {metrics['current']['accuracy']:.4f}",
         f"Current macro-F1: {metrics['current']['macro_f1']:.4f}",
         f"Anticipated accuracy: {metrics['anticipated']['accuracy']:.4f}",
         f"Anticipated macro-F1: {metrics['anticipated']['macro_f1']:.4f}",
-        f"Exact transitions: {transition['exact']['matched_transition_count']}",
-        f"Transitions within 1 candle: {transition['within_one_candle']['matched_transition_count']}",
-        f"Transitions within 2 candles: {transition['within_two_candles']['matched_transition_count']}",
     ]
+    lines.extend(_format_transition_details("Current", metrics.get("transitions")))
+    # Older artifacts predate anticipated-transition persistence; keep them viewable and
+    # distinguish unavailable evidence from a measured count of zero.
+    lines.extend(
+        _format_transition_details(
+            "Anticipated", metrics.get("anticipated_transitions")
+        )
+    )
     for head in ("current", "anticipated"):
         lines.append(f"{head.title()} per class:")
         for regime, values in metrics[head]["per_class"].items():
@@ -612,6 +731,20 @@ def _format_run_details(run: ComparisonRun) -> str:
             )
         lines.append(f"  Confusion: {metrics[head]['confusion_matrix']}")
     return "\n".join(lines)
+
+
+def _format_transition_details(label: str, transition: Any) -> list[str]:
+    """Display the persisted exact / ±1 / ±2 transition semantics unchanged."""
+
+    if not isinstance(transition, dict):
+        return [f"{label} transition diagnostics: N/A (not recorded)"]
+    return [
+        f"{label} exact transitions: {transition['exact']['matched_transition_count']}",
+        f"{label} transitions within ±1 candle: "
+        f"{transition['within_one_candle']['matched_transition_count']}",
+        f"{label} transitions within ±2 candles: "
+        f"{transition['within_two_candles']['matched_transition_count']}",
+    ]
 
 
 def _mean_std(values: list[float]) -> str:
