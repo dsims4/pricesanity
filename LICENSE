@@ -1,0 +1,144 @@
+PRICE SANITY PROPRIETARY LICENSE
+Version 1.0
+
+Copyright (c) 2026 Duncan Sims
+All Rights Reserved.
+
+1. OWNERSHIP
+
+Price Sanity, including its original source code, documentation, configuration
+files, user-interface code, model implementations, benchmark infrastructure,
+tests, diagrams, and other original materials included in this repository
+(collectively, the "Software"), is the exclusive copyrighted property of the
+copyright holder.
+
+Except for the limited permission expressly granted below, no rights, licenses,
+or interests in the Software are granted, whether expressly, by implication,
+estoppel, or otherwise.
+
+2. LIMITED PERMISSION TO VIEW
+
+The Software may be viewed and inspected solely for personal evaluation,
+educational review, or reference purposes.
+
+This permission does not grant the right to copy, reproduce, modify, execute,
+publish, distribute, sublicense, sell, transfer, host, mirror, incorporate, or
+otherwise exploit the Software.
+
+3. PROHIBITED USES
+
+Without prior written permission from the copyright holder, you may not, in
+whole or in part:
+
+(a) copy or reproduce the Software;
+
+(b) redistribute, publish, upload, mirror, sublicense, or otherwise make the
+    Software available to another person or entity;
+
+(c) modify, adapt, translate, transform, or create derivative works based upon
+    the Software;
+
+(d) incorporate the Software, its source code, architecture, implementation,
+    documentation, or substantial portions of it into another software project,
+    product, service, publication, or repository;
+
+(e) sell, license, rent, lease, monetize, commercially exploit, or otherwise
+    use the Software for commercial purposes;
+
+(f) remove, alter, obscure, or misrepresent copyright notices, authorship,
+    attribution, or proprietary notices;
+
+(g) represent the Software, or a modified or derivative version of the
+    Software, as your own work;
+
+(h) use the Software as training material, fine-tuning material, evaluation
+    material, retrieval material, or input corpus for the development of a
+    machine-learning model, artificial-intelligence system, code-generation
+    system, or substantially similar automated system;
+
+(i) use automated systems to reproduce, archive, mirror, or redistribute
+    substantial portions of the Software; or
+
+(j) assist another person or entity in performing any activity prohibited by
+    this License.
+
+4. NO REDISTRIBUTION
+
+No copy of the Software, whether modified or unmodified, may be redistributed
+or made available to third parties without the prior written permission of the
+copyright holder.
+
+Permission to access or view a repository containing the Software does not
+constitute permission to redistribute it.
+
+5. NO DERIVATIVE WORKS
+
+No derivative work based upon the Software may be created, distributed,
+published, or commercially exploited without prior written permission from the
+copyright holder.
+
+Independent ideas, algorithms, mathematical principles, publicly known
+techniques, and facts are not restricted by this License to the extent that
+copyright law does not grant exclusive rights over them.
+
+6. THIRD-PARTY MATERIALS
+
+This License applies only to material for which the copyright holder owns the
+applicable rights.
+
+Third-party libraries, dependencies, frameworks, datasets, market data,
+trademarks, and other third-party materials remain subject to their respective
+licenses, terms, and ownership rights.
+
+In particular, this License does not grant any rights to market data or other
+licensed data that may be used with the Software but is not owned by the
+copyright holder.
+
+7. NO PATENT, TRADEMARK, OR DATA LICENSE
+
+Nothing in this License grants permission to use any trademark, service mark,
+trade name, patent right, proprietary dataset, or other right not expressly
+granted herein.
+
+8. PERMISSION REQUESTS
+
+Any use not expressly permitted by this License requires prior written
+permission from the copyright holder.
+
+Permission may be granted or withheld at the copyright holder's sole
+discretion and may be subject to additional terms.
+
+9. TERMINATION
+
+Any permission granted under this License terminates automatically upon
+violation of its terms.
+
+Upon termination, all use of the Software must cease and any unauthorized
+copies must be deleted or destroyed to the extent permitted by applicable law.
+
+10. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE, ACCURACY, NON-INFRINGEMENT, OR FITNESS FOR ANY
+PARTICULAR USE.
+
+THE COPYRIGHT HOLDER SHALL NOT BE LIABLE FOR ANY CLAIM, DAMAGES, LOSS, OR OTHER
+LIABILITY ARISING FROM OR RELATED TO THE SOFTWARE OR ITS USE.
+
+11. RESEARCH AND FINANCIAL DISCLAIMER
+
+Price Sanity is an educational and research software project.
+
+Nothing in the Software constitutes financial, investment, trading, legal, or
+professional advice. No representation is made regarding profitability,
+predictive accuracy, market behavior, or suitability for live trading or any
+other particular purpose.
+
+12. RESERVATION OF RIGHTS
+
+All rights not expressly granted under this License are reserved by the
+copyright holder.
+
+Access to the Software does not transfer ownership and does not create any
+license beyond the limited permission expressly stated above.

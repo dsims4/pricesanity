@@ -148,3 +148,13 @@ The [documentation index](docs/README.md) groups scientific specification, imple
 operations/environments, verification, and generated-state contracts. Start with the
 [project guide](docs/project_guide.md) for detailed commands and data flow; use
 [GUI design](docs/gui_design.md) for annotation and saved-result interactions.
+
+## License
+
+Copyright © 2026 Duncan Sims. All rights reserved.
+
+Price Sanity is proprietary software. Source availability does not grant
+permission to copy, modify, redistribute, republish, commercially exploit, or
+create derivative works from this project.
+
+See [LICENSE](LICENSE) for the complete terms.
