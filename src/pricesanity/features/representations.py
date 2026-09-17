@@ -11,6 +11,8 @@ from pricesanity.features.causal_window import CausalWindowCorpus
 def sequential_representation(corpus: CausalWindowCorpus) -> np.ndarray:
     """Return samples by time by feature without changing their information."""
 
+    # Contiguity gives every sequence adapter the same dense memory layout without changing the
+    # corpus's sample, time, feature ordering.
     return np.ascontiguousarray(corpus.features, dtype=np.float32)
 
 
@@ -18,7 +20,13 @@ def tabular_representation(corpus: CausalWindowCorpus) -> np.ndarray:
     """Flatten values and, when needed, explicitly append real-history indicators."""
 
     sample_count = corpus.features.shape[0]
+
+    # Flatten time-major windows consistently so the same lag/feature coordinate occupies one
+    # fixed tabular column for every sample.
     values = corpus.features.reshape(sample_count, -1)
+
+    # Fully observed controlled contexts need no availability indicators; appending constant ones
+    # would alter their feature dimension without adding information.
     if corpus.valid_history_mask.all():
         return np.ascontiguousarray(values)
     # A zero-valued standardized candle can be real. Appending this mask prevents a tabular
@@ -39,10 +47,18 @@ class ArrayStandardizer:
     scale: np.ndarray
 
     @classmethod
-    def fit(cls, training_features: np.ndarray, *, valid_values: np.ndarray | None = None) -> "ArrayStandardizer":
+    def fit(
+        cls,
+        training_features: np.ndarray,
+        *,
+        valid_values: np.ndarray | None = None,
+    ) -> "ArrayStandardizer":
         """Fit only values explicitly assigned to model training."""
 
         training_features = np.asarray(training_features)
+
+        # Fit only on a nonempty numeric array whose complete contents are usable observations or
+        # explicitly masked below; invalid values must not enter persisted preprocessing state.
         if training_features.ndim < 2 or training_features.shape[0] == 0:
             raise ValueError("Standardization requires nonempty training features.")
         if not np.issubdtype(training_features.dtype, np.number) or not np.isfinite(
@@ -51,6 +67,7 @@ class ArrayStandardizer:
             raise ValueError("Standardization requires finite numeric features.")
 
         if valid_values is None:
+            # Fully observed controlled representations give every training value one equal vote.
             mean = training_features.mean(axis=0, dtype=np.float64)
             scale = training_features.std(axis=0, dtype=np.float64)
         else:
@@ -59,16 +76,29 @@ class ArrayStandardizer:
             # Absent history is not a market observation. Empty lag columns stay neutral
             # until inference supplies real history, using a unit scale rather than NaN.
             counts = np.maximum(valid_values.sum(axis=0), 1)
-            mean = np.where(valid_values, training_features, 0).sum(axis=0, dtype=np.float64) / counts
-            variance = np.where(valid_values, (training_features - mean) ** 2, 0).sum(axis=0) / counts
+            mean = np.where(valid_values, training_features, 0).sum(
+                axis=0,
+                dtype=np.float64,
+            ) / counts
+            variance = np.where(
+                valid_values,
+                (training_features - mean) ** 2,
+                0,
+            ).sum(axis=0) / counts
             scale = np.sqrt(variance)
         scale = np.where(scale > np.finfo(np.float64).eps, scale, 1.0)
+
+        # Unit scale keeps constant training coordinates neutral and finite at inference instead of
+        # dividing by numerical zero.
         return cls(mean=mean, scale=scale)
 
     def transform(self, features: np.ndarray) -> np.ndarray:
         """Apply frozen training statistics to any matching partition."""
 
         features = np.asarray(features)
+
+        # Shape validation prevents a standardizer fitted for one context or feature order from
+        # being reused on a different representation.
         if features.shape[1:] != self.mean.shape:
             raise ValueError("Features do not match the fitted standardizer shape.")
         transformed = (features - self.mean) / self.scale
@@ -90,6 +120,9 @@ def fit_unique_candle_standardizer(
         session.loc[:, feature_columns].to_numpy(dtype=np.float32, copy=True)
         for session in training_sessions
     ])
+
+    # Fit only after concatenating the training sessions; evaluation candles never influence these
+    # persisted location and scale statistics.
     return ArrayStandardizer.fit(candle_features)
 
 
@@ -102,6 +135,9 @@ def transform_sessions(
     """Copy sessions and apply one already-fitted candle-level transformation."""
 
     transformed_sessions = []
+
+    # Copy each frame before transformation so cached raw snapshot sessions remain immutable and
+    # can support other folds with independently fitted training statistics.
     for session in sessions:
         transformed = session.copy()
         transformed.loc[:, feature_columns] = standardizer.transform(

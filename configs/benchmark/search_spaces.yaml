@@ -2,6 +2,8 @@ format_version: 1
 
 # These bounded spaces are proposals for the completed corpus. They are readable inputs to a
 # later tuning engine, not evidence that searches or final evaluations have been run.
+# Context length appears only in best-of-family searches. The controlled track removes it so
+# every learned family receives the same 16-candle information budget.
 gaussian_naive_bayes:
   var_smoothing: {type: log_float, low: 1.0e-12, high: 1.0e-6}
 logistic_regression:
@@ -50,6 +52,8 @@ gru:
   weight_decay: {type: log_float, low: 1.0e-5, high: 1.0e-2}
 transformer:
   context_length: {type: categorical, values: [16, 32, 64]}
+  # Dimensions and head counts are validated together by the model registry; illegal
+  # non-divisible combinations are rejected before a trial begins.
   model_dimension: {type: categorical, values: [12, 24, 48, 96]}
   attention_head_count: {type: categorical, values: [3, 4]}
   layer_count: {type: integer, low: 1, high: 4}

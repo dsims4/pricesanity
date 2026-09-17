@@ -42,6 +42,8 @@ def _fixed(value):
 
 
 def _tiny_study(tmp_path):
+    """Build the smallest study that still exercises every benchmark lifecycle stage."""
+
     sessions = tuple(_session(index) for index in range(10))
     snapshot = freeze_benchmark_snapshot_from_sessions(
         sessions,
@@ -168,6 +170,8 @@ def test_tiny_multimodel_executor_tunes_finalizes_and_resumes(tmp_path) -> None:
 
 
 def test_focused_fold_cannot_freeze_or_unlock_final(tmp_path) -> None:
+    """A diagnostic subset cannot become the all-fold selection used for final testing."""
+
     executor = _tiny_study(tmp_path)
     result = executor.tune_model(
         "logistic_regression",
@@ -187,6 +191,8 @@ def test_focused_fold_cannot_freeze_or_unlock_final(tmp_path) -> None:
 
 
 def test_final_holdout_needs_deliberate_unlock(tmp_path) -> None:
+    """Completing development selection alone does not authorize holdout access."""
+
     executor = _tiny_study(tmp_path)
     executor.tune_model("logistic_regression", track=BenchmarkTrack.CONTROLLED)
     with pytest.raises(PermissionError, match="locked"):

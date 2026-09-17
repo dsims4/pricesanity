@@ -17,52 +17,107 @@ def final_report_tables(
 ) -> dict[str, pd.DataFrame]:
     """Build reusable final-report sections, returning empty tables before a study exists."""
 
+    # Begin from verified summary artifacts only; report construction never fits models or opens
+    # heavyweight prediction rows unless an analysis function explicitly requests them.
     raw = collect_completed_runs(artifact_root)
     if raw.empty:
+        # Stable empty tables let notebooks render before the study exists without inventing
+        # placeholder scores or branching on missing dictionary keys.
         empty = pd.DataFrame()
         return {
             name: empty.copy()
             for name in (
-                "leaderboard", "controlled", "best_of_family", "baseline_deltas",
-                "learning_curves", "seed_variation", "efficiency", "final_holdout",
+                "leaderboard",
+                "controlled",
+                "best_of_family",
+                "baseline_deltas",
+                "learning_curves",
+                "seed_variation",
+                "efficiency",
+                "final_holdout",
             )
         }
     leaderboard = collect_aggregated_runs(
         artifact_root,
         expected_stochastic_seed_count=expected_stochastic_seed_count,
     )
-    learning = raw.loc[raw["run_name"].astype(str).str.startswith("train_")].copy()
+    # Run-name prefixes are part of the artifact contract: learning-curve diagnostics and
+    # final seeded results must remain separate in every report table.
+    learning = raw.loc[
+        raw["run_name"].astype(str).str.startswith("train_")
+    ].copy()
     if not learning.empty:
         learning["training_session_count"] = (
             learning["run_name"].str.removeprefix("train_").astype(int)
         )
-    final = raw.loc[raw["run_name"].astype(str).str.startswith("final_seed_")].copy()
+    final = raw.loc[
+        raw["run_name"].astype(str).str.startswith("final_seed_")
+    ].copy()
+
+    # Derive every report section from the same raw and aggregated frames so notebook cells cannot
+    # apply subtly different eligibility or seed-completeness rules.
     return {
         "leaderboard": leaderboard,
-        "controlled": leaderboard.loc[leaderboard["track"] == "controlled"].copy() if not leaderboard.empty else leaderboard.copy(),
-        "best_of_family": leaderboard.loc[
-            leaderboard["track"] == "best_of_family"
-        ].copy() if not leaderboard.empty else leaderboard.copy(),
-        "baseline_deltas": leaderboard.loc[:, [
-            column for column in (
-                "track", "model_name", "mean_head_macro_f1",
-                "delta_vs_majority", "delta_vs_persistence",
-            ) if column in leaderboard
-        ]].copy(),
+        "controlled": (
+            leaderboard.loc[leaderboard["track"] == "controlled"].copy()
+            if not leaderboard.empty
+            else leaderboard.copy()
+        ),
+        "best_of_family": (
+            leaderboard.loc[
+                leaderboard["track"] == "best_of_family"
+            ].copy()
+            if not leaderboard.empty
+            else leaderboard.copy()
+        ),
+        "baseline_deltas": leaderboard.loc[
+            :,
+            [
+                column
+                for column in (
+                    "track",
+                    "model_name",
+                    "mean_head_macro_f1",
+                    "delta_vs_majority",
+                    "delta_vs_persistence",
+                )
+                if column in leaderboard
+            ],
+        ].copy(),
         "learning_curves": learning,
-        "seed_variation": final.loc[:, [
-            column for column in (
-                "track", "model_name", "seed", "current_macro_f1",
-                "anticipated_macro_f1", "mean_head_macro_f1",
-            ) if column in final
-        ]].copy(),
-        "efficiency": final.loc[:, [
-            column for column in (
-                "track", "model_name", "seed", "training_seconds",
-                "inference_seconds", "inference_samples_per_second",
-                "serialized_model_bytes", "device", "hardware_fingerprint",
-            ) if column in final
-        ]].copy(),
+        "seed_variation": final.loc[
+            :,
+            [
+                column
+                for column in (
+                    "track",
+                    "model_name",
+                    "seed",
+                    "current_macro_f1",
+                    "anticipated_macro_f1",
+                    "mean_head_macro_f1",
+                )
+                if column in final
+            ],
+        ].copy(),
+        "efficiency": final.loc[
+            :,
+            [
+                column
+                for column in (
+                    "track",
+                    "model_name",
+                    "seed",
+                    "training_seconds",
+                    "inference_seconds",
+                    "inference_samples_per_second",
+                    "serialized_model_bytes",
+                    "device",
+                    "hardware_fingerprint",
+                )
+                if column in final
+            ],
+        ].copy(),
         "final_holdout": final,
     }
 
@@ -70,6 +125,8 @@ def final_report_tables(
 def class_distribution(run_directory: str | Path) -> pd.DataFrame:
     """Count human labels in one exact persisted evaluation population."""
 
+    # Count persisted human targets, not model predictions, so the table describes the exact
+    # evaluation population independently of model quality.
     _, predictions, _ = load_benchmark_run(run_directory)
     rows = []
     for head in ("current", "anticipated"):
@@ -82,7 +139,11 @@ def class_distribution(run_directory: str | Path) -> pd.DataFrame:
 def error_analysis_tables(run_directory: str | Path) -> dict[str, Any]:
     """Collect confusion, class, transition, difficulty, and bootstrap evidence."""
 
+    # Full verified rows are required here because session difficulty and bootstrap intervals
+    # cannot be reconstructed from aggregate metrics alone.
     metadata, predictions, metrics = load_benchmark_run(run_directory)
+    # Session-level scores retain the dependence structure needed for difficulty ranking;
+    # pooled candle metrics alone would overweight long sessions.
     session_scores = per_session_macro_f1(predictions, head="current").rename(
         columns={"macro_f1": "current_macro_f1"}
     ).merge(
@@ -95,6 +156,9 @@ def error_analysis_tables(run_directory: str | Path) -> dict[str, Any]:
         session_scores["current_macro_f1"]
         + session_scores["anticipated_macro_f1"]
     ) / 2.0
+
+    # Keep artifact metadata, direct persisted diagnostics, and derived read-only tables together
+    # so exploratory notebooks can state which evidence is recomputed versus merely displayed.
     return {
         "metadata": metadata,
         "confusion": {
@@ -105,22 +169,34 @@ def error_analysis_tables(run_directory: str | Path) -> dict[str, Any]:
             )
             for head in ("current", "anticipated")
         },
-        "per_class": pd.concat({
-            head: pd.DataFrame(metrics[head]["per_class"]).T
-            for head in ("current", "anticipated")
-        }, names=["head", "regime"]),
+        "per_class": pd.concat(
+            {
+                head: pd.DataFrame(metrics[head]["per_class"]).T
+                for head in ("current", "anticipated")
+            },
+            names=["head", "regime"],
+        ),
         "transition_neighborhoods": metrics["transition_neighborhoods"],
         "anticipated_transitions": metrics.get("anticipated_transitions"),
-        "anticipated_transition_neighborhoods": metrics.get("anticipated_transition_neighborhoods"),
+        "anticipated_transition_neighborhoods": metrics.get(
+            "anticipated_transition_neighborhoods"
+        ),
         "hardest_sessions": session_scores.sort_values("mean_head_macro_f1").head(20),
-        "head_difficulty": pd.DataFrame([{
-            "current_macro_f1": metrics["current"]["macro_f1"],
-            "anticipated_macro_f1": metrics["anticipated"]["macro_f1"],
-            "anticipated_minus_current": (
-                metrics["anticipated"]["macro_f1"] - metrics["current"]["macro_f1"]
-            ),
-        }]),
+        "head_difficulty": pd.DataFrame(
+            [
+                {
+                    "current_macro_f1": metrics["current"]["macro_f1"],
+                    "anticipated_macro_f1": metrics["anticipated"]["macro_f1"],
+                    "anticipated_minus_current": (
+                        metrics["anticipated"]["macro_f1"]
+                        - metrics["current"]["macro_f1"]
+                    ),
+                }
+            ]
+        ),
         "pooled_session_bootstrap": (
+            # A one-session artifact has no session-resampling uncertainty; report N/A rather than
+            # a degenerate interval that appears precise.
             cluster_bootstrap_pooled_f1(predictions)
             if predictions["session_index"].nunique() >= 2 else None
         ),
@@ -132,6 +208,7 @@ def error_analysis_tables(run_directory: str | Path) -> dict[str, Any]:
 def model_disagreements(first_run: Any, second_run: Any) -> pd.DataFrame:
     """Return exact aligned candles where either prediction head disagrees."""
 
+    # Accept either GUI run objects or direct paths without weakening artifact verification.
     first_directory = getattr(first_run, "directory", first_run)
     second_directory = getattr(second_run, "directory", second_run)
     _, first, _ = load_benchmark_run(first_directory)
@@ -140,6 +217,9 @@ def model_disagreements(first_run: Any, second_run: Any) -> pd.DataFrame:
         "candlestick_id", "timestamp", "session_date", "session_index",
         "candle_position", "human_current_regime", "human_anticipated_regime",
     ]
+
+    # Exact ordered identities and human labels make disagreement a paired model property. An
+    # inner merge would hide candles missing from one model's evaluation population.
     if not first[identity_columns].equals(second[identity_columns]):
         raise ValueError("Model disagreement requires exact ordered candle alignment.")
     disagrees = (
@@ -148,6 +228,9 @@ def model_disagreements(first_run: Any, second_run: Any) -> pd.DataFrame:
             second["predicted_anticipated_regime"]
         )
     )
+
+    # Begin with model A's shared identities, truth, and predictions, then append model B values by
+    # aligned Boolean position rather than performing a reorder-prone merge.
     result = first.loc[disagrees, [
         "candlestick_id", "timestamp", "session_date", "candle_position",
         "human_current_regime", "human_anticipated_regime",
@@ -167,6 +250,8 @@ def model_disagreements(first_run: Any, second_run: Any) -> pd.DataFrame:
 def session_lookup(predictions: pd.DataFrame, session: int | str) -> pd.DataFrame:
     """Select one session by stable index or ISO date for chart-oriented exploration."""
 
+    # Numeric lookup uses immutable corpus position; text lookup uses the human-readable ISO date.
+    # Both preserve stored candle ordering for chart-oriented inspection.
     if isinstance(session, int):
         selected = predictions.loc[predictions["session_index"] == session]
     else:

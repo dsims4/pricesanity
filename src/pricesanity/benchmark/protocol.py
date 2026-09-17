@@ -96,6 +96,8 @@ class BenchmarkPlan:
 def load_benchmark_config(path: str | Path) -> BenchmarkConfig:
     """Load and validate the readable benchmark research configuration."""
 
+    # Preserve the human-readable YAML as the protocol authority, then convert every value into an
+    # immutable typed representation before planning any session boundary.
     config_path = Path(path)
     with config_path.open(encoding="utf-8") as config_file:
         raw_config = yaml.safe_load(config_file)
@@ -103,6 +105,8 @@ def load_benchmark_config(path: str | Path) -> BenchmarkConfig:
         raise ValueError("Benchmark configuration must be a YAML mapping.")
 
     try:
+        # Name the three methodological sections explicitly so a malformed file fails at its source
+        # rather than later as an obscure dataclass or index error.
         dataset = _require_mapping(raw_config, "dataset")
         protocol = _require_mapping(raw_config, "protocol")
         tuning = _require_mapping(raw_config, "tuning")
@@ -110,6 +114,8 @@ def load_benchmark_config(path: str | Path) -> BenchmarkConfig:
         if not isinstance(fold_rows, list):
             raise ValueError("Chronological validation folds must be a list.")
 
+        # Store folds as compact half-open boundary triples. They become typed SessionRange objects
+        # only after the complete configuration passes cross-field validation.
         folds = tuple(
             (
                 int(_require_mapping({"fold": fold}, "fold")["training_end"]),
@@ -124,6 +130,9 @@ def load_benchmark_config(path: str | Path) -> BenchmarkConfig:
                 tuning, "candidate_budgets"
             ).items()
         }
+
+        # Normalize YAML scalars and sequences at this boundary so later identity hashing and
+        # comparisons do not depend on loader-specific container or numeric types.
         config = BenchmarkConfig(
             format_version=int(raw_config["format_version"]),
             output_root=Path(str(raw_config["output_root"])),
@@ -157,6 +166,8 @@ def load_benchmark_config(path: str | Path) -> BenchmarkConfig:
             model_tuning_budgets=budgets,
         )
     except (KeyError, TypeError, ValueError) as error:
+        # Preserve deliberate benchmark validation messages; wrap raw YAML shape/type errors with
+        # enough context to identify configuration loading as the failing stage.
         if isinstance(error, ValueError) and str(error).startswith("Benchmark"):
             raise
         raise ValueError(f"Invalid benchmark configuration: {error}") from error
@@ -175,6 +186,9 @@ def plan_benchmark(
     # path, and a malformed in-memory plan must not bypass the final-holdout boundary.
     _validate_benchmark_config(config)
     expected_session_count = config.expected_session_count
+
+    # Every corpus session must belong to development or the final holdout. Silent surplus or
+    # missing sessions would change the experiment without changing its configuration file.
     if session_count != expected_session_count:
         raise ValueError(
             f"Benchmark configuration accounts for {expected_session_count} sessions, "
@@ -189,6 +203,9 @@ def plan_benchmark(
         for training_end, validation_start, validation_end
         in config.chronological_validation_folds
     )
+
+    # Construct the final plan only after corpus accounting succeeds, preserving configured order
+    # and half-open boundaries exactly as validated.
     return BenchmarkPlan(
         development=SessionRange(0, config.development_session_count),
         final_holdout=SessionRange(
@@ -212,6 +229,7 @@ def _require_mapping(mapping: dict[str, Any], key: str) -> dict[str, Any]:
 def _validate_benchmark_config(config: BenchmarkConfig) -> None:
     """Reject settings that could mix tuning history with the final holdout."""
 
+    # Validate format and representation basics before reasoning about dependent split boundaries.
     if config.format_version != 1:
         raise ValueError("Unsupported benchmark configuration format version.")
     if config.window_length <= 0:
@@ -229,6 +247,9 @@ def _validate_benchmark_config(config: BenchmarkConfig) -> None:
         config.development_session_count + config.final_holdout_session_count
     ):
         raise ValueError("Expected sessions must equal development plus final holdout.")
+
+    # Operational measurements require positive worker, repetition, and safety values; zero would
+    # disable evidence collection or acknowledgement gates rather than represent a valid choice.
     if config.cpu_worker_count <= 0 or config.inference_timing_repetitions <= 0:
         raise ValueError("Worker and timing repetition counts must be positive.")
     if config.pilot_max_estimated_hours <= 0 or config.pilot_max_dense_memory_gib <= 0:
@@ -250,6 +271,9 @@ def _validate_benchmark_config(config: BenchmarkConfig) -> None:
         raise ValueError("Model tuning budgets cannot be negative.")
 
     previous_validation_end = 0
+
+    # Folds expand from the beginning and validate strictly later history. Monotone nonoverlapping
+    # validation blocks protect chronology and keep every fold inside development.
     for training_end, validation_start, validation_end in (
         config.chronological_validation_folds
     ):
@@ -262,6 +286,9 @@ def _validate_benchmark_config(config: BenchmarkConfig) -> None:
         previous_validation_end = validation_end
 
     learning_counts = config.learning_curve_session_counts
+
+    # Training sizes are unique expanding prefixes. Their order is methodological evidence, not a
+    # convenience that should be silently sorted during loading.
     if (
         not learning_counts
         or tuple(sorted(set(learning_counts))) != learning_counts
@@ -274,6 +301,9 @@ def _validate_benchmark_config(config: BenchmarkConfig) -> None:
         validation_end
         for _, _, validation_end in config.chronological_validation_folds
     )
+
+    # One fixed future development block evaluates every learning-curve prefix, and it begins only
+    # after both the largest prefix and every tuning-validation fold.
     if not (
         learning_counts[-1] <= evaluation_start
         and final_validation_end <= evaluation_start

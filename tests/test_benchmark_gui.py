@@ -154,6 +154,8 @@ def test_ab_alignment_rejects_different_candles(monkeypatch, tmp_path) -> None:
 
 
 def test_uncertainty_display_distinguishes_scores_from_probabilities() -> None:
+    """The GUI must not present uncalibrated margins as probability estimates."""
+
     probability_row = {
         "uncertainty_kind": "probability_estimate",
         "current_probability_bull": 0.7,
@@ -197,6 +199,8 @@ def test_run_details_display_current_and_anticipated_transition_diagnostics() ->
 
 
 def test_ab_canvas_draws_exact_aligned_regimes_uncertainty_and_ohlc() -> None:
+    """One aligned population should drive all three linked comparison panels."""
+
     application = QApplication.instance() or QApplication([])
     timestamps = pd.date_range("2026-01-02T14:30:00Z", periods=3, freq="5min")
     base = pd.DataFrame({
@@ -231,6 +235,8 @@ def test_ab_canvas_draws_exact_aligned_regimes_uncertainty_and_ohlc() -> None:
 
 
 def test_gui_rejects_incomplete_stochastic_seed_set() -> None:
+    """A partial stochastic result must remain visible but stay off the leaderboard."""
+
     application = QApplication.instance() or QApplication([])
     classification = {
         "accuracy": 0.5, "macro_f1": 0.4,

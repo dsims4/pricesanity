@@ -79,6 +79,8 @@ def load_test_run(
     """
 
     run_directory = Path(run_directory)
+    # Benchmark artifacts and legacy walk-forward artifacts store equivalent predictions under
+    # different metadata contracts, so identify the format by its committed marker.
     if (run_directory / "benchmark_metadata.json").is_file():
         benchmark_metadata, predictions, _ = load_benchmark_run(run_directory)
         dataset = benchmark_metadata.get("dataset", {})
@@ -107,6 +109,8 @@ def load_test_run(
     else:
         metadata, predictions = load_run_artifacts(run_directory, config=config)
 
+    # An explicit path supports relocated artifacts; otherwise reproduce the source recorded
+    # at training time instead of guessing from the active workspace.
     selected_candlestick_path = (
         Path(candlestick_path)
         if candlestick_path is not None
@@ -115,6 +119,8 @@ def load_test_run(
     if not selected_candlestick_path.is_file():
         raise ValueError("A valid OHLC candlestick artifact is required.")
     candlesticks = pd.read_parquet(selected_candlestick_path)
+    # Price geometry and timestamp identity are the minimum evidence needed to reconstruct the
+    # chart without rerunning preprocessing or inference.
     required_ohlc_columns = {
         config.data.timestamp_column,
         "open",
@@ -163,6 +169,8 @@ def load_test_run(
         raise ValueError("OHLC candlesticks must be unique and chronological.")
 
     candlesticks[config.data.timestamp_column] = timestamps
+    # Session dates are derived in exchange time because UTC dates can divide one trading day
+    # differently around timezone boundaries.
     session_dates = timestamps.dt.tz_convert(config.data.session_timezone).dt.date
 
     # Select whole test days, never just timestamps found in predictions. An inner join
@@ -197,6 +205,8 @@ def load_test_run(
         build_candlestick_id(config.data.instrument, timestamp, config.data.target_interval)
         for timestamp in test_timestamps
     ])
+    # Stable IDs bind prediction rows to instrument, timestamp, and interval—not merely row
+    # order—before any human/model comparison is displayed.
     if not predictions["candlestick_id"].equals(expected_ids):
         raise ValueError("Prediction identifiers do not match their OHLC timestamps.")
     if "candlestick_id" in candlesticks and not candlesticks["candlestick_id"].equals(
@@ -244,6 +254,8 @@ class TestResultsWindow(QMainWindow):
 
         self.active_session_position = 0
         self.active_candlestick_position = 0
+        # The active frame is replaced by a complete session whenever navigation crosses a
+        # boundary; the immutable all-session table remains the source of truth.
         self.candlestick_data = pd.DataFrame()
 
         central_widget = QWidget(self)
@@ -333,6 +345,8 @@ class TestResultsWindow(QMainWindow):
         predicted_regimes = self.candlestick_data[
             "predicted_current_regime"
         ].tolist()
+        # Only changes in current regime become chart markers; anticipated regime remains a
+        # candle-level outlook shown in the evidence labels.
         regime_change_markers = find_regime_change_markers(predicted_regimes)
 
         # The completed chart is visible for retrospective inspection, but
@@ -388,8 +402,21 @@ class TestResultsWindow(QMainWindow):
         )
 
         if "uncertainty_kind" in active_candle:
+            # Delegate formatting so probability estimates and uncalibrated margins retain the
+            # same honest semantics in both result viewers.
             from pricesanity.gui.model_comparison import format_uncertainty_values
-            self.uncertainty_label.setText("Current — " + format_uncertainty_values(active_candle, head="current") + "\nAnticipated — " + format_uncertainty_values(active_candle, head="anticipated"))
+            current_uncertainty = format_uncertainty_values(
+                active_candle,
+                head="current",
+            )
+            anticipated_uncertainty = format_uncertainty_values(
+                active_candle,
+                head="anticipated",
+            )
+            self.uncertainty_label.setText(
+                f"Current — {current_uncertainty}\n"
+                f"Anticipated — {anticipated_uncertainty}"
+            )
 
         if self.show_human_annotations.isChecked():
             self.human_current_label.setText(
@@ -407,6 +434,7 @@ class TestResultsWindow(QMainWindow):
         """Move one candle, crossing test-session boundaries when necessary."""
 
         requested_position = self.active_candlestick_position + direction
+        # Ordinary movement stays inside the drawn session and updates only the active marker.
         if 0 <= requested_position < len(self.candlestick_data):
             self.active_candlestick_position = requested_position
             self.chart.set_active_candlestick(requested_position)
@@ -414,6 +442,8 @@ class TestResultsWindow(QMainWindow):
             return
 
         requested_session = self.active_session_position + direction
+        # Crossing an edge loads the adjacent complete session; moving left lands on its last
+        # candle so keyboard navigation remains continuous.
         if not 0 <= requested_session < len(self.session_dates):
             return
         self.active_session_position = requested_session

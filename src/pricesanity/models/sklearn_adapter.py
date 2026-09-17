@@ -30,6 +30,8 @@ class SklearnDualHeadAdapter:
     output_kind: str = "probability_estimate"
 
     def __post_init__(self) -> None:
+        # Estimators are constructed only during fit, keeping registry declarations cheap and
+        # making an unfitted adapter state explicit.
         self._current_estimator: Any | None = None
         self._anticipated_estimator: Any | None = None
         self._standardizer: ArrayStandardizer | None = None
@@ -53,6 +55,7 @@ class SklearnDualHeadAdapter:
         features = _tabular_features(features)
         current_targets = np.asarray(current_targets, dtype=np.int64)
         anticipated_targets = np.asarray(anticipated_targets, dtype=np.int64)
+        # Both annotation heads must describe the identical candle population.
         if current_targets.shape != (len(features),) or anticipated_targets.shape != (
             len(features),
         ):
@@ -118,6 +121,8 @@ class SklearnDualHeadAdapter:
             anticipated=anticipated_predictions,
         )
 
+        # Preserve score semantics instead of presenting an arbitrary margin as calibrated
+        # model confidence in reports and the comparison GUI.
         if self.output_kind == "uncalibrated_score":
             # SVC probability=True performs an internal cross-validation calibration whose
             # row split is inappropriate for overlapping time-series windows. We keep native
@@ -161,6 +166,8 @@ class SklearnDualHeadAdapter:
         """Write internal model state; run checksums protect later loading."""
 
         self._require_fitted()
+        # Factories describe construction, but only fitted estimator state is required to
+        # reproduce inference from an artifact.
         state = {
             "format_version": 1,
             "model_name": self.model_name,
@@ -194,6 +201,8 @@ class SklearnDualHeadAdapter:
 
         with Path(path).open("rb") as model_file:
             state = pickle.load(model_file)
+        # Pickle is accepted only after the artifact layer verifies a trusted local checksum;
+        # this version check then guards the adapter's internal state contract.
         if not isinstance(state, dict) or state.get("format_version") != 1:
             raise ValueError("Saved estimator does not contain supported adapter state.")
         model = cls(
@@ -209,7 +218,11 @@ class SklearnDualHeadAdapter:
         model._require_fitted()
         return model
 
-    def _prepare(self, features: np.ndarray, context: PredictionContext | None = None) -> tuple[np.ndarray, Any, Any]:
+    def _prepare(
+        self,
+        features: np.ndarray,
+        context: PredictionContext | None = None,
+    ) -> tuple[np.ndarray, Any, Any]:
         """Apply frozen training preprocessing before inference."""
 
         current_estimator, anticipated_estimator = self._require_fitted()
@@ -220,13 +233,21 @@ class SklearnDualHeadAdapter:
             features = self._transform(features, context)
         return features, current_estimator, anticipated_estimator
 
-    def _transform(self, features: np.ndarray, context: PredictionContext | None) -> np.ndarray:
+    def _transform(
+        self,
+        features: np.ndarray,
+        context: PredictionContext | None,
+    ) -> np.ndarray:
+        """Scale market geometry while preserving binary history indicators."""
+
         market, validity, indicators = _market_features(features, context)
         transformed = self._standardizer.transform(market)
         if validity is not None:
             transformed = np.where(validity, transformed, 0).astype(np.float32)
         # Boolean history indicators carry availability, not OHLC geometry. Keep 0/1 intact.
-        return np.concatenate([transformed, indicators], axis=1) if indicators is not None else transformed
+        if indicators is not None:
+            return np.concatenate([transformed, indicators], axis=1)
+        return transformed
 
     def _require_fitted(self) -> tuple[Any, Any]:
         """Reject partially fitted or uninitialized adapters."""
@@ -252,11 +273,15 @@ def _market_features(features: np.ndarray, context: PredictionContext | None):
         return features, None, None
     history = np.asarray(context.valid_history_mask, dtype=bool)
     length = history.shape[1]
+    # Flattened representations optionally append one availability bit per historical candle.
+    # Infer that documented layout from width rather than scaling those indicators as prices.
     has_indicators = features.shape[1] == length * 5
     market = features[:, :length * 4] if has_indicators else features
     if market.shape[1] != length * 4:
         raise ValueError("Tabular OHLC and history mask dimensions disagree.")
-    return market, np.repeat(history, 4, axis=1), features[:, length * 4:] if has_indicators else None
+    validity = np.repeat(history, 4, axis=1)
+    indicators = features[:, length * 4 :] if has_indicators else None
+    return market, validity, indicators
 
 
 def _ordered_probabilities(estimator: Any, features: np.ndarray) -> np.ndarray:
@@ -294,6 +319,8 @@ def _ordered_decision_scores(estimator: Any, features: np.ndarray) -> np.ndarray
     if raw_scores.shape != (len(features), len(classes)):
         raise ValueError("Estimator returned malformed class scores.")
     scores = np.full((len(features), 3), np.nan, dtype=np.float64)
+    # NaN marks a class absent from this training fold; zero would be a meaningful margin and
+    # would incorrectly imply that the estimator evaluated the class.
     for source_index, class_index in enumerate(classes):
         if class_index not in (0, 1, 2):
             raise ValueError("Estimator returned an unknown regime class.")

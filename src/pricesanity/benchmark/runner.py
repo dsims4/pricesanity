@@ -66,9 +66,13 @@ def run_model_once(
 ) -> BenchmarkRunResult:
     """Fit on one historical partition and evaluate one later partition."""
 
+    # Resolve the declared model representation once for fitting and carry session/prior-label
+    # context separately so audit identities never become learned market features accidentally.
     training_features = _representation(training, representation)
     training_context = _context(training)
 
+    # Apply the configured CPU thread ceiling to the complete fit and synchronize accelerators on
+    # both sides of timing so queued device work is included in the measurement.
     with controlled_thread_budget(cpu_worker_count):
         _synchronize_model(model)
         training_started = perf_counter()
@@ -88,11 +92,20 @@ def run_model_once(
             "training_seconds": training_seconds,
             "training_sample_count": len(training_features),
             "training_samples_per_second": len(training_features) / training_seconds,
-            "parameter_count": int(model.parameter_count()) if hasattr(model, "parameter_count") else None,
-            "hardware_fingerprint": hardware_fingerprint(device=device, cpu_worker_count=cpu_worker_count),
+            "parameter_count": (
+                int(model.parameter_count())
+                if hasattr(model, "parameter_count")
+                else None
+            ),
+            "hardware_fingerprint": hardware_fingerprint(
+                device=device,
+                cpu_worker_count=cpu_worker_count,
+            ),
             "device": device, "cpu_worker_count": cpu_worker_count,
         })
 
+    # Evaluation receives the exact fitted instance and original training evidence. It never
+    # reconstructs or optimizes a nominally equivalent model.
     return evaluate_fitted_model(
         model,
         evaluation=evaluation,
@@ -122,11 +135,17 @@ def evaluate_fitted_model(
 ) -> BenchmarkRunResult:
     """Evaluate an exact persisted fitted model without another optimization pass."""
 
+    # Build evaluation inputs under the same declared representation contract used for fitting.
     evaluation_features = _representation(evaluation, representation)
     evaluation_context = _context(evaluation)
+
+    # Timing and thread settings are persisted scientific evidence and must be positive rather
+    # than relying on library-specific behavior for zero repetitions or workers.
     if inference_timing_repetitions <= 0 or cpu_worker_count <= 0:
         raise ValueError("Timing repetitions and CPU worker count must be positive.")
     if parameter_count is None and hasattr(model, "parameter_count"):
+        # Ask the fitted adapter only when the caller did not already provide a checkpoint-derived
+        # count, preserving the original evidence across resume.
         parameter_count = int(model.parameter_count())
 
     # A combined output avoids running an expensive estimator twice. Native predictions stay
@@ -144,7 +163,13 @@ def evaluate_fitted_model(
             _synchronize_model(model)
             inference_timings.append(perf_counter() - inference_started)
     assert output is not None
+
+    # Median steady-state latency resists one scheduler interruption while retaining an observed
+    # measurement from this exact model, device, and evaluation population.
     inference_seconds = median(inference_timings)
+
+    # Compute both heads, transitions, probability diagnostics, and efficiency through the shared
+    # metric path so every model family produces the same result schema.
     metrics = evaluate_benchmark_predictions(
         human_current=evaluation.current_targets,
         predicted_current=output.predictions.current,
@@ -194,6 +219,8 @@ def build_benchmark_prediction_frame(
 ) -> pd.DataFrame:
     """Join model outputs back to exact causal sample identities for persistence."""
 
+    # Output shapes must match the exact causal sample population before labels and uncertainty are
+    # joined back to persistent candle identities.
     sample_count = len(corpus.current_targets)
     if (
         result.predictions.current.shape != (sample_count,)
@@ -214,6 +241,8 @@ def build_benchmark_prediction_frame(
     ):
         raise ValueError("Benchmark probabilities must be finite.")
 
+    # Preserve each model's native uncertainty contract while projecting it into one stable table
+    # shared by artifacts, metrics, and GUI readers.
     probability_values = result.probabilities
     score_values = result.output.scores
     # Keep one stable prediction schema across probabilistic and score-only models. NaN means
@@ -230,6 +259,8 @@ def build_benchmark_prediction_frame(
         score_values.anticipated if score_values is not None else missing_values
     )
 
+    # Attach authoritative predicted classes and uncertainty columns to the corpus's audit fields;
+    # no merge or sort is allowed to change row identity at this final boundary.
     return pd.DataFrame({
         "candlestick_id": corpus.candlestick_ids,
         "timestamp": corpus.timestamps,
@@ -261,6 +292,8 @@ def build_benchmark_prediction_frame(
 def _representation(corpus: CausalWindowCorpus, representation: str) -> np.ndarray:
     """Keep representation selection outside model-family control flow."""
 
+    # Registry-declared names decide layout, not estimator type checks scattered through the
+    # runner. Baselines may ignore market values but still receive the aligned tabular population.
     if representation == "tabular":
         return tabular_representation(corpus)
     if representation == "sequential":
@@ -273,6 +306,8 @@ def _representation(corpus: CausalWindowCorpus, representation: str) -> np.ndarr
 def _context(corpus: CausalWindowCorpus) -> PredictionContext:
     """Carry audit identities and prior labels separately from learned market inputs."""
 
+    # Prior labels and masks travel beside features so only adapters that explicitly declare a need
+    # for them can consume them; they are not silently appended to controlled market inputs.
     return PredictionContext(
         session_indices=corpus.session_indices,
         previous_current_targets=corpus.previous_current_targets,
@@ -284,6 +319,8 @@ def _context(corpus: CausalWindowCorpus) -> PredictionContext:
 def _synchronize_model(model: BenchmarkModel) -> None:
     """Wait for queued accelerator work when the adapter exposes synchronization."""
 
+    # CPU estimators need no synchronization method. Accelerator adapters expose one so timing
+    # boundaries wait for asynchronous kernels without coupling this runner to PyTorch.
     synchronize = getattr(model, "synchronize", None)
     if callable(synchronize):
         synchronize()

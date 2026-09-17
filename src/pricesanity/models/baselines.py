@@ -49,6 +49,8 @@ class MajorityClassBaseline:
         """Repeat the two fitted majority classes."""
 
         current_class, anticipated_class = self._require_fitted()
+        # Derive the output length from the same feature contract used by learned models so
+        # the reference cannot score a different number of examples.
         sample_count = _sample_count(features)
         return DualRegimePredictions(
             current=np.full(sample_count, current_class, dtype=np.int64),
@@ -63,6 +65,8 @@ class MajorityClassBaseline:
     ) -> DualRegimeProbabilities:
         """Represent deterministic baseline choices as one-hot probabilities."""
 
+        # The shared evaluator expects a three-column distribution even when a strategy has
+        # no uncertainty to estimate.
         predictions = self.predict(features, context=context)
         return DualRegimeProbabilities(
             current=_one_hot(predictions.current),
@@ -102,6 +106,7 @@ class MajorityClassBaseline:
         """Persist the tiny fitted state as readable JSON."""
 
         self._require_fitted()
+        # Exclusive creation protects an existing benchmark artifact from accidental reuse.
         with Path(path).open("x", encoding="utf-8") as model_file:
             json.dump(self.describe(), model_file, indent=2, sort_keys=True)
             model_file.write("\n")
@@ -118,6 +123,7 @@ class MajorityClassBaseline:
 
         with Path(path).open(encoding="utf-8") as model_file:
             state = json.load(model_file)
+        # Model identity is checked before accepting class values from a generic JSON file.
         if state.get("model_name") != cls.name:
             raise ValueError("Saved baseline has the wrong model identity.")
         model = cls()
@@ -169,6 +175,8 @@ class PreviousRegimeBaseline:
             raise ValueError("Previous-regime prediction requires prior-label context.")
         current = np.asarray(context.previous_current_targets, dtype=np.int64)
         anticipated = np.asarray(context.previous_anticipated_targets, dtype=np.int64)
+        # Exact one-dimensional alignment prevents NumPy broadcasting from concealing a
+        # missing or duplicated prior-label row.
         if current.shape != (sample_count,) or anticipated.shape != (sample_count,):
             raise ValueError("Prior-label context must align with benchmark samples.")
         if not np.isin(current, (0, 1, 2)).all() or not np.isin(
@@ -223,6 +231,8 @@ class PreviousRegimeBaseline:
     def save(self, path: str | Path) -> None:
         """Record the parameter-free strategy for artifact completeness."""
 
+        # Persisting even a parameter-free baseline gives every benchmark row a verifiable
+        # model artifact and a uniform publication lifecycle.
         with Path(path).open("x", encoding="utf-8") as model_file:
             json.dump(self.describe(), model_file, indent=2, sort_keys=True)
             model_file.write("\n")

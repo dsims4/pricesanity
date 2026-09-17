@@ -18,10 +18,14 @@ class ContextExperimentTransformer(RegimeTransformer):
     """
 
     def __init__(self, config: TransformerConfig, context_length: int | None) -> None:
+        """Precompute every trailing window while preserving absolute session positions."""
+
         super().__init__(config)
         if context_length is not None and not 1 <= context_length <= config.maximum_session_length:
             raise ValueError("Context length must fit within the configured session length.")
         self.context_length = context_length
+        # A None experiment is the unchanged full-session reference; explicit lengths create
+        # equally wide trailing windows whose future slots will be masked near session open.
         window_length = context_length or config.maximum_session_length
         candle_positions = torch.arange(config.maximum_session_length)
         window_starts = (candle_positions - window_length + 1).clamp(min=0)
@@ -37,6 +41,10 @@ class ContextExperimentTransformer(RegimeTransformer):
                              persistent=False)
 
     def forward(self, features, padding_mask) -> RegimeTransformerOutput:
+        """Evaluate independent trailing windows when a strict context limit is active."""
+
+        # The reference configuration must use the production Transformer's exact path rather
+        # than an equivalent reconstruction that could introduce a hidden comparison variable.
         if self.context_length is None:
             return super().forward(features, padding_mask)
 
@@ -45,9 +53,12 @@ class ContextExperimentTransformer(RegimeTransformer):
             padding_mask,
         )
         if session_length <= self.context_length:
+            # Short sessions already fit inside the declared context and need no window expansion.
             return super().forward(features, padding_mask)
 
         window_length = self.context_length
+        # Indexing materializes one independent causal history per target candle, preventing
+        # deeper encoder layers from relaying information from outside the declared context.
         window_positions = self._window_positions[:session_length]
         windows = features[:, window_positions].reshape(-1, window_length, feature_count)
         window_padding = (

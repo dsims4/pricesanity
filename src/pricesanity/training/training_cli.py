@@ -209,6 +209,8 @@ def _run_output_paths(
 ) -> RunOutputPaths:
     """Give every run an isolated directory with predictable artifact names."""
 
+    # Single-run mode honors the requested checkpoint location, while walk-forward mode needs
+    # a separate immutable bundle for every chronological experiment.
     run_directory = (
         output_directory / f"run_{run.run_index:03d}"
         if walk_forward
@@ -225,6 +227,8 @@ def _run_output_paths(
 def _infer_candlestick_path(normalized_path: Path) -> Path | None:
     """Find the matching conventional interim artifact when it exists."""
 
+    # Convention-based discovery is intentionally narrow; an unconventional input path must
+    # be paired with an explicit --candlesticks argument rather than a speculative file guess.
     if normalized_path.parent.name != "processed":
         return None
     candidate_path = (
@@ -249,6 +253,7 @@ def _experiment_metadata(
     """Record temporal roles and artifact identities without opaque DataFrame slices."""
 
     def serialize_boundary(boundary: Any) -> dict[str, Any]:
+        # ISO dates keep the temporal partition legible and portable outside Python.
         boundary_data = asdict(boundary)
         boundary_data["start_date"] = boundary.start_date.isoformat()
         boundary_data["end_date"] = boundary.end_date.isoformat()
@@ -297,6 +302,8 @@ def _save_json_atomically(
     if output_path.exists() and not overwrite:
         raise FileExistsError(f"Run metadata already exists: {output_path}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Metadata is the bundle's completion marker, so expose it only after the complete JSON
+    # has reached a neighboring temporary file.
     temporary_path = output_path.with_suffix(".partial.json")
     try:
         with temporary_path.open("w", encoding="utf-8") as metadata_file:
@@ -355,6 +362,8 @@ def _train_one_run(
     epoch_callback: Callable[[EpochRecord], None] | None = (
         _print_epoch if show_epochs else None
     )
+    # Validation controls checkpoint selection inside the trainer; test metrics are produced
+    # only after that best state has been restored.
     result = train_regime_transformer(
         model,
         data_loaders,
@@ -416,6 +425,8 @@ def _partition_metadata(split: AnnotatedSessionSplit) -> dict[str, Any]:
 
     real_candle_counts = {}
     label_distributions = {}
+    # Keep role-specific evidence separate so distribution drift remains visible across the
+    # chronological training, validation, and untouched test blocks.
     for role in ("training", "validation", "test"):
         sessions = getattr(split, role)
         real_candle_counts[role] = sum(len(session) for session in sessions)
@@ -478,6 +489,8 @@ def _experiment_signature(
         },
         "model": asdict(_model_config(arguments)),
     }
+    # Canonical JSON covers every behavior-affecting setting while ignoring presentation and
+    # physical source locations that do not alter the experiment.
     digest = hashlib.sha256(json.dumps(settings, sort_keys=True, default=str).encode())
 
     # Include both features and human labels. A correction in SQLite must invalidate reuse
@@ -550,6 +563,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
             )
 
         app_config = load_config(parsed_arguments.config)
+        # Load the prepared vector corpus once; all chronological roles are assigned only after
+        # annotations and normalized rows have passed the dataset builder's alignment checks.
         normalized_data = pd.read_parquet(parsed_arguments.normalized)
         candlestick_path = parsed_arguments.candlesticks or _infer_candlestick_path(
             parsed_arguments.normalized
@@ -577,6 +592,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             validation_session_count=parsed_arguments.validation_sessions,
             test_session_count=parsed_arguments.test_sessions,
         )
+        # A plan with no complete run is an input sufficiency error, not a zero-work success.
         if not plan.runs:
             required_sessions = (
                 parsed_arguments.training_sessions
@@ -601,6 +617,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
             )
 
         selected_runs = plan.runs if parsed_arguments.walk_forward else plan.runs[:1]
+        # Run selection changes execution scope only; every selected run retains its original
+        # one-based index and chronological partitions from the full plan.
         selected_index = parsed_arguments.run_index or parsed_arguments.start_run
         if parsed_arguments.run_index is not None or parsed_arguments.start_run is not None:
             if not parsed_arguments.walk_forward:
@@ -639,6 +657,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         ]
         device = resolve_training_device(parsed_arguments.device)
 
+        # Print the resolved protocol before the first fit so long jobs leave an immediate,
+        # human-readable record of what they intend to execute.
         print("Price Sanity Training")
         print(f"Device: {device}")
         print(

@@ -29,7 +29,12 @@ class CausalWindowCorpus:
     def __post_init__(self) -> None:
         """Refuse arrays whose rows could no longer be audited together."""
 
+        # The first axis is the shared sample identity for features, both labels, prior labels,
+        # session coordinates, and persisted candle evidence.
         sample_count = self.features.shape[0]
+
+        # Sequence models require an explicit time axis even for one-candle contexts; accepting a
+        # flattened array here would make representation semantics depend on the downstream model.
         if self.features.ndim != 3:
             raise ValueError("Causal features must have sample, time, and feature axes.")
         if self.features.shape[1:] != (
@@ -49,6 +54,9 @@ class CausalWindowCorpus:
             len(self.timestamps),
             len(self.valid_history_mask),
         )
+
+        # Every audit field must continue to identify the same feature row and target pair after
+        # selection or slicing; unequal lengths would make saved predictions untraceable.
         if any(length != sample_count for length in aligned_lengths):
             raise ValueError("Causal inputs, targets, and identities must stay aligned.")
         if self.valid_history_mask.shape != self.features.shape[:2]:
@@ -62,13 +70,20 @@ class CausalWindowCorpus:
     ) -> "CausalWindowCorpus":
         """Select whole sessions while retaining their original corpus identities."""
 
+        # Materialize the requested indices once and reject duplicates so one session cannot be
+        # accidentally overweighted by appearing twice in a fold selection.
         allowed_indices = np.asarray(tuple(allowed_session_indices), dtype=np.int64)
         if allowed_indices.ndim != 1 or len(set(allowed_indices.tolist())) != len(
             allowed_indices
         ):
             raise ValueError("Selected session indices must be unique.")
 
+        # Select every sample belonging to an allowed whole session. No candle-level filter is
+        # accepted here because chronological splits operate on complete trading days.
         selected_rows = np.isin(self.session_indices, allowed_indices)
+
+        # Tuple-backed identities need numeric positions corresponding to the same Boolean mask
+        # used for arrays; this keeps audit fields aligned after selection.
         row_positions = np.flatnonzero(selected_rows)
         return CausalWindowCorpus(
             features=self.features[selected_rows].copy(),
@@ -106,6 +121,8 @@ def build_causal_windows(
     therefore available, while every later candle remains outside the sample.
     """
 
+    # Validate representation-level inputs before allocating accumulators. Invalid context or
+    # feature definitions must fail even if every supplied session is too short to produce rows.
     if window_length <= 0:
         raise ValueError("Causal window length must be positive.")
     feature_columns = tuple(feature_columns)
@@ -114,6 +131,8 @@ def build_causal_windows(
     if not sessions:
         raise ValueError("Causal windows require at least one annotated session.")
 
+    # An explicit target boundary controls the shared evaluation population and therefore cannot
+    # refer to a position before the start of a session.
     if target_start_position is not None and target_start_position < 0:
         raise ValueError("Causal target start position cannot be negative.")
 
@@ -130,6 +149,8 @@ def build_causal_windows(
     sample_timestamps: list[pd.Timestamp] = []
     previous_session_date: date | None = None
 
+    # Require features, both labels, and audit identity together. A window without any one of these
+    # fields could be fitted but could not produce a verifiable benchmark prediction.
     required_columns = {
         *feature_columns,
         "current_target",
@@ -138,6 +159,9 @@ def build_causal_windows(
         "candlestick_id",
         timestamp_column,
     }
+
+    # Process each session independently so a window can never borrow overnight rows from a
+    # neighboring trading day.
     for session_index, session in enumerate(sessions):
         missing_columns = required_columns.difference(session.columns)
         if missing_columns:
@@ -148,15 +172,23 @@ def build_causal_windows(
         if session.empty:
             raise ValueError("A causal-window session cannot be empty.")
 
+        # One input frame is one bootstrap and split unit. Multiple dates in one frame would make
+        # its session identity ambiguous downstream.
         unique_dates = session["session_date"].drop_duplicates()
         if len(unique_dates) != 1:
             raise ValueError("Each causal-window input must contain one session date.")
         session_date = pd.Timestamp(unique_dates.iloc[0]).date()
+
+        # Preserve caller chronology and reject duplicate dates rather than sorting here; sorting
+        # could hide an incorrectly constructed chronological split.
         if previous_session_date is not None and session_date <= previous_session_date:
             raise ValueError("Causal-window sessions must be uniquely chronological.")
         previous_session_date = session_date
 
         timestamps = pd.to_datetime(session[timestamp_column], utc=True, errors="coerce")
+
+        # Within-session row order defines causal history. Missing, duplicate, or reversed times
+        # would place future geometry into an earlier target window.
         if (
             timestamps.isna().any()
             or timestamps.duplicated().any()
@@ -168,6 +200,9 @@ def build_causal_windows(
             dtype=np.float32,
             copy=True,
         )
+
+        # Copy into one float32 market array before windowing so strided views cannot retain mixed
+        # DataFrame dtypes or mutate caller-owned session frames.
         if not np.isfinite(session_features).all():
             raise ValueError("Causal-window features must be finite numbers.")
 
@@ -175,6 +210,9 @@ def build_causal_windows(
         anticipated_values = pd.to_numeric(
             session["anticipated_target"], errors="coerce"
         )
+
+        # Both heads use the fixed three-class target contract. Coercion failures or out-of-range
+        # values must not become estimator-specific label behavior.
         if (
             current_values.isna().any()
             or anticipated_values.isna().any()
@@ -227,6 +265,9 @@ def build_causal_windows(
             valid_history_batches.append(
                 np.ones((len(target_positions), window_length), dtype=bool)
             )
+
+        # Targets and prior labels refer to the final candle of each constructed window. The prior
+        # labels remain separate context for non-deployable reference baselines, not market input.
         current_targets.extend(current_values.iloc[target_positions].astype(int))
         anticipated_targets.extend(anticipated_values.iloc[target_positions].astype(int))
         previous_current_targets.extend(
@@ -236,6 +277,9 @@ def build_causal_windows(
             anticipated_values.iloc[target_positions - 1].astype(int)
         )
         source_session_index = session_index
+
+        # Frozen benchmark sessions may already carry global indices. Preserve them so selected
+        # fold corpora retain original study coordinates rather than being renumbered locally.
         if "session_index" in session.columns:
             unique_session_indices = session["session_index"].drop_duplicates()
             if len(unique_session_indices) != 1:
@@ -249,9 +293,13 @@ def build_causal_windows(
         )
         sample_timestamps.extend(timestamps.iloc[target_positions])
 
+    # A legal request can still produce no samples when every session is shorter than the required
+    # history or target boundary. Fail explicitly instead of returning shape-ambiguous empties.
     if not feature_window_batches:
         raise ValueError("No session contains enough candles for the causal window.")
 
+    # Concatenate once after all session-local construction, then make shared feature and mask
+    # arrays read-only so cached corpora cannot be mutated between model candidates.
     features = np.concatenate(feature_window_batches).astype(np.float32, copy=False)
     features.setflags(write=False)
     valid_history_mask = np.concatenate(valid_history_batches)

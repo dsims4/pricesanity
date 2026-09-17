@@ -15,12 +15,18 @@ def collect_completed_runs(artifact_root: str | Path) -> pd.DataFrame:
     """Load every verified complete run into one leaderboard-shaped table."""
 
     rows = []
+
+    # Discover only final metadata commit markers. Partial run directories intentionally remain
+    # invisible because their component files have not yet become a completed experiment.
     for metadata_path in sorted(Path(artifact_root).rglob("benchmark_metadata.json")):
         # A leaderboard needs persisted metrics, not hundreds of prediction tables. Detailed
         # predictions remain lazy until a person selects one run for inspection.
         metadata, metrics = load_benchmark_summary(metadata_path.parent)
         identity = metadata["identity"]
         efficiency = metrics.get("efficiency") or {}
+
+        # Flatten identity, predictive scores, and optional efficiency evidence into one row so
+        # later aggregation never needs to reopen model or prediction artifacts.
         rows.append({
             "track": identity["track"],
             "model_name": identity["model_name"],
@@ -29,7 +35,15 @@ def collect_completed_runs(artifact_root: str | Path) -> pd.DataFrame:
             "model_configuration_sha256": identity["model_configuration_sha256"],
             "representation_sha256": identity["representation_sha256"],
             "test_session_ids_sha256": identity["test_session_ids_sha256"],
-            **{key: identity.get(key) for key in ("protocol_sha256", "annotation_snapshot_sha256", "normalized_dataset_sha256", "label_mapping_sha256")},
+            **{
+                key: identity.get(key)
+                for key in (
+                    "protocol_sha256",
+                    "annotation_snapshot_sha256",
+                    "normalized_dataset_sha256",
+                    "label_mapping_sha256",
+                )
+            },
             "declared_final_seeds": metadata.get("dataset", {}).get("declared_final_seeds"),
             "current_macro_f1": metrics["current"]["macro_f1"],
             "anticipated_macro_f1": metrics["anticipated"]["macro_f1"],
@@ -44,9 +58,14 @@ def collect_completed_runs(artifact_root: str | Path) -> pd.DataFrame:
             "parameter_count": efficiency.get("parameter_count"),
             "device": efficiency.get("device"),
             "hardware_fingerprint": efficiency.get("hardware_fingerprint"),
+            # Older summary artifacts did not persist one run-level uncertainty kind. Preserve a
+            # visible N/A rather than inferring probability semantics from the model family.
             "uncertainty_kind": None,
             "run_directory": str(metadata_path.parent),
         })
+
+    # Sorted discovery order makes this raw report deterministic even before aggregation applies
+    # its score ordering.
     return pd.DataFrame(rows)
 
 
@@ -58,13 +77,22 @@ def collect_aggregated_runs(
     """Return one honest leaderboard row per frozen model configuration."""
 
     raw_runs = collect_completed_runs(artifact_root)
+
+    # A study in progress is a legitimate report state. Keep its empty frame untouched instead of
+    # fabricating baseline columns that imply final evaluation has occurred.
     if raw_runs.empty:
         return raw_runs
+
+    # Candidate and learning-curve artifacts are development evidence, not final leaderboard
+    # replicates. Restrict aggregation to explicitly named final seed runs.
     raw_runs = raw_runs.loc[
         raw_runs["run_name"].astype(str).str.startswith("final_seed_")
     ].reset_index(drop=True)
     if raw_runs.empty:
         return raw_runs
+
+    # Registry metadata determines which families require replicated seeds; report code must not
+    # duplicate or drift from the model family's deterministic/stochastic declaration.
     stochastic = [family.name for family in list_model_families() if family.stochastic]
     return add_baseline_deltas(
         aggregate_seed_results(
@@ -88,6 +116,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
     )
     parsed = parser.parse_args(arguments)
     leaderboard = collect_aggregated_runs(parsed.artifact_root)
+
+    # Make an unfinished corpus explicit in terminal output rather than printing an ambiguous
+    # blank table that could be mistaken for a filtering error.
     if leaderboard.empty:
         print("No completed benchmark runs. Infrastructure is awaiting the full corpus.")
         return 0

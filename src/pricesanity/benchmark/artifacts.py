@@ -76,6 +76,8 @@ class BenchmarkRunIdentity:
     def __post_init__(self) -> None:
         """Require every leakage-sensitive input to participate in run identity."""
 
+        # Each field is a complete digest of one scientific input. Reject truncated or placeholder
+        # values before they can name a directory that appears resumable.
         hash_fields = (
             self.model_configuration_sha256,
             self.representation_sha256,
@@ -127,6 +129,8 @@ def build_benchmark_run_identity(
 ) -> BenchmarkRunIdentity:
     """Bind every scientific input to one canonical resumable experiment identity."""
 
+    # Hash mutable structures at the boundary so the frozen identity contains compact immutable
+    # evidence rather than references that a caller could alter during execution.
     return BenchmarkRunIdentity(
         track=track,
         model_name=model_name,
@@ -172,6 +176,8 @@ def benchmark_run_paths(
 ) -> BenchmarkRunPaths:
     """Place each model beneath its track without inventing a global run counter."""
 
+    # Include a short complete-identity digest in the directory name. Human-readable names remain
+    # navigable while distinct configurations cannot collide under the same run label.
     directory = (
         Path(output_root)
         / identity.track
@@ -200,8 +206,16 @@ def prepare_benchmark_run(
 ) -> tuple[BenchmarkRunPaths, Literal["new", "resume", "complete"]]:
     """Reserve a run or verify that an existing directory is the same experiment."""
 
+    # Derive all paths from the reserved scientific identity before examining filesystem state.
+    # Resume may reuse only this exact location, never search for a merely similar run.
     paths = benchmark_run_paths(output_root, identity)
+
+    # Execution compatibility is stricter than scientific identity: interrupted binary state can
+    # be reused only under the same source and library environment that created it.
     execution_environment = execution_environment or resume_environment_fingerprint()
+
+    # A new run publishes identity and environment before any expensive fitting begins. Those
+    # exclusive files become the immutable contract for every later checkpoint.
     if not paths.directory.exists():
         paths.directory.mkdir(parents=True)
         _write_json_atomic(paths.identity, identity.to_dict(), exclusive=True)
@@ -209,16 +223,26 @@ def prepare_benchmark_run(
             paths.resume_environment, execution_environment, exclusive=True
         )
         return paths, "new"
+
+    # Existing output is never overwritten implicitly. The caller must deliberately enter resume
+    # mode so a repeated command cannot destroy completed evidence.
     if not resume:
         raise FileExistsError(
             f"Benchmark run already exists and will not be overwritten: {paths.directory}"
         )
     stored_identity = _read_json(paths.identity, "benchmark run identity")
+
+    # Identity is checked before completion state because even a valid-looking metadata marker in
+    # another experiment's directory must not satisfy this request.
     if stored_identity != _json_compatible(identity.to_dict()):
         raise ValueError("Existing benchmark directory belongs to a different run identity.")
     if paths.metadata.is_file():
+        # A completed run is reusable only after its checksums and prediction schema verify.
         load_benchmark_run(paths.directory)
         return paths, "complete"
+
+    # Partial models and predictions are serializer-specific state. Refuse cross-environment
+    # continuation rather than risking a technically readable but irreproducible artifact chain.
     stored_environment = _read_json(
         paths.resume_environment, "benchmark resume environment"
     )
@@ -241,6 +265,8 @@ def save_benchmark_run(
 ) -> dict[str, Any]:
     """Publish model, predictions, metrics, and final checksums exactly once."""
 
+    # Serialize all publication decisions under one advisory run lock so concurrent resume
+    # processes cannot interleave component checkpoints.
     with _run_lock(paths.lock):
         return _save_benchmark_run_locked(
             paths,
@@ -256,17 +282,25 @@ def save_benchmark_run(
 def checkpoint_fitted_model(paths: BenchmarkRunPaths, model: Any, timing: dict) -> None:
     """Publish model and original fitting evidence before inference can fail."""
 
+    # Fitting can be the expensive stage. Publish its exact model state and timing first so a
+    # later inference failure can resume without training a different stochastic instance.
     with _run_lock(paths.lock):
         if paths.progress.exists() or paths.metadata.exists():
             raise ValueError("A fitted stage is already checkpointed.")
         _remove_stale_partial(paths.model)
+
+        # Save beside the destination, validate bytes, then rename atomically. Readers can observe
+        # either no model or the complete model, never a serializer's partial output.
         temporary = _temporary_path(paths.model)
         model.save(temporary)
         _validate_nonempty_file(temporary, "model")
         _publish_atomic(temporary, paths.model)
         _write_json_atomic(paths.progress, {
             "format_version": 1,
-            "completed": {"model": file_sha256(paths.model), "model_state_sha256": model.state_fingerprint()},
+            "completed": {
+                "model": file_sha256(paths.model),
+                "model_state_sha256": model.state_fingerprint(),
+            },
             "training_evidence": timing,
         })
 
@@ -283,6 +317,8 @@ def _save_benchmark_run_locked(
 ) -> dict[str, Any]:
     """Publish one run while its advisory writer lock is held."""
 
+    # Metadata is the completion marker, so its presence makes this path immutable even if a
+    # caller attempts to republish identical inputs.
     if paths.metadata.exists():
         raise FileExistsError("Completed benchmark runs cannot be silently overwritten.")
     stored_identity = _read_json(paths.identity, "benchmark run identity")
@@ -290,9 +326,14 @@ def _save_benchmark_run_locked(
         raise ValueError("Benchmark identity changed after its directory was reserved.")
     if canonical_sha256(model_configuration) != identity.model_configuration_sha256:
         raise ValueError("Model configuration does not match the reserved run identity.")
+
+    # Validate caller predictions before touching existing checkpoints and fingerprint the exact
+    # fitted parameters that must connect model, predictions, and derived metrics.
     validated_predictions = validate_benchmark_predictions(predictions)
     model_state_sha256 = model.state_fingerprint()
 
+    # The small progress manifest is the authority for resumable components. Unrecorded files are
+    # treated as crash debris even when they happen to exist and look readable.
     progress = (
         _read_json(paths.progress, "benchmark progress")
         if paths.progress.is_file()
@@ -319,6 +360,8 @@ def _save_benchmark_run_locked(
         # Downstream output must come from the exact checkpoint that survived the crash.
         raise ValueError("Resumed model instance does not match the checkpointed fitted model.")
     if not _component_is_complete(paths.predictions, completed.get("predictions")):
+        # Round-trip through Parquet validation before publication so serialization cannot alter
+        # timestamps, labels, or uncertainty values without detection.
         _remove_stale_partial(paths.predictions)
         temporary_predictions = _temporary_path(paths.predictions)
         validated_predictions.to_parquet(temporary_predictions, index=False)
@@ -346,6 +389,9 @@ def _save_benchmark_run_locked(
             else None
         ),
     )
+
+    # Metrics are recomputed from the published prediction file rather than trusting in-memory
+    # caller values, binding scientific results to the artifact that reviewers can audit.
     if not _component_is_complete(paths.metrics, completed.get("metrics")):
         _remove_stale_partial(paths.metrics)
         _write_json_atomic(paths.metrics, persisted_metrics.to_dict())
@@ -354,6 +400,9 @@ def _save_benchmark_run_locked(
         _write_json_atomic(paths.progress, progress)
     elif completed.get("metrics_source_predictions_sha256") != completed["predictions"]:
         raise ValueError("Checkpointed metrics do not belong to persisted predictions.")
+
+    # Require an unbroken fitted-model lineage before the final metadata commit marker can make
+    # the run visible to reports and the GUI.
     if not (
         completed.get("model_state_sha256")
         == completed.get("predictions_source_model_state_sha256")
@@ -366,18 +415,30 @@ def _save_benchmark_run_locked(
 
 def publish_checkpointed_run(paths, identity, model_configuration, dataset_description):
     """Finish a metrics-complete run by verifying its chain and publishing metadata only."""
+
+    # Recheck identity and configuration at finalization because a resumed caller may differ from
+    # the process that created the checkpointed components.
     if _read_json(paths.identity, "run identity") != _json_compatible(identity.to_dict()):
         raise ValueError("Checkpoint identity changed.")
     if canonical_sha256(model_configuration) != identity.model_configuration_sha256:
         raise ValueError("Checkpoint model configuration changed.")
     progress = _read_json(paths.progress, "run progress")
     completed = progress.get("completed", {})
+
+    # Every component must still match its recorded checksum immediately before publication.
     for name in ("model", "predictions", "metrics"):
         if not _component_is_complete(getattr(paths, name), completed.get(name)):
             raise ValueError("Checkpoint component is incomplete: " + name)
-    if (completed.get("model_state_sha256") != completed.get("predictions_source_model_state_sha256")
-            or completed.get("predictions") != completed.get("metrics_source_predictions_sha256")):
+    if (
+        completed.get("model_state_sha256")
+        != completed.get("predictions_source_model_state_sha256")
+        or completed.get("predictions")
+        != completed.get("metrics_source_predictions_sha256")
+    ):
         raise ValueError("Checkpoint components are not a coherent chain.")
+
+    # Record both scientific identity and operational provenance. The latter supports audit and
+    # resume diagnosis without changing which experimental question this run answers.
     metadata = {
         "format_version": 1,
         "state": "complete",
@@ -410,6 +471,8 @@ def load_benchmark_summary(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Load verified metadata and metrics without reading the prediction Parquet."""
 
+    # Validate the completion marker and run identity first, then checksum only the lightweight
+    # metric artifact needed by leaderboards and report generation.
     run_directory = Path(run_directory)
     metadata = _validated_metadata(run_directory)
     artifacts = metadata["artifacts"]
@@ -424,6 +487,8 @@ def load_benchmark_run(
 ) -> tuple[dict[str, Any], pd.DataFrame, dict[str, Any]]:
     """Verify a complete run before any GUI or report displays its results."""
 
+    # Resolve artifacts only after the metadata/identity pair verifies, then constrain every
+    # stored filename to a direct child of the run directory.
     run_directory = Path(run_directory)
     metadata = _validated_metadata(run_directory)
     artifacts = metadata["artifacts"]
@@ -435,6 +500,8 @@ def load_benchmark_run(
         if file_sha256(artifact_path) != artifacts.get(f"{artifact_name}_sha256"):
             raise ValueError(f"Benchmark artifact checksum mismatch: {artifact_name}")
 
+    # Prediction rows receive full schema validation after checksum verification; integrity of
+    # bytes alone does not guarantee that their scientific contract is supported.
     try:
         predictions = pd.read_parquet(run_directory / artifacts["predictions"])
     except OSError as error:
@@ -449,7 +516,12 @@ def audit_benchmark_run(
 ) -> tuple[dict[str, Any], pd.DataFrame, dict[str, Any]]:
     """Fully verify checksums and recompute persisted scientific metrics."""
 
+    # Begin with the normal complete-run validation so this expensive audit cannot accidentally
+    # bless files that ordinary readers would reject.
     metadata, predictions, metrics = load_benchmark_run(run_directory)
+
+    # Recompute from persisted rows, excluding operational efficiency because runtime cannot be
+    # reproduced by replaying predictions alone.
     recomputed = _metrics_from_prediction_frame(predictions).to_dict()
     saved_scientific_metrics = dict(metrics)
     saved_scientific_metrics.pop("efficiency", None)
@@ -471,6 +543,8 @@ def _metrics_from_prediction_frame(
 ) -> BenchmarkMetrics:
     """Recompute scientific results from the persisted source-of-truth rows."""
 
+    # Decode all persisted labels through the benchmark's fixed class order before invoking the
+    # shared metric implementation.
     label_indices = {"bull": 0, "bear": 1, "range": 2}
     decoded = {}
     for name in (
@@ -478,12 +552,16 @@ def _metrics_from_prediction_frame(
         "human_anticipated", "predicted_anticipated",
     ):
         decoded[name] = predictions[f"{name}_regime"].map(label_indices).to_numpy()
+
+    # Decision-score models intentionally leave probability columns empty. Do not manufacture
+    # probability metrics from uncalibrated margins merely to fill the shared schema.
     uses_probabilities = predictions["uncertainty_kind"].iloc[0] != (
         "uncalibrated_decision_score"
     )
     current_probabilities = None
     anticipated_probabilities = None
     if uses_probabilities:
+        # Preserve the fixed bull/bear/range column order expected by proper scoring rules.
         current_probabilities = predictions[[
             "current_probability_bull", "current_probability_bear",
             "current_probability_range",
@@ -507,18 +585,25 @@ def _metrics_from_prediction_frame(
 def _validated_metadata(run_directory: Path) -> dict[str, Any]:
     """Validate the small run manifest without loading heavyweight artifacts."""
 
+    # Metadata exists only for published runs, but its version and state still require validation
+    # before older or malformed manifests can direct artifact loading.
     metadata = _read_json(
         run_directory / "benchmark_metadata.json", "benchmark metadata"
     )
     if metadata.get("format_version") != 1 or metadata.get("state") != "complete":
         raise ValueError("Benchmark run is not a supported completed artifact.")
     identity = _read_json(run_directory / "run_identity.json", "benchmark identity")
+
+    # The final manifest must repeat the exact identity reserved before fitting; otherwise its
+    # checksummed components could be attributed to the wrong experiment.
     if metadata.get("identity") != identity:
         raise ValueError("Benchmark metadata does not match its reserved identity.")
     artifacts = metadata.get("artifacts")
     if not isinstance(artifacts, dict):
         raise ValueError("Benchmark metadata is missing artifact identities.")
     for artifact_name in ("model", "predictions", "metrics"):
+        # Only bare filenames are accepted. Nested or absolute paths would let a run claim files
+        # outside its immutable artifact directory.
         relative_path = Path(str(artifacts.get(artifact_name, "")))
         if relative_path.is_absolute() or relative_path.name != str(relative_path):
             raise ValueError("Benchmark artifact paths must remain inside their run.")
@@ -528,6 +613,8 @@ def _validated_metadata(run_directory: Path) -> dict[str, Any]:
 def validate_benchmark_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
     """Require exact identities, labels, probabilities, and chronological ordering."""
 
+    # Require the complete shared schema before selecting a copy. Extra estimator-specific fields
+    # cannot leak into persisted artifacts or silently alter their checksum contract.
     missing_columns = set(BENCHMARK_PREDICTION_COLUMNS).difference(predictions.columns)
     if missing_columns:
         raise ValueError(
@@ -537,6 +624,8 @@ def validate_benchmark_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
     predictions = predictions.loc[:, BENCHMARK_PREDICTION_COLUMNS].copy()
     if predictions.empty:
         raise ValueError("Benchmark predictions cannot be empty.")
+    # Normalize temporal values while retaining caller order. Sorting here would hide a model that
+    # emitted predictions for the correct candles in the wrong causal sequence.
     predictions["timestamp"] = pd.to_datetime(
         predictions["timestamp"], utc=True, errors="raise"
     )
@@ -552,6 +641,9 @@ def validate_benchmark_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("Benchmark predictions must be uniquely chronological.")
 
     valid_regimes = {"bull", "bear", "range"}
+
+    # Human and predicted heads share one fixed vocabulary, preserving the class order assumed by
+    # confusion matrices and uncertainty columns.
     for regime_column in (
         "predicted_current_regime",
         "predicted_anticipated_regime",
@@ -562,6 +654,9 @@ def validate_benchmark_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
             raise ValueError("Benchmark predictions contain an unknown regime label.")
 
     uncertainty_kinds = set(predictions["uncertainty_kind"])
+
+    # One run must use one uncertainty interpretation. Mixing calibrated probabilities with raw
+    # scores would make both row-level display and aggregate probability metrics ambiguous.
     if len(uncertainty_kinds) != 1:
         raise ValueError("One benchmark run must use one uncertainty-value contract.")
     uncertainty_kind = next(iter(uncertainty_kinds))
@@ -575,6 +670,8 @@ def validate_benchmark_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("Benchmark predictions name an unknown uncertainty contract.")
 
     for prefix in ("current", "anticipated"):
+        # Validate both heads independently under the same contract so one cannot carry scores
+        # while the other is silently interpreted as probabilities.
         probability_columns = [
             f"{prefix}_probability_bull",
             f"{prefix}_probability_bear",
@@ -615,6 +712,8 @@ def file_sha256(path: str | Path) -> str:
 def canonical_sha256(value: Any) -> str:
     """Hash JSON-compatible experiment data with stable key ordering."""
 
+    # Canonical JSON removes mapping order and Python-only path/tuple distinctions from identity;
+    # logically equivalent configuration values therefore receive the same digest.
     encoded = json.dumps(
         _json_compatible(value),
         sort_keys=True,
@@ -630,12 +729,16 @@ def resume_environment_fingerprint(
 ) -> dict[str, Any]:
     """Describe execution compatibility separately from scientific identity."""
 
+    # Keep operational compatibility separate from scientific identity. Device or library changes
+    # block binary checkpoint reuse without claiming that the research question itself changed.
     return {**_library_versions(), "device": device, "source": source_identity()}
 
 
 def source_identity() -> dict[str, Any]:
     """Bind partial execution to installed source bytes, including uncommitted edits."""
 
+    # Hash every first-party source file so uncommitted edits are represented by their bytes, not
+    # merely by a coarse dirty-worktree flag.
     source_root = Path(__file__).resolve().parents[1]
     files = {
         str(path.relative_to(source_root)): file_sha256(path)
@@ -654,9 +757,14 @@ def _write_json_atomic(
 ) -> None:
     """Replace only the small progress checkpoint after durable component writes."""
 
+    # Exclusive manifests represent one-time state transitions. Check before writing, then check
+    # again before rename to close the race with a noncooperating writer.
     if exclusive and path.exists():
         raise FileExistsError(f"Artifact already exists: {path}")
     temporary_path = _temporary_path(path)
+
+    # Flush and parse the temporary JSON before atomic publication. A crash leaves a disposable
+    # partial file rather than a corrupt canonical progress or metadata path.
     with temporary_path.open("x", encoding="utf-8") as output_file:
         json.dump(_json_compatible(values), output_file, indent=2, sort_keys=True)
         output_file.write("\n")
@@ -678,6 +786,8 @@ def _temporary_path(path: Path) -> Path:
 def _publish_atomic(temporary_path: Path, final_path: Path) -> None:
     """Durably publish a validated file and then sync its directory entry."""
 
+    # Sync file contents before rename, then sync the containing directory so both data and the new
+    # directory entry survive a system interruption.
     with temporary_path.open("rb") as artifact_file:
         os.fsync(artifact_file.fileno())
     os.replace(temporary_path, final_path)
@@ -691,6 +801,8 @@ def _publish_atomic(temporary_path: Path, final_path: Path) -> None:
 def _remove_stale_partial(path: Path) -> None:
     """Discard only this process-neutral temporary artifact during locked resume."""
 
+    # The run lock makes these process-tagged leftovers safe to remove; completed canonical files
+    # are never matched by this narrow pattern.
     for partial_path in path.parent.glob(f".{path.name}.*.partial"):
         partial_path.unlink()
 
@@ -706,6 +818,8 @@ def _validate_nonempty_file(path: Path, description: str) -> None:
 def _run_lock(lock_path: Path):
     """Allow one cooperating writer per run while other run directories remain parallel."""
 
+    # Use a nonblocking advisory lock so a second writer fails visibly instead of waiting and then
+    # acting on state that changed while it was blocked.
     with lock_path.open("a+") as lock_file:
         try:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -722,6 +836,8 @@ def _git_identity(run_directory: Path) -> dict[str, Any]:
 
     import subprocess
 
+    # Git provenance is informative rather than required. Installed packages and source exports
+    # remain usable when no checkout metadata is available.
     try:
         root = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
@@ -746,6 +862,8 @@ def _git_identity(run_directory: Path) -> dict[str, Any]:
 def _component_is_complete(path: Path, recorded_checksum: object) -> bool:
     """Reuse one interrupted-run component only when its checkpoint still verifies."""
 
+    # No checkpoint entry means the file is uncommitted, even if crash debris exists at the final
+    # path. A recorded entry, by contrast, must resolve to unchanged bytes or resume stops.
     if recorded_checksum is None:
         return False
     if not isinstance(recorded_checksum, str) or not path.is_file():
@@ -758,6 +876,8 @@ def _component_is_complete(path: Path, recorded_checksum: object) -> bool:
 def _read_json(path: Path, description: str) -> dict[str, Any]:
     """Read a named mapping with an error identifying the broken artifact."""
 
+    # Convert filesystem and syntax failures into one artifact-specific error while preserving the
+    # original exception for debugging.
     try:
         with path.open(encoding="utf-8") as input_file:
             values = json.load(input_file)
@@ -771,6 +891,8 @@ def _read_json(path: Path, description: str) -> dict[str, Any]:
 def _json_compatible(value: Any) -> Any:
     """Normalize tuples and paths before identity comparison and serialization."""
 
+    # Normalize recursively because nested configuration and identity mappings commonly contain
+    # tuples or Paths that JSON would otherwise represent inconsistently.
     if isinstance(value, dict):
         return {str(key): _json_compatible(item) for key, item in value.items()}
     if isinstance(value, (tuple, list)):
@@ -783,6 +905,8 @@ def _json_compatible(value: Any) -> Any:
 def _library_versions() -> dict[str, str]:
     """Record core versions and optional libraries actually installed at run time."""
 
+    # Core data libraries are always present in benchmark execution; optional model libraries are
+    # recorded only when installed so lightweight artifact readers remain supported.
     versions = {
         "python": sys.version.split()[0],
         "platform": platform.platform(),

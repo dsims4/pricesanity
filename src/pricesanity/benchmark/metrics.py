@@ -124,14 +124,22 @@ def classification_metrics(
 ) -> ClassificationMetrics:
     """Calculate an explicit confusion matrix and derived per-class values."""
 
+    # Normalize caller-owned arrays to one integer representation so validation and indexing
+    # use the same class encoding for every model family.
     human_targets = np.asarray(human_targets, dtype=np.int64)
     predicted_targets = np.asarray(predicted_targets, dtype=np.int64)
+
+    # Metrics are meaningful only for the exact aligned scored population. Empty or differently
+    # shaped vectors would make cross-model comparisons use different evidence.
     if (
         human_targets.ndim != 1
         or predicted_targets.shape != human_targets.shape
         or human_targets.size == 0
     ):
         raise ValueError("Classification targets must be aligned nonempty vectors.")
+
+    # The class-name order fixes the row and column meaning in every persisted confusion matrix.
+    # Reject unknown integer labels rather than silently expanding or reordering that schema.
     class_count = len(class_names)
     if (
         (human_targets < 0).any()
@@ -149,11 +157,17 @@ def classification_metrics(
     ).reshape(class_count, class_count)
     class_metrics: dict[str, PerClassMetrics] = {}
     f1_values = []
+
+    # Derive each class from the same row=true, column=predicted matrix so per-class values and
+    # the displayed confusion matrix cannot disagree about label orientation.
     for class_index, class_name in enumerate(class_names):
         true_positive = int(confusion[class_index, class_index])
         false_positive = int(confusion[:, class_index].sum() - true_positive)
         false_negative = int(confusion[class_index, :].sum() - true_positive)
         support = int(confusion[class_index, :].sum())
+
+        # Undefined ratios become zero through one shared policy. This keeps absent or never-
+        # predicted classes in the macro average instead of rewarding models that omit them.
         precision = _safe_ratio(true_positive, true_positive + false_positive)
         recall = _safe_ratio(true_positive, true_positive + false_negative)
         f1 = _safe_ratio(2.0 * precision * recall, precision + recall)
@@ -165,6 +179,8 @@ def classification_metrics(
         )
         f1_values.append(f1)
 
+    # Macro F1 weights all three regimes equally, while accuracy retains the overall candle-level
+    # view. Persisting both prevents class imbalance from being hidden by a single score.
     return ClassificationMetrics(
         accuracy=float(np.trace(confusion) / human_targets.size),
         macro_f1=float(np.mean(f1_values)),
@@ -187,6 +203,8 @@ def evaluate_benchmark_predictions(
 ) -> BenchmarkMetrics:
     """Evaluate both labels and current-regime transitions without crossing sessions."""
 
+    # Current-regime transitions are session-local events, so their session identity vector must
+    # align exactly with the current targets before any neighborhood is constructed.
     human_current = np.asarray(human_current, dtype=np.int64)
     predicted_current = np.asarray(predicted_current, dtype=np.int64)
     session_indices = np.asarray(session_indices, dtype=np.int64)
@@ -195,6 +213,7 @@ def evaluate_benchmark_predictions(
 
     human_anticipated = np.asarray(human_anticipated, dtype=np.int64)
     predicted_anticipated = np.asarray(predicted_anticipated, dtype=np.int64)
+
     # Neighborhoods are anchored to human transitions. Anchoring them to model predictions
     # would give each model a different and potentially easier diagnostic population.
     transition_masks = {
@@ -206,17 +225,28 @@ def evaluate_benchmark_predictions(
         for tolerance in (0, 1, 2)
     }
 
+    # Anticipated labels have their own transition process. Build separate masks so anticipated
+    # transition diagnostics are not incorrectly anchored to changes in the current-regime head.
     anticipated_masks = {
-        tolerance: _human_transition_neighborhood_mask(human_anticipated, session_indices, tolerance=tolerance)
+        tolerance: _human_transition_neighborhood_mask(
+            human_anticipated,
+            session_indices,
+            tolerance=tolerance,
+        )
         for tolerance in (0, 1, 2)
     }
 
+    # Assemble every head and transition view from the same aligned arrays. The combined score
+    # remains a property of the finished object so neither head disappears during construction.
     return BenchmarkMetrics(
+        # Head-level classification stays explicit because the benchmark requires both tasks.
         current=classification_metrics(human_current, predicted_current),
         anticipated=classification_metrics(
             human_anticipated, predicted_anticipated
         ),
         transitions=TransitionMetrics(
+            # Exact and tolerant matches reveal whether a model detects a change late or early,
+            # rather than treating every near-boundary candle as an unrelated classification.
             exact=_transition_metrics(
                 human_current, predicted_current, session_indices, tolerance=0
             ),
@@ -228,6 +258,8 @@ def evaluate_benchmark_predictions(
             ),
         ),
         transition_neighborhoods=TransitionNeighborhoodMetrics(
+            # Score both heads around human current-regime changes to expose local behavior at
+            # precisely the candles where discretionary interpretation changes state.
             exact_current=_masked_classification(
                 human_current, predicted_current, transition_masks[0]
             ),
@@ -248,6 +280,8 @@ def evaluate_benchmark_predictions(
             ),
         ),
         anticipated_transitions=TransitionMetrics(
+            # Preserve the same matching tolerances for anticipated-label changes so the two
+            # transition reports retain comparable semantics.
             exact=_transition_metrics(
                 human_anticipated, predicted_anticipated, session_indices, tolerance=0
             ),
@@ -259,6 +293,7 @@ def evaluate_benchmark_predictions(
             ),
         ),
         anticipated_transition_neighborhoods=TransitionNeighborhoodMetrics(
+            # Reuse the common head metrics but select candles around anticipated transitions.
             exact_current=_masked_classification(
                 human_current, predicted_current, anticipated_masks[0]
             ),
@@ -294,8 +329,13 @@ def _probability_metrics(
 ) -> ProbabilityMetrics | None:
     """Measure log loss and Brier score only for genuine probability estimates."""
 
+    # Models exposing only decision scores receive no probability metrics. Treating margins as
+    # probabilities would make log loss and Brier score scientifically invalid.
     if probabilities is None:
         return None
+
+    # Require the fixed bull/bear/range class axis and normalized finite rows before applying
+    # proper scoring rules shared across model families.
     probabilities = np.asarray(probabilities, dtype=np.float64)
     if probabilities.shape != (len(targets), 3):
         raise ValueError("Probability estimates must have sample and three class axes.")
@@ -308,6 +348,9 @@ def _probability_metrics(
         raise ValueError("Probability estimates must be finite rows summing to one.")
     # Clipping protects log(0) numerically; Brier score still uses the original probabilities.
     clipped = np.clip(probabilities, 1e-15, 1.0)
+
+    # One-hot targets put the multiclass Brier calculation on the same fixed class ordering as
+    # the probability columns and confusion matrices.
     one_hot_targets = np.eye(3, dtype=np.float64)[targets]
     return ProbabilityMetrics(
         multiclass_log_loss=float(
@@ -328,18 +371,27 @@ def _human_transition_neighborhood_mask(
 ) -> np.ndarray:
     """Select positions near human changes without spilling into another session."""
 
+    # Start false everywhere so only candles explicitly connected to a within-session human
+    # transition enter the diagnostic population.
     mask = np.zeros(len(human_current), dtype=bool)
+
+    # A label difference across adjacent rows is not a transition when those rows belong to
+    # different sessions; overnight boundaries cannot borrow causal context from the next day.
     transition_positions = [
         position
         for position in range(1, len(human_current))
         if session_indices[position] == session_indices[position - 1]
         and human_current[position] != human_current[position - 1]
     ]
+
     for transition_position in transition_positions:
         session_index = session_indices[transition_position]
         start = max(0, transition_position - tolerance)
         end = min(len(mask), transition_position + tolerance + 1)
         local_positions = np.arange(start, end)
+
+        # Clip the numeric neighborhood again by session identity because the transition may sit
+        # near a session edge even after its center was validated as a within-session change.
         mask[local_positions[session_indices[local_positions] == session_index]] = True
     return mask
 
@@ -353,6 +405,9 @@ def _masked_classification(
 
     if not mask.any():
         return None
+
+    # The same mask selects truth and prediction so neighborhood metrics preserve exact target
+    # alignment rather than evaluating the two arrays on different candle subsets.
     return classification_metrics(targets[mask], predictions[mask])
 
 
@@ -365,8 +420,13 @@ def _transition_metrics(
 ) -> TransitionToleranceMetrics:
     """Match each predicted change to at most one same-direction human change."""
 
+    # Convert both label sequences into session-relative directed changes. Direction matters:
+    # a bull-to-range prediction cannot receive credit for a nearby bull-to-bear human change.
     human_transitions = _transition_events(human_regimes, session_indices)
     predicted_transitions = _transition_events(predicted_regimes, session_indices)
+
+    # Human events are consumed after matching so each annotated transition contributes at most
+    # one true positive even when the prediction oscillates repeatedly nearby.
     unmatched_human = set(range(len(human_transitions)))
     matched_count = 0
     for (
@@ -393,6 +453,8 @@ def _transition_metrics(
             unmatched_human.remove(nearest)
             matched_count += 1
 
+    # Precision uses predicted changes as its population; recall uses human changes. The shared
+    # zero policy keeps no-transition sessions representable without division failures.
     return TransitionToleranceMetrics(
         tolerance_candles=tolerance,
         human_transition_count=len(human_transitions),
@@ -411,11 +473,16 @@ def _transition_events(
 
     if regimes.shape != session_indices.shape:
         raise ValueError("Transition regimes and session identities must align.")
+    # Session-relative positions allow the same tolerance meaning on every session regardless of
+    # its location in the concatenated evaluation vector.
     events = []
     session_positions: dict[int, int] = {int(session_indices[0]): 0}
     for sample_index in range(1, len(regimes)):
         session_index = int(session_indices[sample_index])
         session_positions[session_index] = session_positions.get(session_index, -1) + 1
+
+        # The first scored candle of a new session establishes state but is never interpreted as
+        # a transition from the previous session's final label.
         if session_index != int(session_indices[sample_index - 1]):
             continue
         if regimes[sample_index] != regimes[sample_index - 1]:

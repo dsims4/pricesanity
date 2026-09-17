@@ -32,8 +32,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Benchmark YAML configuration.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("hardware", help="Inspect Python, WSL, PyTorch build, and detected accelerators.")
-    smoke_parser = subparsers.add_parser("device-smoke", help="Synthetic neural fit/save/reload and machine-specific timing.")
+    subparsers.add_parser(
+        "hardware",
+        help="Inspect Python, WSL, PyTorch build, and detected accelerators.",
+    )
+    smoke_parser = subparsers.add_parser(
+        "device-smoke",
+        help="Synthetic neural fit/save/reload and machine-specific timing.",
+    )
     smoke_parser.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"), default="auto")
     smoke_parser.add_argument("--compare", action="store_true")
     subparsers.add_parser("models", help="List registered model families and readiness.")
@@ -58,9 +64,16 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     initialize_parser.add_argument("--project-config", type=Path, required=True)
     initialize_parser.add_argument("--study-directory", type=Path, required=True)
-    freeze_parser = subparsers.add_parser("freeze-development", help="Seal winners across both declared tracks before final access.")
+    freeze_parser = subparsers.add_parser(
+        "freeze-development",
+        help="Seal winners across both declared tracks before final access.",
+    )
     freeze_parser.add_argument("--study-directory", type=Path, required=True)
-    freeze_parser.add_argument("--search-spaces", type=Path, default=Path("configs/benchmark/search_spaces.yaml"))
+    freeze_parser.add_argument(
+        "--search-spaces",
+        type=Path,
+        default=Path("configs/benchmark/search_spaces.yaml"),
+    )
 
     for command, help_text in (
         ("tune", "Run or resume chronological development tuning."),
@@ -144,11 +157,20 @@ def main(arguments: Sequence[str] | None = None) -> int:
 
     parser = build_argument_parser()
     parsed = parser.parse_args(arguments)
+
+    # Hardware inspection must remain usable before a snapshot exists, so its optional
+    # PyTorch imports and return path precede benchmark configuration loading.
     if parsed.command in {"hardware", "device-smoke"}:
         from pricesanity.benchmark.resources import hardware_diagnostic, smoke_devices
-        report = hardware_diagnostic() if parsed.command == "hardware" else smoke_devices(device=parsed.device, compare=parsed.compare)
+
+        report = (
+            hardware_diagnostic()
+            if parsed.command == "hardware"
+            else smoke_devices(device=parsed.device, compare=parsed.compare)
+        )
         print(json.dumps(report, indent=2, default=str))
         return 0
+
     config = load_benchmark_config(parsed.config)
     if parsed.command == "profile":
         report = profile_synthetic_infrastructure(
@@ -162,6 +184,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0
     if parsed.command == "initialize":
+        # Initialization is the only command allowed to read mutable annotations; every later
+        # study action consumes the resulting immutable snapshot.
         snapshot = freeze_benchmark_snapshot(
             normalized_path=parsed.normalized,
             annotation_database_path=parsed.database,
@@ -178,6 +202,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return 0
 
     if parsed.command in {"tune", "pilot", "final", "learning-curve", "freeze-development"}:
+        # One executor applies the same source, snapshot, resume, and holdout gates to every
+        # command capable of creating or mutating benchmark artifacts.
         snapshot = load_benchmark_snapshot(parsed.study_directory / "snapshot")
         executor = BenchmarkExecutor(
             snapshot=snapshot,
@@ -212,6 +238,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 ))
         elif parsed.command == "final":
             for model_name in model_names:
+                # The executor checks this explicit confirmation against the persisted global
+                # development seal before it opens holdout bytes.
                 paths = executor.run_final(
                     model_name,
                     track=track,
@@ -233,6 +261,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return 0
 
     if parsed.command == "run":
+        # This legacy planning surface intentionally cannot fit models. Requiring --dry-run
+        # keeps its execution-shaped arguments from being mistaken for a training command.
         if not parsed.dry_run:
             parser.error(
                 "Full benchmark execution is intentionally disabled until annotation is "

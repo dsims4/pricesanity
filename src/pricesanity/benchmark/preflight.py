@@ -50,9 +50,14 @@ def build_scalability_preflight(
     if polynomial_degree is not None:
         if polynomial_degree < 1:
             raise ValueError("Polynomial degree must be positive.")
+        # Count the full polynomial basis before allocating it; this is the failure mode the
+        # preflight must expose without constructing a potentially enormous matrix.
         transformed = comb(feature_dimension + polynomial_degree, polynomial_degree) - 1
+
     warnings = []
     acknowledgement_required = False
+    # These thresholds flag known family-specific scaling shapes. They are warnings requiring
+    # conscious approval, not silent substitutions for the declared estimators.
     if model_name == "rbf_svm" and training_samples >= 100_000:
         warnings.append(
             "Exact RBF SVM requires a declared scalability pilot before full-corpus launch."
@@ -66,6 +71,8 @@ def build_scalability_preflight(
         acknowledgement_required = True
     training_values = training_samples * transformed
     evaluation_values = evaluation_samples * transformed
+    # Report both common floating-point widths because scikit-learn may promote float32 inputs
+    # internally; presenting one optimistic allocation would understate the risk.
     return ScalabilityPreflight(
         training_samples=training_samples,
         evaluation_samples=evaluation_samples,

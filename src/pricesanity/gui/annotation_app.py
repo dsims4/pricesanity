@@ -397,12 +397,21 @@ class AnnotationWindow(QMainWindow):
         self.anticipated_card.setLayout(anticipated_regime_layout)
         regime_layout.addWidget(self.anticipated_card, stretch=1)
         self.regime_buttons = {}
-        for head, target_layout in (("current", current_regime_layout), ("anticipated", anticipated_regime_layout)):
+        head_layouts = (
+            ("current", current_regime_layout),
+            ("anticipated", anticipated_regime_layout),
+        )
+        for head, target_layout in head_layouts:
             buttons = QHBoxLayout()
             target_layout.addLayout(buttons)
             for key, regime in REGIME_SHORTCUT_OPTIONS.items():
                 button = QPushButton(f"{regime.value.title()} · {key}")
-                button.setIcon(regime_icon(regime.value, device_pixel_ratio=self.devicePixelRatioF()))
+                button.setIcon(
+                    regime_icon(
+                        regime.value,
+                        device_pixel_ratio=self.devicePixelRatioF(),
+                    )
+                )
                 button.setCheckable(True)
                 button.setProperty("regime", regime.value)
                 button.clicked.connect(partial(self._click_regime, head, regime))
@@ -973,20 +982,48 @@ class AnnotationWindow(QMainWindow):
 
         self.selection_prompt.setText(instruction)
         for (head, regime), button in self.regime_buttons.items():
-            selected = self.selected_current_regime if head == "current" else self.selected_anticipated_regime
+            selected = (
+                self.selected_current_regime
+                if head == "current"
+                else self.selected_anticipated_regime
+            )
             button.setChecked(selected == regime)
-            button.setEnabled(not self._annotation_load_failed and (head == "current" or self.selected_current_regime is not None))
+            button.setEnabled(
+                not self._annotation_load_failed
+                and (
+                    head == "current"
+                    or self.selected_current_regime is not None
+                )
+            )
+
+        # Progress counts use the complete eligible corpus, while the candle fraction uses the
+        # currently selected session so revisiting earlier work remains easy to orient.
         day = self.selected_session_dates[self.active_session_position]
         ids = self._session_ids_for_progress[day]
         saved = len(ids.intersection(self._saved_ids))
         completed = len(self._completed_session_dates)
         total = len(self.available_session_dates)
-        self.progress_label.setText(f"{day} · {completed:,} / {total:,} sessions complete ({completed / total:.1%}) · {total-completed:,} remaining · Candle {self.active_candlestick_position+1} / {len(ids)}")
-        self.session_progress.setRange(0,len(ids))
+        self.progress_label.setText(
+            f"{day} · {completed:,} / {total:,} sessions complete "
+            f"({completed / total:.1%}) · {total - completed:,} remaining · "
+            f"Candle {self.active_candlestick_position + 1} / {len(ids)}"
+        )
+        self.session_progress.setRange(0, len(ids))
         self.session_progress.setValue(saved)
         self.session_progress.setFormat(f"Session: {saved} / {len(ids)} candles saved")
-        committed = self.is_selecting_current_regime and self._active_candlestick_id() in self._saved_ids
-        self.commit_state.setText("✓ Pair saved · ready to advance" if committed else "Current chosen · choose anticipated to save" if not self.is_selecting_current_regime else "Choose current, then anticipated · both labels save together")
+        committed = (
+            self.is_selecting_current_regime
+            and self._active_candlestick_id() in self._saved_ids
+        )
+        if committed:
+            commit_message = "✓ Pair saved · ready to advance"
+        elif not self.is_selecting_current_regime:
+            commit_message = "Current chosen · choose anticipated to save"
+        else:
+            commit_message = (
+                "Choose current, then anticipated · both labels save together"
+            )
+        self.commit_state.setText(commit_message)
 
     def _move_session(self, direction: int) -> None:
         """Open the adjacent eligible session at its first candlestick.

@@ -411,6 +411,8 @@ def resolve_training_device(requested_device: str = "auto") -> torch.device:
         ValueError: If the requested device name is unknown or unavailable.
     """
 
+    # Keep accepted names explicit so a typo cannot silently select CPU and falsify device-specific
+    # timing or reproducibility evidence.
     supported_devices = {"auto", "cpu", "cuda", "mps"}
     if requested_device not in supported_devices:
         raise ValueError(
@@ -418,6 +420,8 @@ def resolve_training_device(requested_device: str = "auto") -> torch.device:
         )
 
     if requested_device == "auto":
+        # Prefer accelerator backends in a deterministic order, with CPU as the portable fallback
+        # only when the caller explicitly allowed automatic selection.
         if torch.cuda.is_available():
             return torch.device("cuda")
         if torch.backends.mps.is_available():
@@ -448,9 +452,13 @@ def _run_epoch(
     if loss_setup not in {"both", "current", "anticipated"}:
         raise ValueError("Loss setup must be both, current, or anticipated.")
 
+    # The optimizer's presence is the single mode switch: evaluation disables dropout and gradient
+    # updates while preserving the identical forward and loss calculations.
     is_training = optimizer is not None
     model.train(is_training)
 
+    # Accumulate confusion counts and candle-weighted losses across variable-length session batches
+    # so padding and short days do not receive metric or loss weight.
     current_metrics = _ClassificationAccumulator(model.config.regime_count)
     anticipated_metrics = _ClassificationAccumulator(model.config.regime_count)
     weighted_total_loss = 0.0
@@ -468,12 +476,16 @@ def _run_epoch(
             if not isinstance(batch, TensorBatch):
                 raise TypeError("Training DataLoaders must return TensorBatch values.")
 
+            # Move only tensors required by the model and loss. Ragged audit metadata remains on CPU
+            # and outside learned inputs.
             features = standardizer.transform(batch.features.to(device))
             padding_mask = batch.padding_mask.to(device)
             current_targets = batch.current_targets.to(device)
             anticipated_targets = batch.anticipated_targets.to(device)
 
             if optimizer is not None:
+                # Clearing gradients to None avoids carrying stale buffers between independent
+                # optimization steps.
                 optimizer.zero_grad(set_to_none=True)
 
             output = model(features, padding_mask)
@@ -485,6 +497,8 @@ def _run_epoch(
             )
 
             if loss_setup != "both":
+                # Single-head diagnostics optimize one chosen task while retaining both losses and
+                # predictions for transparent interference measurement.
                 losses = DualRegimeLoss(
                     total=getattr(losses, loss_setup),
                     current=losses.current,
@@ -499,6 +513,8 @@ def _run_epoch(
                 torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip)
                 optimizer.step()
 
+            # Weight batch means by real candle count so the epoch average is invariant to how
+            # sessions of different lengths happen to be grouped into batches.
             batch_real_candle_count = int(batch.lengths.sum().item())
             real_candle_count += batch_real_candle_count
             weighted_total_loss += losses.total.item() * batch_real_candle_count
@@ -528,6 +544,8 @@ def _run_epoch(
 def calculate_model_state_sha256(model: RegimeTransformer) -> str:
     """Identify the exact learned weights that generated an evaluation artifact."""
 
+    # Sort parameter names and hash contiguous CPU bytes so identity is independent of state-dict
+    # iteration order and the device that held the fitted model.
     state_hash = hashlib.sha256()
     for parameter_name, parameter_value in sorted(model.state_dict().items()):
         state_hash.update(parameter_name.encode("utf-8"))
@@ -555,6 +573,8 @@ def _evaluate_test_once(
     """Measure selected weights and retain every real causal test prediction."""
 
     model.eval()
+
+    # Keep learned-model and training-only majority metrics side by side on the identical test rows.
     current_metrics = _ClassificationAccumulator(model.config.regime_count)
     anticipated_metrics = _ClassificationAccumulator(model.config.regime_count)
     majority_current_metrics = _ClassificationAccumulator(model.config.regime_count)
@@ -586,6 +606,8 @@ def _evaluate_test_once(
                 anticipated_targets,
             )
 
+            # Mirror epoch loss weighting so reported test loss describes real candles rather than
+            # padded batch width.
             batch_real_candle_count = int(batch.lengths.sum().item())
             real_candle_count += batch_real_candle_count
             weighted_total_loss += losses.total.item() * batch_real_candle_count
@@ -631,6 +653,8 @@ def _evaluate_test_once(
             current_targets_cpu = batch.current_targets
             anticipated_targets_cpu = batch.anticipated_targets
 
+            # Decode probabilities and classes on CPU before constructing audit rows; this avoids
+            # repeated device transfers inside the per-candle metadata loop.
             # Metadata is ragged by design, so each stored row stops at the
             # session's real length and can never serialize a padded prediction.
             for batch_position, session_length_value in enumerate(batch.lengths):
@@ -715,6 +739,8 @@ def _evaluate_test_once(
     if real_candle_count == 0:
         raise ValueError("Test evaluation requires at least one real candlestick.")
 
+    # The row-level artifact must contain every real test candle exactly once and in chronology;
+    # aggregate metrics alone could not reveal dropped or duplicated identities.
     test_predictions = pd.DataFrame(prediction_rows)
     if len(test_predictions) != real_candle_count:
         raise RuntimeError("Test prediction rows do not match real test candles.")
@@ -768,6 +794,8 @@ def train_regime_transformer(
         ValueError: If optimization settings cannot define a valid training run.
     """
 
+    # Validate the complete optimization contract before moving model state or constructing an
+    # optimizer, so invalid runs leave no partially initialized training side effects.
     if config.epochs <= 0:
         raise ValueError("Training epochs must be positive.")
     if config.learning_rate <= 0.0:
@@ -781,6 +809,8 @@ def train_regime_transformer(
     if run_index <= 0:
         raise ValueError("Training run index must be positive.")
 
+    # Move model and frozen train-only statistics once, then create one optimizer whose state spans
+    # the complete epoch loop.
     model.to(device)
     active_standardizer = standardizer.to(device)
     optimizer = torch.optim.AdamW(
@@ -789,6 +819,8 @@ def train_regime_transformer(
         weight_decay=config.weight_decay,
     )
 
+    # Validation loss owns checkpoint selection. The best state is copied in memory so later epochs
+    # cannot mutate the weights that will receive the one official test evaluation.
     history = []
     best_epoch = 0
     best_validation_loss = float("inf")
@@ -796,6 +828,8 @@ def train_regime_transformer(
     epochs_without_improvement = 0
 
     for epoch in range(1, config.epochs + 1):
+        # Training updates weights first; validation immediately measures that epoch on later
+        # chronological sessions without optimizer access.
         training_metrics = _run_epoch(
             model,
             data_loaders.training,
@@ -822,6 +856,8 @@ def train_regime_transformer(
         history.append(epoch_record)
 
         if epoch_callback is not None:
+            # Emit only completed epoch evidence, allowing callers to persist progress without
+            # influencing model selection.
             epoch_callback(epoch_record)
 
         # Validation loss chooses the checkpoint without inspecting test labels.
@@ -834,6 +870,7 @@ def train_regime_transformer(
             epochs_without_improvement += 1
 
         if epochs_without_improvement >= config.early_stopping_patience:
+            # Patience depends only on validation history; test labels remain unopened.
             break
 
     if best_model_state is None:
@@ -893,6 +930,8 @@ def save_training_checkpoint(
         ValueError: If the destination does not use the .pt suffix.
     """
 
+    # Suffix and overwrite policy distinguish deliberate checkpoint publication from accidental
+    # replacement of an existing experiment artifact.
     checkpoint_path = Path(checkpoint_path)
     if checkpoint_path.suffix.lower() != ".pt":
         raise ValueError("Training checkpoints must use the .pt suffix.")
@@ -904,6 +943,8 @@ def save_training_checkpoint(
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".tmp")
 
+    # Bind the checkpoint to the exact weights used for official test predictions. Any mutation
+    # after evaluation invalidates publication.
     if calculate_model_state_sha256(model) != result.model_state_sha256:
         raise ValueError("Model weights changed after the official test evaluation.")
 
@@ -938,6 +979,8 @@ def save_training_checkpoint(
     }
 
     try:
+        # Serialize beside the destination and rename only after success so readers never observe a
+        # partially written canonical checkpoint.
         torch.save(checkpoint, temporary_path)
         temporary_path.replace(checkpoint_path)
     finally:
@@ -967,6 +1010,8 @@ def save_test_predictions(
             f"Predictions already exist: {prediction_path}. Enable overwrite to replace them."
         )
 
+    # Identity, both predictions, and both human labels are the minimum auditable row contract for
+    # later read-only result views.
     required_columns = {
         "run_index",
         "model_state_sha256",
@@ -992,6 +1037,7 @@ def save_test_predictions(
     prediction_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = prediction_path.with_suffix(".partial.parquet")
     try:
+        # Parquet publication follows the same temporary-then-replace rule as model checkpoints.
         test_predictions.to_parquet(temporary_path, index=False)
         temporary_path.replace(prediction_path)
     finally:
@@ -1018,6 +1064,8 @@ def load_training_checkpoint(
         ValueError: If required metadata, features, classes, or weights are incompatible.
     """
 
+    # Always deserialize onto CPU first. Device movement happens only after schema, architecture,
+    # scaling, class mapping, and model-state identity all verify.
     checkpoint_path = Path(checkpoint_path)
     try:
         checkpoint = torch.load(
@@ -1043,6 +1091,8 @@ def load_training_checkpoint(
         "model_state_sha256",
         "experiment",
     }
+    # The checkpoint is self-contained: learned weights, preprocessing, architecture, selection
+    # history, evaluation evidence, and experiment identity must travel together.
     if not isinstance(checkpoint, dict):
         raise ValueError("Checkpoint must contain a named metadata mapping.")
     missing_fields = required_fields.difference(checkpoint)
@@ -1061,6 +1111,8 @@ def load_training_checkpoint(
         regime.value: class_index
         for regime, class_index in REGIME_TO_CLASS.items()
     }
+    # Class order fixes the meaning of both output-head columns; matching output width alone cannot
+    # detect a reordered annotation vocabulary.
     if checkpoint["class_mapping"] != expected_class_mapping:
         raise ValueError("Checkpoint class mapping is incompatible with annotations.")
 
@@ -1076,6 +1128,8 @@ def load_training_checkpoint(
     feature_mean = checkpoint["feature_mean"]
     feature_standard_deviation = checkpoint["feature_standard_deviation"]
     expected_statistic_shape = (len(expected_feature_columns),)
+    # Scaling must provide one finite positive value per ordered input feature before inference can
+    # reproduce training-time preprocessing.
     if (
         not isinstance(feature_mean, torch.Tensor)
         or not isinstance(feature_standard_deviation, torch.Tensor)
@@ -1087,6 +1141,8 @@ def load_training_checkpoint(
     ):
         raise ValueError("Checkpoint feature-standardization statistics are invalid.")
 
+    # Strict loading rejects missing or extra parameters rather than partially initializing an
+    # architecture that happens to share some tensor shapes.
     model = RegimeTransformer(model_config)
     try:
         model.load_state_dict(checkpoint["model_state"], strict=True)

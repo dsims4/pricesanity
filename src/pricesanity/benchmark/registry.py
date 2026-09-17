@@ -140,6 +140,8 @@ def list_model_families() -> tuple[ModelFamily, ...]:
 def get_model_family(name: str) -> ModelFamily:
     """Resolve one model name without accepting silent aliases."""
 
+    # Exact names keep configuration, artifact identity, and loader dispatch stable; aliases would
+    # permit two spellings of the same model to create separate experiment directories.
     for model_family in MODEL_FAMILIES:
         if model_family.name == name:
             return model_family
@@ -152,10 +154,15 @@ def validate_conceptual_parameters(
 ) -> None:
     """Reject unsupported conceptual settings before constructing a library estimator."""
 
+    # Baselines have no conceptual search space. Learned families may additionally carry context
+    # length because representation construction consumes it before estimator construction.
     accepted_parameters = MODEL_CONCEPTUAL_PARAMETERS.get(name, frozenset())
     if name in MODEL_CONCEPTUAL_PARAMETERS:
         accepted_parameters = accepted_parameters | {"context_length"}
     unknown_parameters = set(parameters).difference(accepted_parameters)
+
+    # Reject spelling drift rather than passing unknown keys through to a library where failures
+    # could occur only after an expensive search begins.
     if unknown_parameters:
         raise ValueError(
             f"Unsupported {name} parameters: "
@@ -174,22 +181,29 @@ def build_model(
 ) -> Any:
     """Build one runnable adapter from conceptual benchmark settings."""
 
+    # Registry metadata is the single dispatch authority for implementation, representation, and
+    # stochastic behavior used throughout execution and reporting.
     model_family = get_model_family(name)
     if not model_family.available:
         raise NotImplementedError(f"{model_family.display_name} is not implemented.")
     if cpu_worker_count <= 0:
         raise ValueError("Benchmark CPU worker count must be positive.")
 
+    # Copy caller settings before removing representation-only values so search records and frozen
+    # selections remain unchanged outside this factory.
     parameters = dict(parameters or {})
     validate_conceptual_parameters(name, parameters)
     # Context determines representation construction, not estimator architecture. Accept it in
     # family search spaces but keep it out of library constructors.
     parameters.pop("context_length", None)
     if name == "majority_class":
+        # Parameter-free references bypass optional model libraries and learned preprocessing.
         return MajorityClassBaseline()
     if name == "previous_regime":
         return PreviousRegimeBaseline()
     if name in {"tcn", "gru", "transformer"}:
+        # Sequence families share the tested PyTorch adapter while retaining family-specific
+        # architecture construction inside the sequence module.
         from pricesanity.models.sequence import build_sequence_adapter
 
         return build_sequence_adapter(
@@ -205,6 +219,8 @@ def build_model(
             "python -m pip install -e '.[benchmark]'"
         )
 
+    # Translate conceptual names into an estimator factory plus explicit preprocessing and output
+    # semantics; both heads then receive independent instances through the shared adapter.
     estimator_factory, configuration, standardize, output_kind = _sklearn_factory(
         name,
         conceptual_parameters=parameters,
@@ -223,6 +239,8 @@ def build_model(
 def load_model(name: str, path: str, *, device: str = "cpu") -> Any:
     """Restore one persisted benchmark adapter through its registered family."""
 
+    # Restoration follows the same family dispatch as construction so persisted adapters cannot be
+    # loaded through an implementation chosen from file contents alone.
     if name == "majority_class":
         return MajorityClassBaseline.load(path)
     if name == "previous_regime":
@@ -243,6 +261,8 @@ def _sklearn_factory(
 ) -> tuple[Callable[[], Any], dict[str, Any], bool, str]:
     """Translate stable benchmark names into one estimator's library arguments."""
 
+    # Each branch supplies explicit defaults before conceptual overrides, making the complete
+    # library configuration persistable even when the search space omits a setting.
     if name == "gaussian_naive_bayes":
         from sklearn.naive_bayes import GaussianNB
 
@@ -259,13 +279,20 @@ def _sklearn_factory(
             "random_state": random_seed,
             **conceptual_parameters,
         }
-        return lambda: LogisticRegression(**configuration), configuration, True, "probability_estimate"
+        return (
+            lambda: LogisticRegression(**configuration),
+            configuration,
+            True,
+            "probability_estimate",
+        )
 
     if name == "polynomial_logistic":
         from sklearn.linear_model import LogisticRegression
         from sklearn.pipeline import make_pipeline
         from sklearn.preprocessing import PolynomialFeatures
 
+        # Keep polynomial expansion and logistic fitting in one saved pipeline so inference cannot
+        # omit the exact interaction transformation selected during training.
         degree = int(conceptual_parameters.get("degree", 2))
         logistic_configuration = {
             "C": float(conceptual_parameters.get("C", 1.0)),
@@ -291,7 +318,12 @@ def _sklearn_factory(
             "weights": "uniform",
             **conceptual_parameters,
         }
-        return lambda: KNeighborsClassifier(**configuration), configuration, True, "probability_estimate"
+        return (
+            lambda: KNeighborsClassifier(**configuration),
+            configuration,
+            True,
+            "probability_estimate",
+        )
 
     if name == "decision_tree":
         from sklearn.tree import DecisionTreeClassifier
@@ -302,11 +334,18 @@ def _sklearn_factory(
             "random_state": random_seed,
             **conceptual_parameters,
         }
-        return lambda: DecisionTreeClassifier(**configuration), configuration, False, "probability_estimate"
+        return (
+            lambda: DecisionTreeClassifier(**configuration),
+            configuration,
+            False,
+            "probability_estimate",
+        )
 
     if name == "random_forest":
         from sklearn.ensemble import RandomForestClassifier
 
+        # Bind both estimator randomness and worker count to the benchmark protocol for reproducible
+        # model state and honest resource evidence.
         configuration = {
             "n_estimators": 300,
             "max_depth": 12,
@@ -315,7 +354,12 @@ def _sklearn_factory(
             "n_jobs": cpu_worker_count,
             **conceptual_parameters,
         }
-        return lambda: RandomForestClassifier(**configuration), configuration, False, "probability_estimate"
+        return (
+            lambda: RandomForestClassifier(**configuration),
+            configuration,
+            False,
+            "probability_estimate",
+        )
 
     if name == "gradient_boosting":
         from sklearn.ensemble import HistGradientBoostingClassifier
@@ -332,11 +376,18 @@ def _sklearn_factory(
             "random_state": random_seed,
             **conceptual_parameters,
         }
-        return lambda: HistGradientBoostingClassifier(**configuration), configuration, False, "probability_estimate"
+        return (
+            lambda: HistGradientBoostingClassifier(**configuration),
+            configuration,
+            False,
+            "probability_estimate",
+        )
 
     if name == "rbf_svm":
         from sklearn.svm import SVC
 
+        # Native SVC predictions remain authoritative. Expose margins as uncalibrated scores because
+        # this path deliberately avoids a separate probability calibration experiment.
         configuration = {
             "C": 1.0,
             "gamma": "scale",
@@ -350,6 +401,8 @@ def _sklearn_factory(
     if name == "mlp":
         from sklearn.neural_network import MLPClassifier
 
+        # Convert educational width/depth settings into scikit-learn's hidden-layer tuple while
+        # retaining the conceptual values in the surrounding model configuration.
         hidden_width = int(conceptual_parameters.get("hidden_width", 64))
         hidden_layers = int(conceptual_parameters.get("hidden_layers", 2))
         configuration = {

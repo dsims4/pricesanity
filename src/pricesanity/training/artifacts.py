@@ -69,6 +69,9 @@ def load_run_artifacts(
     """
 
     run_directory = Path(run_directory)
+
+    # Metadata is the entry point for a completed legacy training bundle; prediction and checkpoint
+    # paths are resolved only after this named mapping can be read.
     metadata_path = run_directory / "run_metadata.json"
     prediction_path = run_directory / "test_predictions.parquet"
     try:
@@ -90,6 +93,9 @@ def load_run_artifacts(
         "prediction_path",
         "model_state_sha256",
     }
+
+    # Require experiment boundary, market identity, and model linkage together before opening any
+    # heavyweight artifact named by the metadata.
     missing_metadata = required_metadata.difference(metadata)
     if missing_metadata:
         raise ValueError(
@@ -103,6 +109,8 @@ def load_run_artifacts(
     if metadata["session_timezone"] != config.data.session_timezone:
         raise ValueError("Run timezone does not match the project configuration.")
 
+    # Resolve both recorded paths beneath the moved bundle directory. Absolute version-one paths
+    # contribute only their basename and can never redirect reads to the original machine.
     checkpoint_path = resolve_run_artifact(run_directory, metadata["checkpoint_path"])
     prediction_path = resolve_run_artifact(run_directory, metadata["prediction_path"])
 
@@ -117,6 +125,9 @@ def load_run_artifacts(
         ("checkpoint_sha256", checkpoint_path),
     ):
         expected_checksum = metadata.get(field)
+
+        # Version two makes checksums mandatory; version one remains readable with an explicit
+        # integrity warning rather than pretending it supplied evidence it never recorded.
         if expected_checksum is None:
             if version == 2:
                 raise ValueError(f"Run metadata is missing {field}.")
@@ -152,6 +163,8 @@ def load_run_artifacts(
     if predictions.empty:
         raise ValueError("Test predictions cannot be empty.")
 
+    # Select the stable schema and normalize dates while preserving saved row order. Sorting would
+    # hide a bundle that no longer represents its original causal evaluation sequence.
     predictions = predictions.loc[:, PREDICTION_COLUMNS].copy()
     predictions["timestamp"] = pd.to_datetime(
         predictions["timestamp"],
@@ -171,6 +184,9 @@ def load_run_artifacts(
         raise ValueError("Test predictions must be uniquely identified and chronological.")
 
     expected_run_index = int(metadata["run_index"])
+
+    # Every row must identify the same walk-forward run and exact fitted checkpoint as the bundle
+    # metadata, preventing accidental concatenation across experiments.
     if not predictions["run_index"].eq(expected_run_index).all():
         raise ValueError("Test prediction run index does not match run metadata.")
     if not predictions["model_state_sha256"].eq(
@@ -179,6 +195,8 @@ def load_run_artifacts(
         raise ValueError("Test predictions identify different model weights.")
 
     valid_regimes = {"bull", "bear", "range"}
+
+    # Truth and both prediction heads share one stable vocabulary used by metrics and the GUI.
     regime_columns = (
         "predicted_current_regime",
         "predicted_anticipated_regime",
@@ -203,6 +221,9 @@ def load_run_artifacts(
             "anticipated_probability_range",
         ),
     )
+
+    # Validate each head independently as a complete normalized distribution. Finite values in
+    # individual columns are insufficient if their rows do not sum to one.
     for probability_columns in probability_groups:
         probability_values = predictions.loc[:, probability_columns].to_numpy(
             dtype=float
@@ -221,6 +242,8 @@ def load_run_artifacts(
     if not isinstance(checkpoint_experiment, dict):
         raise ValueError("Checkpoint experiment must be a named mapping.")
 
+    # Compare every experiment field available in the outer metadata with the checkpoint's embedded
+    # record. Optional older fields remain compatible without being inferred.
     for field in (
         "run_index", "training", "validation", "test", "instrument",
         "target_interval", "session_timezone", "best_epoch", "experiment_signature",
@@ -246,6 +269,8 @@ def load_run_artifacts(
             raise ValueError("Predicted regimes do not match their probability columns.")
 
     boundary = metadata["test"]
+
+    # The saved test boundary controls both expected session count and inclusive endpoint dates.
     if not isinstance(boundary, dict):
         raise ValueError("Run test boundary must be a named mapping.")
 
@@ -257,6 +282,9 @@ def load_run_artifacts(
         raise ValueError("Run test boundary is malformed.") from error
 
     session_dates = predictions["session_date"].drop_duplicates().tolist()
+
+    # Derive local session dates from UTC timestamps as an independent check that persisted date
+    # labels still match the configured exchange timezone.
     derived_dates = predictions["timestamp"].dt.tz_convert(config.data.session_timezone).dt.date
     if (
         expected_count <= 0
@@ -277,6 +305,8 @@ def load_run_artifacts(
         raise ValueError("Prediction identifiers do not match their timestamps and interval.")
 
     for head in ("current", "anticipated"):
+        # Checkpoint metric support proves that all official evaluated rows survived publication;
+        # identical-looking subsets must not masquerade as the full test population.
         if loaded_checkpoint.metadata["test"][head]["support"] != len(predictions):
             raise ValueError("Prediction count does not match checkpoint test support.")
 

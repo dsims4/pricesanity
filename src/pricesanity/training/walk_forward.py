@@ -92,6 +92,9 @@ def plan_walk_forward_runs(
         validation_session_count,
         test_session_count,
     )
+
+    # Every role needs at least one whole session; zero-length validation or test periods cannot
+    # support model selection or independent evaluation.
     if any(session_count <= 0 for session_count in role_counts):
         raise ValueError("Walk-forward role counts must all be positive.")
 
@@ -100,6 +103,9 @@ def plan_walk_forward_runs(
     training_growth_session_count = initial_training_session_count + validation_session_count
 
     session_dates = []
+
+    # Extract one canonical date per frame before constructing numeric boundaries. Session order is
+    # the chronology contract and must not be inferred from row timestamps later.
     for session in sessions:
         if session.empty or "session_date" not in session.columns:
             raise ValueError("Every walk-forward member must be a nonempty session.")
@@ -118,6 +124,9 @@ def plan_walk_forward_runs(
     # Keep the oldest history instead of sliding forward. Validation and test stay fixed in
     # size; only the historical training pool grows as more trading sessions become available.
     training_end_index = initial_training_session_count
+
+    # Emit only complete train/validation/test windows. Remaining history is reported explicitly
+    # rather than shortening the final validation or test population.
     while training_end_index + validation_session_count + test_session_count <= len(sessions):
         validation_end_index = training_end_index + validation_session_count
         test_end_index = validation_end_index + test_session_count
@@ -148,6 +157,7 @@ def plan_walk_forward_runs(
         training_end_index += training_growth_session_count
 
     if runs:
+        # Trailing count begins after the latest complete test block, not after its training prefix.
         trailing_session_count = len(sessions) - runs[-1].test.end_index
     else:
         trailing_session_count = len(sessions)

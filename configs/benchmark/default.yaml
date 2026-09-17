@@ -23,8 +23,12 @@ protocol:
   controlled_first_scored_candle_position: 15
   # Masked left padding lets every context score from the second candle, including early closes.
   best_of_family_first_scored_candle_position: 1
+  # Learning curves share one late-development evaluation block so increasing training history
+  # changes the fitted evidence without also changing which target candles receive scores.
   learning_curve_evaluation_start: 2100
   learning_curve_evaluation_end: 2190
+  # Each fold expands training forward and validates only on the immediately later block.
+  # No future fold may contribute preprocessing statistics or labels to an earlier fit.
   chronological_validation_folds:
     - training_end: 1000
       validation_start: 1000
@@ -45,12 +49,17 @@ protocol:
 
 tuning:
   primary_metric: mean_head_macro_f1
+  # Tuning uses one fixed seed to compare configurations economically. The frozen winner then
+  # receives three independent final seeds so its result does not depend on one lucky start.
   tuning_seed: 8675309
   final_seeds: [42, 137, 271]
+  # A single CPU worker makes runtime evidence reproducible and avoids nested library pools.
   cpu_worker_count: 1
   inference_timing_repetitions: 3
   pilot_max_estimated_hours: 24.0
   pilot_max_dense_memory_gib: 8.0
+  # Always include the established small-corpus Transformer as one candidate so a stochastic
+  # search cannot omit the strongest known architecture by chance.
   transformer_incumbent:
     context_length: 16
     model_dimension: 12
@@ -62,6 +71,7 @@ tuning:
     weight_decay: 0.01
     batch_size: 8
     epochs: 50
+  # Budgets limit completed Optuna candidates per family; parameter-free baselines need none.
   candidate_budgets:
     majority_class: 0
     previous_regime: 0

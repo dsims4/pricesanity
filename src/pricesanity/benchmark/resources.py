@@ -111,79 +111,206 @@ def _processor_name() -> str | None:
 
 def hardware_diagnostic() -> dict[str, Any]:
     """Describe installed build and detected devices without assuming CUDA means NVIDIA."""
-    report = hardware_fingerprint(device='cpu', cpu_worker_count=1)
-    report.update({'python_version': platform.python_version(),
-                   'wsl_kernel': platform.release() if 'microsoft' in platform.release().lower() else None})
+
+    # Start with the same evidence attached to benchmark timings so this diagnostic and
+    # persisted runs describe hardware using one vocabulary.
+    report = hardware_fingerprint(device="cpu", cpu_worker_count=1)
+    report.update(
+        {
+            "python_version": platform.python_version(),
+            "wsl_kernel": (
+                platform.release()
+                if "microsoft" in platform.release().lower()
+                else None
+            ),
+        }
+    )
+
     try:
         import torch
+
         cuda_available = torch.cuda.is_available()
         mps_available = torch.backends.mps.is_available()
-        report.update({'cuda_available': cuda_available, 'mps_available': mps_available,
-                       'pytorch_build_backend': 'ROCm' if torch.version.hip else 'CUDA' if torch.version.cuda else 'CPU',
-                       'pytorch_build': torch.__config__.show(),
-                       'torch_cpu_threads': torch.get_num_threads(),
-                       'detected_accelerator': torch.cuda.get_device_name() if cuda_available else 'Apple MPS' if mps_available else None})
+        if torch.version.hip:
+            build_backend = "ROCm"
+        elif torch.version.cuda:
+            build_backend = "CUDA"
+        else:
+            build_backend = "CPU"
+
+        # CUDA is also PyTorch's public device API for ROCm builds, so the build metadata—not
+        # the method name alone—determines which accelerator backend should be reported.
+        detected_accelerator = None
+        if cuda_available:
+            detected_accelerator = torch.cuda.get_device_name()
+        elif mps_available:
+            detected_accelerator = "Apple MPS"
+
+        report.update(
+            {
+                "cuda_available": cuda_available,
+                "mps_available": mps_available,
+                "pytorch_build_backend": build_backend,
+                "pytorch_build": torch.__config__.show(),
+                "torch_cpu_threads": torch.get_num_threads(),
+                "detected_accelerator": detected_accelerator,
+            }
+        )
     except ImportError:
-        report['detected_accelerator'] = None
-        report['pytorch_available'] = False
+        report["detected_accelerator"] = None
+        report["pytorch_available"] = False
+
     return report
 
 
-def smoke_devices(*, device: str = 'auto', compare: bool = False) -> dict[str, Any]:
+def smoke_devices(*, device: str = "auto", compare: bool = False) -> dict[str, Any]:
     """Measure tiny complete fits and verify saved inference, using synthetic inputs only."""
+
     import math
     import tempfile
     from pathlib import Path
     from time import perf_counter
+
     import numpy as np
     import torch
+
     from pricesanity.benchmark.registry import build_model, load_model
     from pricesanity.models.sequence import _resolve_device
 
-    detected = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
-    selected = detected if device == 'auto' else device
-    _resolve_device(selected)  # Explicit unavailable acceleration must fail, never fall back.
-    devices = list(dict.fromkeys(['cpu', selected])) if compare else [selected]
+    if torch.cuda.is_available():
+        detected = "cuda"
+    elif torch.backends.mps.is_available():
+        detected = "mps"
+    else:
+        detected = "cpu"
+
+    selected = detected if device == "auto" else device
+
+    # An explicitly requested accelerator must fail when unavailable rather than quietly
+    # producing CPU measurements labeled with the requested device.
+    _resolve_device(selected)
+    devices = list(dict.fromkeys(["cpu", selected])) if compare else [selected]
+
+    # Deterministic synthetic inputs isolate device plumbing from private market data and
+    # make repeated smoke runs exercise the same small workload.
     rng = np.random.default_rng(42)
     features = rng.normal(size=(32, 16, 4)).astype(np.float32)
     targets = np.arange(32) % 3
     rows = []
+
     for current_device in devices:
-        for family in ('tcn', 'gru', 'transformer'):
-            settings = {'epochs': 2, 'batch_size': 8}
-            if family == 'tcn': settings.update(channel_width=8,layer_count=2,kernel_size=3)
-            if family == 'gru': settings.update(hidden_size=8,layer_count=1)
-            if family == 'transformer': settings.update(model_dimension=12,layer_count=4,attention_head_count=4,feedforward_dimension=48,dropout=.1)
-            model = build_model(family,random_seed=42,parameters=settings,device=current_device)
+        for family in ("tcn", "gru", "transformer"):
+            settings = {"epochs": 2, "batch_size": 8}
+            if family == "tcn":
+                settings.update(channel_width=8, layer_count=2, kernel_size=3)
+            if family == "gru":
+                settings.update(hidden_size=8, layer_count=1)
+            if family == "transformer":
+                settings.update(
+                    model_dimension=12,
+                    layer_count=4,
+                    attention_head_count=4,
+                    feedforward_dimension=48,
+                    dropout=0.1,
+                )
+
+            # Each family receives the same seed, epochs, and batch size so this smoke test
+            # checks execution paths rather than claiming a tuned performance comparison.
+            model = build_model(
+                family,
+                random_seed=42,
+                parameters=settings,
+                device=current_device,
+            )
+
             with controlled_thread_budget(1):
                 # The unmeasured fit absorbs lazy backend initialization so startup overhead
                 # does not masquerade as a family or device training difference.
-                warmup = build_model(family,random_seed=42,parameters={**settings, 'epochs': 1},device=current_device)
-                warmup.fit(features,targets,(targets+1)%3)
+                warmup = build_model(
+                    family,
+                    random_seed=42,
+                    parameters={**settings, "epochs": 1},
+                    device=current_device,
+                )
+                warmup.fit(features, targets, (targets + 1) % 3)
                 warmup.synchronize()
                 del warmup
-                started=perf_counter()
-                model.fit(features,targets,(targets+1)%3)
+
+                started = perf_counter()
+                model.fit(features, targets, (targets + 1) % 3)
                 model.synchronize()
-                training_seconds=perf_counter()-started
+                training_seconds = perf_counter() - started
+
+                # Prime inference separately because lazy kernels should not count toward the
+                # measured steady-state prediction path.
                 model.predict_output(features)
                 model.synchronize()
-                started=perf_counter()
-                output=model.predict_output(features)
+                started = perf_counter()
+                output = model.predict_output(features)
                 model.synchronize()
-                inference_seconds=perf_counter()-started
-                with tempfile.TemporaryDirectory(prefix='pricesanity-device-') as temporary:
-                    path=Path(temporary)/'model.bin'; model.save(path)
-                    restored=load_model(family,str(path),device=current_device)
-                    reloaded=restored.predict_output(features)
-                    np.testing.assert_array_equal(output.predictions.current,reloaded.predictions.current)
-                    np.testing.assert_allclose(output.probabilities.current,reloaded.probabilities.current,rtol=1e-5,atol=1e-6)
-                    np.testing.assert_allclose(output.probabilities.anticipated,reloaded.probabilities.anticipated,rtol=1e-5,atol=1e-6)
-            rows.append({'model':family,'device':current_device,'training_seconds':training_seconds,
-                         'training_steps_per_second':math.ceil(len(features)/8)*2/training_seconds,
-                         'training_samples_per_second':len(features)*2/training_seconds,
-                         'inference_samples_per_second':len(features)/inference_seconds,
-                         'save_reload_verified':True})
-    return {'hardware':hardware_diagnostic(),'measurements':rows,
-            'accelerator_comparison':'measured' if len(devices)>1 else 'unavailable' if detected=='cpu' else 'not requested',
-            'note':'Synthetic 32 × 16 × 4; two epochs; batch 8; one CPU thread. One warm-up fit precedes timing; measured fit includes model setup. Timings are machine-specific.'}
+                inference_seconds = perf_counter() - started
+
+                # Reloading must preserve both heads, not merely prove that a model file can
+                # be deserialized without error.
+                with tempfile.TemporaryDirectory(
+                    prefix="pricesanity-device-"
+                ) as temporary:
+                    path = Path(temporary) / "model.bin"
+                    model.save(path)
+                    restored = load_model(
+                        family,
+                        str(path),
+                        device=current_device,
+                    )
+                    reloaded = restored.predict_output(features)
+                    np.testing.assert_array_equal(
+                        output.predictions.current,
+                        reloaded.predictions.current,
+                    )
+                    np.testing.assert_allclose(
+                        output.probabilities.current,
+                        reloaded.probabilities.current,
+                        rtol=1e-5,
+                        atol=1e-6,
+                    )
+                    np.testing.assert_allclose(
+                        output.probabilities.anticipated,
+                        reloaded.probabilities.anticipated,
+                        rtol=1e-5,
+                        atol=1e-6,
+                    )
+
+            training_steps = math.ceil(len(features) / 8) * 2
+            rows.append(
+                {
+                    "model": family,
+                    "device": current_device,
+                    "training_seconds": training_seconds,
+                    "training_steps_per_second": training_steps / training_seconds,
+                    "training_samples_per_second": (
+                        len(features) * 2 / training_seconds
+                    ),
+                    "inference_samples_per_second": (
+                        len(features) / inference_seconds
+                    ),
+                    "save_reload_verified": True,
+                }
+            )
+
+    if len(devices) > 1:
+        comparison_state = "measured"
+    elif detected == "cpu":
+        comparison_state = "unavailable"
+    else:
+        comparison_state = "not requested"
+
+    return {
+        "hardware": hardware_diagnostic(),
+        "measurements": rows,
+        "accelerator_comparison": comparison_state,
+        "note": (
+            "Synthetic 32 × 16 × 4; two epochs; batch 8; one CPU thread. "
+            "One warm-up fit precedes timing; measured fit includes model setup. "
+            "Timings are machine-specific."
+        ),
+    }

@@ -88,11 +88,15 @@ class RegimeTCN(nn.Module):
             "layer_count": layer_count,
             "regime_count": regime_count,
         }
+        # A one-step projection places every candle in the temporal channel space without
+        # mixing positions before the explicitly causal convolution stack begins.
         self.input_projection = nn.Conv1d(feature_count, channel_width, kernel_size=1)
         self.blocks = nn.ModuleList(
             CausalConvolutionBlock(channel_width, kernel_size, dilation=2**layer_index)
             for layer_index in range(layer_count)
         )
+        # The two annotation questions share learned price-action context but retain separate
+        # output heads so one label distribution cannot overwrite the other.
         self.current_head = nn.Linear(channel_width, regime_count)
         self.anticipated_head = nn.Linear(channel_width, regime_count)
 
@@ -158,6 +162,7 @@ class RegimeGRU(nn.Module):
             num_layers=layer_count,
             batch_first=True,
         )
+        # Both heads read the same causal recurrent state while learning independent regimes.
         self.current_head = nn.Linear(hidden_size, regime_count)
         self.anticipated_head = nn.Linear(hidden_size, regime_count)
 
@@ -214,6 +219,8 @@ class TorchSequenceAdapter:
         cpu_worker_count: int,
         standardize: bool = True,
     ) -> None:
+        # Keep construction metadata beside fitted state so saved adapters can rebuild the
+        # exact architecture without serializing Python construction callables.
         self.model_name = model_name
         self._model = model
         self.architecture_configuration = dict(architecture_configuration)
@@ -247,6 +254,8 @@ class TorchSequenceAdapter:
             current_targets,
             anticipated_targets,
         )
+        # Device resolution is explicit: a requested accelerator must never silently fall
+        # back to CPU and invalidate benchmark timing comparisons.
         device = _resolve_device(self.device_name)
         with _scoped_training_seed(self.random_seed, device):
             self._fit_seeded(
@@ -272,6 +281,8 @@ class TorchSequenceAdapter:
         # These statistics belong only to this training partition. Reusing them across folds
         # would leak later price distributions into an earlier validation experiment.
         valid_history_mask = _context_history_mask(context, features.shape[:2])
+        # Fit normalization on real candles only. Left padding represents unavailable history,
+        # not a market observation at price zero.
         real_features = features[valid_history_mask]
         self._feature_mean = (
             real_features.mean(axis=0, dtype=np.float64)
@@ -297,6 +308,8 @@ class TorchSequenceAdapter:
         current_tensor = torch.from_numpy(current_targets)
         anticipated_tensor = torch.from_numpy(anticipated_targets)
         generator = torch.Generator().manual_seed(self.random_seed)
+        # A private shuffle generator makes batch order part of the declared experiment seed
+        # instead of ambient global RNG state.
         loader = torch.utils.data.DataLoader(
             torch.utils.data.TensorDataset(
                 feature_tensor,
@@ -311,6 +324,9 @@ class TorchSequenceAdapter:
 
         self._model.to(device)
         self._model.train()
+
+        # AdamW applies the declared weight decay independently of the gradient update; every
+        # sequence family uses this same optimizer contract for a controlled training path.
         optimizer = torch.optim.AdamW(
             self._model.parameters(),
             lr=self.training_configuration.learning_rate,
@@ -346,6 +362,8 @@ class TorchSequenceAdapter:
 
         self._require_fitted()
         features = _validate_sequence_array(features)
+        # Apply the frozen training statistics before constructing inference batches; no
+        # evaluation observation may update the fitted distribution.
         standardized = torch.from_numpy(self._standardize(features))
         valid_history_mask = _context_history_mask(context, features.shape[:2])
         standardized[~torch.from_numpy(valid_history_mask)] = 0.0
@@ -355,6 +373,8 @@ class TorchSequenceAdapter:
         self._model.eval()
         current_probabilities = []
         anticipated_probabilities = []
+
+        # Inference batches bound device memory without changing the order of persisted rows.
         with torch.inference_mode():
             for batch_start in range(
                 0, len(standardized), self.training_configuration.batch_size
@@ -377,6 +397,8 @@ class TorchSequenceAdapter:
         _synchronize_device(device)
         current = torch.cat(current_probabilities).numpy().astype(np.float64)
         anticipated = torch.cat(anticipated_probabilities).numpy().astype(np.float64)
+        # Argmax classes and softmax estimates originate from the same forward pass, keeping
+        # saved predictions and displayed uncertainty internally consistent.
         return DualRegimeOutput(
             predictions=DualRegimePredictions(
                 current=current.argmax(axis=1).astype(np.int64),
@@ -474,6 +496,8 @@ class TorchSequenceAdapter:
         """Restore one benchmark sequence model without reading production checkpoints."""
 
         state = torch.load(Path(path), map_location="cpu", weights_only=True)
+        # Rebuild through the normal factory before loading weights so architecture validation
+        # is shared between fresh training and artifact restoration.
         if not isinstance(state, dict) or state.get("format_version") != 1:
             raise ValueError("Unsupported sequence benchmark artifact.")
         description = state["description"]
@@ -537,6 +561,8 @@ class TorchSequenceAdapter:
             output = self._model(features, valid_history_mask)
         else:
             output = self._model(features)
+        # Every input window ends at its target candle, so the final temporal position is the
+        # only position evaluated by the shared candle-level benchmark.
         return output.current_logits[:, -1], output.anticipated_logits[:, -1]
 
     def _standardize(self, features: np.ndarray) -> np.ndarray:
@@ -567,6 +593,8 @@ def build_sequence_adapter(
     """Translate conceptual sequence settings into one readable PyTorch architecture."""
 
     parameters = dict(parameters)
+    # Remove optimization controls before architecture construction so unused settings fail
+    # explicitly instead of being silently ignored by one model family.
     standardize = bool(parameters.pop("standardize", True))
     training_configuration = SequenceTrainingConfig(
         epochs=int(parameters.pop("epochs", 20)),
@@ -576,6 +604,9 @@ def build_sequence_adapter(
     )
     feature_count = int(parameters.pop("feature_count", 4))
     regime_count = int(parameters.pop("regime_count", 3))
+
+    # Construction happens inside an isolated RNG scope. Equal declared seeds therefore yield
+    # equal initial weights without perturbing random state owned by the benchmark executor.
     if name == "tcn":
         architecture = {
             "feature_count": feature_count,
@@ -613,6 +644,7 @@ def build_sequence_adapter(
     else:
         raise ValueError(f"Unknown sequence benchmark model: {name}")
     if parameters:
+        # Rejecting leftovers catches misspelled or family-inappropriate profile settings.
         raise ValueError(
             f"Unused {name} sequence parameters: " + ", ".join(sorted(parameters))
         )

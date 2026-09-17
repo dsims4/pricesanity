@@ -65,6 +65,8 @@ def classification_report(targets, predictions) -> dict:
 
     targets = np.asarray(targets, dtype=int)
     predictions = np.asarray(predictions, dtype=int)
+    # Encoding `(truth, prediction)` as one integer builds the full fixed-order matrix without
+    # allowing an absent regime to shrink or reorder the report.
     confusion = np.bincount(3 * targets + predictions, minlength=9).reshape(3, 3)
     per_class = {}
     for class_index, regime in enumerate(("bull", "bear", "range")):
@@ -73,6 +75,8 @@ def classification_report(targets, predictions) -> dict:
         predicted_count = int(confusion[:, class_index].sum())
         precision = true_positive / predicted_count if predicted_count else 0.0
         recall = true_positive / support if support else 0.0
+        # Zero-denominator classes remain explicit zero scores so macro-F1 keeps its declared
+        # three-regime meaning on small diagnostic partitions.
         per_class[regime] = {
             "support": support,
             "precision": precision,
@@ -97,6 +101,8 @@ def transition_report(session_targets, session_predictions) -> dict:
     """
 
     report = {}
+    # Three fixed radii expose how accuracy changes exactly at a human transition and in the
+    # immediately surrounding candles without choosing a favorable tolerance afterward.
     for radius in (0, 1, 2):
         selected_targets, selected_predictions = [], []
         other_targets, other_predictions = [], []
@@ -126,6 +132,8 @@ def transition_report(session_targets, session_predictions) -> dict:
 def build_loader(tensor_sessions, settings, *, shuffle):
     """Shuffle complete sessions only; keep natural early-close lengths and candle order."""
 
+    # A dedicated seeded generator makes training order reproducible while evaluation loaders
+    # preserve chronological session order.
     return torch.utils.data.DataLoader(
         TensorSessionDataset(tensor_sessions),
         batch_size=settings.batch_size,
@@ -144,6 +152,8 @@ def evaluate_labels(model, loader, standardizer, device, majority_classes) -> di
     predictions_by_head = {"current": [], "anticipated": []}
     with torch.inference_mode():
         for batch in loader:
+            # Padding supports variable early-close lengths, but only real positions enter
+            # candle-level metrics and transition neighborhoods.
             output = model(standardizer.transform(batch.features.to(device)),
                            batch.padding_mask.to(device))
             for head in targets_by_head:
@@ -155,6 +165,8 @@ def evaluate_labels(model, loader, standardizer, device, majority_classes) -> di
 
     report = {}
     for head in targets_by_head:
+        # Aggregate sessions for ordinary classification metrics while retaining the nested
+        # lists for boundary-safe transition analysis.
         targets = np.concatenate(targets_by_head[head])
         predictions = np.concatenate(predictions_by_head[head])
         report[head] = classification_report(targets, predictions)
@@ -255,6 +267,8 @@ def _validate_completed_experiment(
     identity_path = directory / EXPERIMENT_IDENTITY_FILENAME
     settings_path = directory / "settings.json"
 
+    # A reusable experiment must agree across its human-readable report, tensor state, settings,
+    # software/device context, and snapshot-bound identity sidecar.
     existing_report = _read_json_mapping(report_path, "experiment report")
     expected_settings = asdict(settings)
     configuration = TransformerConfig(
@@ -386,6 +400,8 @@ def _validate_completed_experiment(
         report_path=report_path,
         weights_path=weights_path,
     )
+    # New bundles require byte-level identity. Legacy bundles earn the same sidecar only after
+    # independently reproducing their preprocessing and recorded validation evidence.
     if identity_path.exists():
         recorded_identity = _read_json_mapping(identity_path, "artifact identity")
         if recorded_identity != expected_identity:
@@ -458,6 +474,8 @@ def run_experiment(
     """
 
     directory = output_directory / name
+    # report.json is published only for completed diagnostics, so its presence initiates strict
+    # reuse validation rather than another fit.
     if (directory / "report.json").is_file():
         return _validate_completed_experiment(
             name,
@@ -533,6 +551,8 @@ def run_experiment(
     best_epoch = 0
     history = []
     tiny_passed = False
+    # Candidate selection is based on validation loss. The diagnostic macro-F1 report remains
+    # an outcome, not an epoch-by-epoch test-tuned stopping signal.
     for epoch in range(1, settings.epochs + 1):
         training = _run_epoch(
             model, training_loader, standardizer, device=device,
@@ -553,6 +573,8 @@ def run_experiment(
         history.append(record)
 
         if selection_loss < best_loss:
+            # Copy tensors at the moment of improvement; a state_dict view would continue to
+            # mutate as later epochs update the live model.
             best_loss = selection_loss
             best_epoch = epoch
             best_state = deepcopy(model.state_dict())
@@ -575,8 +597,11 @@ def run_experiment(
         if epoch % 25 == 0:
             print(f"{name}: epoch {epoch}, training loss {training.total_loss:.4f}", flush=True)
         if not tiny and epoch - best_epoch >= settings.patience:
+            # Patience measures epochs since the last strict validation-loss improvement.
             break
 
+    # Every published diagnostic and score comes from the selected epoch, not the final loop
+    # state that happened to trigger early stopping.
     model.load_state_dict(best_state)
     training_evaluation = _run_epoch(
         model, training_evaluation_loader, standardizer, device=device,
@@ -754,13 +779,19 @@ def run_checklist(baseline, training_sessions, validation_sessions, tensor_cache
         })
 
     def compare(stage, reference, candidates):
+        """Run one controlled ablation stage and persist its selection decision."""
+
         nonlocal selected
+        # Include the established reference in every stage so a candidate must demonstrate a
+        # practical gain under the same frozen split rather than win in isolation.
         stage_reports = [reference]
         for name, candidate_settings in candidates:
             persist_progress(status="running", current_stage=stage)
             persist_ledger(active_stage=stage)
             existing = next((report for report in experiments.values()
                              if report["settings"] == asdict(candidate_settings)), None)
+            # Reuse identical settings reached through another stage; duplicate training would
+            # add runtime without adding an independent controlled comparison.
             report = existing or run_experiment(
                 name, training_sessions, validation_sessions, tensor_cache,
                 candidate_settings, output_directory, device,
@@ -810,6 +841,7 @@ def run_checklist(baseline, training_sessions, validation_sessions, tensor_cache
         return practical_selection
 
     settings = TuningSettings(**selected["settings"])
+    # Each block starts from the prior practical selection and changes only the named factor.
     compare("learning_rate", selected, [
         (f"learning_rate_{rate:g}", replace(settings, learning_rate=rate))
         for rate in (1e-4, 3e-4, 1e-3, 3e-3)
@@ -892,6 +924,8 @@ def run_checklist(baseline, training_sessions, validation_sessions, tensor_cache
 
     settings = TuningSettings(**selected["settings"])
     for head in ("current", "anticipated"):
+        # Single-head fits diagnose interference between tasks but cannot automatically replace
+        # the required dual-head production objective.
         persist_progress(status="running", current_stage=f"only_{head}")
         persist_ledger(active_stage=f"only_{head}")
         report = run_experiment(
@@ -955,6 +989,8 @@ def _load_frozen_tuning_split(snapshot_path, manifest_path):
     validation_dates = _manifest_dates(manifest, "validation_dates", 20)
     reserved_test_dates = _manifest_dates(manifest, "reserved_test_dates", 10)
     all_declared_dates = training_dates + validation_dates + reserved_test_dates
+    # Disjoint, ordered roles are checked before reading snapshot rows so a malformed manifest
+    # cannot redefine the intended temporal experiment.
     if len(set(all_declared_dates)) != len(all_declared_dates):
         raise ValueError("Tuning manifest roles must not share session dates.")
     if all_declared_dates != sorted(all_declared_dates):
@@ -979,6 +1015,8 @@ def _load_frozen_tuning_split(snapshot_path, manifest_path):
     unique_snapshot_dates = list(dict.fromkeys(snapshot_dates))
     expected_snapshot_dates = training_dates + validation_dates
     reserved_intersection = set(unique_snapshot_dates).intersection(reserved_test_dates)
+    # The tuning snapshot physically excludes test rows, making accidental test evaluation
+    # impossible inside diagnostic loaders rather than relying only on programmer discipline.
     if reserved_intersection:
         raise ValueError("Frozen tuning snapshot must not contain reserved test sessions.")
     if unique_snapshot_dates != expected_snapshot_dates:
@@ -991,6 +1029,7 @@ def _load_frozen_tuning_split(snapshot_path, manifest_path):
         str(session_date): session.reset_index(drop=True)
         for session_date, session in frozen.groupby("session_date", sort=True)
     }
+    # Rebuild roles by their manifest order instead of trusting Parquet group iteration alone.
     split = AnnotatedSessionSplit(
         training=tuple(grouped_sessions[day] for day in training_dates),
         validation=tuple(grouped_sessions[day] for day in validation_dates),
@@ -1106,6 +1145,8 @@ def main(arguments=None) -> int:
             raise ValueError("Tuning resume requires an existing output directory.")
     else:
         arguments.output_directory.mkdir(parents=True, exist_ok=False)
+    # The snapshot and manifest together freeze values and semantic role membership; sidecar
+    # hashes later bind both to every reusable candidate result.
     snapshot_path = arguments.output_directory / "tuning_snapshot.parquet"
     manifest_path = arguments.output_directory / "manifest.json"
     if arguments.resume:
@@ -1198,6 +1239,8 @@ def main(arguments=None) -> int:
     tensor_cache = {id(session): convert_session_to_tensors(
         session, timestamp_column=configuration.data.timestamp_column
     ) for session in tuning_sessions}
+    # Tensor conversion is deterministic and label-preserving, so cache it across candidates;
+    # fitted weights and training-only standardizers are still rebuilt per experiment.
     settings = TuningSettings(random_seed=configuration.project.random_seed)
     baseline = run_experiment(
         "baseline", split.training, split.validation, tensor_cache, settings,
