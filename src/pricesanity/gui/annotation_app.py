@@ -7,12 +7,14 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from PySide6.QtCore import QDate, QSignalBlocker, Qt
+from PySide6.QtCore import QDate, QPointF, QRectF, QSignalBlocker, Qt
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
     QFont,
     QKeySequence,
+    QPainter,
+    QPen,
     QShortcut,
     QTextCharFormat,
 )
@@ -28,6 +30,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpinBox,
+    QTableView,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -56,6 +59,38 @@ REGIME_KEYS = {regime: number_key for number_key, regime in REGIME_SHORTCUT_OPTI
 
 # Distinguish an untouched scalar from any of the three valid choices.
 UNSELECTED_REGIME_TEXT = "Not selected"
+
+
+class CalendarDateEdit(QDateEdit):
+    """Draw a calendar glyph in the existing popup-button subcontrol."""
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+
+        # Include the divider in the painted button width so the glyph is visually centered.
+        button_width = 25
+        icon_size = min(16.0, button_width - 6.0, self.height() - 10.0)
+        if icon_size <= 0:
+            return
+
+        button_left = self.width() - button_width
+        left = button_left + ((button_width - icon_size) / 2)
+        top = (self.height() - icon_size) / 2
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor("#345b72"), 1.5))
+        painter.drawRoundedRect(
+            QRectF(left, top + 2, icon_size, icon_size - 2),
+            1.5,
+            1.5,
+        )
+        painter.drawLine(QPointF(left, top + 6), QPointF(left + icon_size, top + 6))
+        painter.drawLine(QPointF(left + 4, top), QPointF(left + 4, top + 4))
+        painter.drawLine(
+            QPointF(left + icon_size - 4, top),
+            QPointF(left + icon_size - 4, top + 4),
+        )
+        painter.end()
 
 
 class AnnotationWindow(QMainWindow):
@@ -209,6 +244,7 @@ class AnnotationWindow(QMainWindow):
         # Keep the date range above the chart so changing the loaded sessions
         # does not require closing or restarting the application.
         date_range_layout = QHBoxLayout()
+        date_range_layout.setSpacing(CONTROL_SPACING)
         window_layout.addLayout(date_range_layout)
 
         # Calendar bounds describe the requested corpus, while the initial selection uses dates
@@ -240,7 +276,7 @@ class AnnotationWindow(QMainWindow):
         )
 
         date_range_layout.addWidget(QLabel("Starting date:"))
-        self.start_date_input = QDateEdit(first_available_qdate)
+        self.start_date_input = CalendarDateEdit(first_available_qdate)
         self.start_date_input.setCalendarPopup(True)
         self.start_date_input.setDisplayFormat("yyyy-MM-dd")
         self.start_date_input.setReadOnly(False)
@@ -258,7 +294,7 @@ class AnnotationWindow(QMainWindow):
         date_range_layout.addWidget(self.start_date_input)
 
         date_range_layout.addWidget(QLabel("Ending date:"))
-        self.end_date_input = QDateEdit(last_available_qdate)
+        self.end_date_input = CalendarDateEdit(last_available_qdate)
         self.end_date_input.setCalendarPopup(True)
         self.end_date_input.setDisplayFormat("yyyy-MM-dd")
         self.end_date_input.setReadOnly(False)
@@ -312,6 +348,7 @@ class AnnotationWindow(QMainWindow):
         )
 
         navigation_layout = QHBoxLayout()
+        navigation_layout.setSpacing(CONTROL_SPACING)
         window_layout.addLayout(navigation_layout)
 
         self.previous_candle_button = QPushButton("Previous candle · ←")
@@ -339,6 +376,7 @@ class AnnotationWindow(QMainWindow):
         # Show which trading date is active while the arrow identifies its
         # active candlestick below.
         session_information_layout = QHBoxLayout()
+        session_information_layout.setSpacing(TIGHT_SPACING)
         window_layout.addLayout(session_information_layout)
         self.session_position_label = QLabel("")
         session_information_layout.addWidget(self.session_position_label)
@@ -348,6 +386,8 @@ class AnnotationWindow(QMainWindow):
         # currently identifies.
         session_information_layout.addWidget(QLabel("Opening gap:"))
         self.opening_gap_value = QLabel("")
+        self.opening_gap_value.setProperty("role", "openingGap")
+        self.opening_gap_value.setProperty("gapDirection", "neutral")
         self.opening_gap_value.setFrameStyle(
             QFrame.Shape.Panel | QFrame.Shadow.Sunken
         )
@@ -429,6 +469,7 @@ class AnnotationWindow(QMainWindow):
         )
         for head, target_layout in head_layouts:
             buttons = QHBoxLayout()
+            buttons.setSpacing(TIGHT_SPACING)
             target_layout.addLayout(buttons)
             for key, regime in REGIME_SHORTCUT_OPTIONS.items():
                 button = QPushButton(f"{regime.value.title()} · {key}")
@@ -563,6 +604,7 @@ class AnnotationWindow(QMainWindow):
         # Customize the existing calendar so date selection keeps the field's configured bounds.
         calendar = date_input.calendarWidget()
         calendar.setMinimumWidth(300)
+        calendar.setMinimumHeight(320)
         calendar.setGridVisible(True)
         calendar.setHorizontalHeaderFormat(
             QCalendarWidget.HorizontalHeaderFormat.ShortDayNames
@@ -570,6 +612,13 @@ class AnnotationWindow(QMainWindow):
         calendar.setVerticalHeaderFormat(
             QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader
         )
+        calendar_view = calendar.findChild(
+            QTableView,
+            "qt_calendar_calendarview",
+        )
+        if calendar_view is None:
+            raise RuntimeError("Qt calendar day grid is unavailable.")
+        calendar_view.verticalHeader().setDefaultSectionSize(34)
         weekday_format = QTextCharFormat()
         weekday_format.setForeground(QColor("#345b72"))
         weekday_format.setFontWeight(int(QFont.Weight.DemiBold))
@@ -688,7 +737,7 @@ class AnnotationWindow(QMainWindow):
         visible_year: int,
         visible_month: int,
     ) -> None:
-        """Color visible dates without validated annotation sessions red.
+        """Visually mute dates without validated annotation sessions.
 
         Args:
             calendar: Qt calendar receiving per-date text formats.
@@ -940,7 +989,7 @@ class AnnotationWindow(QMainWindow):
         ]
         self.chart.set_regime_labels(
             current_regimes,
-            legend_title="Human current regime",
+            legend_title="human",
         )
 
     def _active_candlestick_id(self) -> str:
@@ -986,6 +1035,14 @@ class AnnotationWindow(QMainWindow):
             ]
         )
         self.opening_gap_value.setText(f"{active_opening_gap:+.3%}")
+        gap_direction = (
+            "positive"
+            if active_opening_gap > 0
+            else "negative" if active_opening_gap < 0 else "neutral"
+        )
+        self.opening_gap_value.setProperty("gapDirection", gap_direction)
+        self.opening_gap_value.style().unpolish(self.opening_gap_value)
+        self.opening_gap_value.style().polish(self.opening_gap_value)
 
         # Read only the active candle so navigation remains inexpensive even
         # when the annotation database eventually contains many sessions.

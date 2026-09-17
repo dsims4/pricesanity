@@ -6,7 +6,13 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from pricesanity.gui.theme import SECTION_SPACING, apply_theme, heading
+from pricesanity.gui.theme import (
+    CONTROL_SPACING,
+    SECTION_SPACING,
+    TIGHT_SPACING,
+    apply_theme,
+    heading,
+)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -271,6 +277,7 @@ class TestResultsWindow(QMainWindow):
         window_layout.addWidget(heading("Session results · READ ONLY"))
 
         navigation_layout = QHBoxLayout()
+        navigation_layout.setSpacing(CONTROL_SPACING)
         window_layout.addLayout(navigation_layout)
         self.previous_session_button = QPushButton("Previous session")
         self.previous_session_button.clicked.connect(
@@ -313,7 +320,7 @@ class TestResultsWindow(QMainWindow):
         evidence_layout = QGridLayout(evidence_frame)
         evidence_layout.setContentsMargins(12, 10, 12, 10)
         evidence_layout.setHorizontalSpacing(SECTION_SPACING)
-        evidence_layout.setVerticalSpacing(6)
+        evidence_layout.setVerticalSpacing(TIGHT_SPACING)
         self.candle_information = QLabel("")
         self.candle_information.setProperty("role", "muted")
         evidence_layout.addWidget(self.candle_information, 0, 0, 1, 3)

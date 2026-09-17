@@ -8,7 +8,17 @@ import json
 import numpy as np
 import pandas as pd
 
-from pricesanity.gui.theme import apply_theme, heading, REGIME_COLORS
+from pricesanity.gui.theme import (
+    CONTROL_SPACING,
+    PLOT_LABEL_SIZE,
+    PLOT_LEGEND_SIZE,
+    PLOT_TICK_SIZE,
+    PLOT_TITLE_SIZE,
+    REGIME_COLORS,
+    TIGHT_SPACING,
+    apply_theme,
+    heading,
+)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
@@ -165,6 +175,7 @@ class ModelComparisonWindow(QMainWindow):
         # Build the summary-only leaderboard independently from the detailed A/B view.
         leaderboard_page = QWidget()
         leaderboard_layout = QVBoxLayout(leaderboard_page)
+        leaderboard_layout.setSpacing(CONTROL_SPACING)
         self.leaderboard = QTableWidget(0, 16)
         self.leaderboard.setHorizontalHeaderLabels([
             "Track", "Model", "Configuration", "Seeds", "Current macro-F1",
@@ -190,6 +201,8 @@ class ModelComparisonWindow(QMainWindow):
         )
         self.family_filter.addItems(model_names)
         filters = QGridLayout()
+        filters.setHorizontalSpacing(CONTROL_SPACING)
+        filters.setVerticalSpacing(TIGHT_SPACING)
         filters.addWidget(self.track_filter, 0, 0)
         filters.addWidget(self.family_filter, 0, 1)
         self.completion_filter = QComboBox()
@@ -213,7 +226,10 @@ class ModelComparisonWindow(QMainWindow):
         # The comparison page owns selectors, a synchronized chart, and click-level evidence.
         comparison_page = QWidget()
         comparison_layout = QVBoxLayout(comparison_page)
+        comparison_layout.setSpacing(CONTROL_SPACING)
         selectors = QGridLayout()
+        selectors.setHorizontalSpacing(CONTROL_SPACING)
+        selectors.setVerticalSpacing(TIGHT_SPACING)
         comparison_layout.addLayout(selectors)
         selectors.addWidget(QLabel("Model A"), 0, 0)
         selectors.addWidget(QLabel("Model B"), 0, 1)
@@ -227,7 +243,12 @@ class ModelComparisonWindow(QMainWindow):
         self.comparison_chart_frame = QFrame()
         self.comparison_chart_frame.setProperty("role", "chart")
         chart_layout = QVBoxLayout(self.comparison_chart_frame)
-        chart_layout.setContentsMargins(2, 2, 2, 2)
+        chart_layout.setContentsMargins(
+            TIGHT_SPACING,
+            TIGHT_SPACING,
+            TIGHT_SPACING,
+            TIGHT_SPACING,
+        )
         self.comparison_chart = _ABSessionCanvas()
         chart_layout.addWidget(self.comparison_chart)
         comparison_layout.addWidget(self.comparison_chart_frame, stretch=10)
@@ -263,6 +284,7 @@ class ModelComparisonWindow(QMainWindow):
         )
         curve_page = QWidget()
         curve_layout = QVBoxLayout(curve_page)
+        curve_layout.setSpacing(CONTROL_SPACING)
         self.curve_filter = QComboBox()
         self.curve_filter.addItem("Choose a model")
         self.curve_filter.addItems(model_names)
@@ -623,7 +645,13 @@ class ModelComparisonWindow(QMainWindow):
         # an empty or shorter curve.
         axis = self.curve_canvas.figure.add_subplot(111)
         plot_learning_curve(pd.DataFrame(rows), axis=axis)
-        axis.set_title("Exploratory learning curve · fixed development evaluation")
+        axis.set_title(
+            "Exploratory learning curve · fixed development evaluation",
+            fontsize=PLOT_TITLE_SIZE,
+        )
+        axis.tick_params(axis="both", labelsize=PLOT_TICK_SIZE)
+        axis.xaxis.label.set_size(PLOT_LABEL_SIZE)
+        axis.yaxis.label.set_size(PLOT_LABEL_SIZE)
         self.curve_canvas.draw_idle()
 
     def _populate_learning_curves(self) -> None:
@@ -729,7 +757,15 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
 
         self.figure.clear()
         axes = self.figure.add_subplot(1, 1, 1)
-        axes.text(0.5, 0.5, message, ha="center", va="center", wrap=True)
+        axes.text(
+            0.5,
+            0.5,
+            message,
+            ha="center",
+            va="center",
+            wrap=True,
+            fontsize=PLOT_LABEL_SIZE,
+        )
         axes.set_axis_off()
         self.draw_idle()
 
@@ -780,11 +816,12 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
                 transform=price_axes.transAxes,
                 ha="center",
                 va="center",
+                fontsize=PLOT_LABEL_SIZE,
             )
-            price_axes.set_ylabel("Price unavailable")
+            price_axes.set_ylabel("Price unavailable", fontsize=PLOT_LABEL_SIZE)
         else:
             _draw_candles(price_axes, ohlc)
-            price_axes.set_ylabel("Price")
+            price_axes.set_ylabel("Price", fontsize=PLOT_LABEL_SIZE)
             price_axes.yaxis.tick_right()
             price_axes.yaxis.set_label_position("right")
         regime_columns = (
@@ -817,7 +854,12 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
         regime_axes.set_yticks(
             np.arange(len(regime_columns)), [row[2] for row in regime_columns]
         )
-        regime_axes.set_ylabel("Saved labels")
+        regime_axes.set_ylabel("Regime timelines", fontsize=PLOT_LABEL_SIZE)
+        regime_axes.tick_params(axis="both", labelsize=PLOT_TICK_SIZE)
+        regime_axes.grid(False)
+        for spine in regime_axes.spines.values():
+            spine.set_color("#9fb1bd")
+            spine.set_linewidth(1.0)
         regime_axes.legend(
             handles=[
                 Rectangle(
@@ -833,7 +875,7 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
             bbox_to_anchor=(1.01, 0.5),
             ncol=3,
             frameon=False,
-            fontsize=8,
+            fontsize=PLOT_LEGEND_SIZE,
         )
         for row_index, (values, column, _) in enumerate(regime_columns):
             # White separators mark the precise candle where each saved label sequence changes,
@@ -871,20 +913,26 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
             )
             axis_prefix = prefix + " " if separate_scores else ""
             uncertainty_label = "uncalibrated score" if is_score else "probability"
-            axis.set_ylabel(axis_prefix + uncertainty_label)
+            axis.set_ylabel(
+                axis_prefix + uncertainty_label,
+                fontsize=PLOT_LABEL_SIZE,
+            )
+            axis.tick_params(axis="both", labelsize=PLOT_TICK_SIZE)
             if not is_score:
                 axis.set_ylim(0, 1)
             axis.legend(
                 loc="center left",
                 bbox_to_anchor=(1.01, 0.5),
                 ncol=1,
-                fontsize=8,
+                fontsize=PLOT_LEGEND_SIZE,
             )
-        axes[-1].set_xlabel("Candle position")
+        axes[-1].set_xlabel("Candle position", fontsize=PLOT_LABEL_SIZE)
         session_date = str(first["session_date"].iloc[0])
         price_axes.set_title(
-            f"{session_date} — A: {first_name}\nB: {second_name}", fontsize=10
+            f"{session_date} — A: {first_name}\nB: {second_name}",
+            fontsize=PLOT_TITLE_SIZE,
         )
+        price_axes.tick_params(axis="both", labelsize=PLOT_TICK_SIZE)
         price_axes.grid(axis="y", alpha=0.2)
         self.draw_idle()
 
@@ -916,12 +964,17 @@ class _ConfusionCanvas(FigureCanvasQTAgg):
                             str(matrix[human, predicted]),
                             ha="center",
                             va="center",
+                            fontsize=PLOT_TICK_SIZE,
                         )
                 target.set_xticks(range(3), ["Bull", "Bear", "Range"])
                 target.set_yticks(range(3), ["Bull", "Bear", "Range"])
-                target.set_xlabel("Predicted")
-                target.set_ylabel("Human")
-                target.set_title(f"{model_label}: {head.title()}")
+                target.tick_params(axis="both", labelsize=PLOT_TICK_SIZE)
+                target.set_xlabel("Predicted", fontsize=PLOT_LABEL_SIZE)
+                target.set_ylabel("Human", fontsize=PLOT_LABEL_SIZE)
+                target.set_title(
+                    f"{model_label}: {head.title()}",
+                    fontsize=PLOT_TITLE_SIZE,
+                )
         self.draw_idle()
 
 

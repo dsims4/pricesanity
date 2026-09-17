@@ -21,6 +21,12 @@ PANEL_MARGIN = 20
 SPACING = CONTROL_SPACING
 MARGIN = PANEL_MARGIN
 PRIMARY_HEIGHT = 44
+PLOT_TITLE_SIZE = 14
+PLOT_LABEL_SIZE = 12
+PLOT_TICK_SIZE = 11
+PLOT_LEGEND_SIZE = 11
+PLOT_TIMELINE_SIZE = 10
+PLOT_TRACK_LABEL_SIZE = 8
 
 # Semantic roles let windows request emphasis without duplicating platform-specific styling.
 STYLE = """
@@ -34,6 +40,13 @@ QLabel[role="readonly"] {
     color: #264f67; background: #e5eff5; padding: 9px;
     border: 1px solid #9fb4c2; border-radius: 6px; font-weight: 550;
 }
+QLabel[role="openingGap"] {
+    padding: 4px 10px; border: 1px solid #aebfc9; border-radius: 5px;
+    font-size: 16px; font-weight: 600;
+}
+QLabel[gapDirection="positive"] { background: #edf8f4; color: #17634f; }
+QLabel[gapDirection="negative"] { background: #fbeff0; color: #963943; }
+QLabel[gapDirection="neutral"] { background: #f1f4f6; color: #425966; }
 QFrame[role="card"] {
     background: white; border: 2px solid #b7c6d0; border-radius: 8px;
 }
@@ -60,6 +73,9 @@ QComboBox, QDateEdit, QSpinBox {
 QComboBox::drop-down, QDateEdit::drop-down {
     width: 24px; border-left: 1px solid #aebfc9;
 }
+QDateEdit::drop-down:hover { background: #dce8f0; }
+QDateEdit::drop-down:pressed { background: #cbdce7; }
+QDateEdit::down-arrow { image: none; width: 0px; height: 0px; }
 QTabWidget::pane { background: white; border: 2px solid #b7c6d0; }
 QTabBar::tab { padding: 12px 18px; background: #e6ecf1; color: #344e60; font-weight: 550; }
 QTabBar::tab:selected { background: white; border-bottom: 3px solid #246ba0; }
@@ -100,11 +116,15 @@ QCalendarWidget QAbstractItemView:item:hover {
 QCalendarWidget QMenu {
     background: white; color: #172b3a; border: 1px solid #9fb1bd; padding: 4px;
 }
+QCalendarWidget QMenu::item { padding: 6px 18px 6px 10px; border-radius: 3px; }
+QCalendarWidget QMenu::item:selected { background: #dce8f0; color: #172b3a; }
 QToolButton#qt_calendar_monthbutton, QToolButton#qt_calendar_yearbutton {
     padding: 3px 8px; text-align: center;
 }
 QToolButton#qt_calendar_monthbutton::menu-indicator,
-QToolButton#qt_calendar_yearbutton::menu-indicator { image: none; width: 0px; }
+QToolButton#qt_calendar_yearbutton::menu-indicator {
+    image: none; width: 0px;
+}
 """
 
 
@@ -155,9 +175,9 @@ def apply_theme(window) -> None:
     compact = screen is not None and screen.availableGeometry().height() < 900
     if window.centralWidget() and window.centralWidget().layout():
         layout = window.centralWidget().layout()
-        margin = 4 if compact else PANEL_MARGIN
+        margin = TIGHT_SPACING if compact else PANEL_MARGIN
         layout.setContentsMargins(margin, margin, margin, margin)
-        layout.setSpacing(2 if compact else CONTROL_SPACING)
+        layout.setSpacing(TIGHT_SPACING if compact else CONTROL_SPACING)
 
     if compact and getattr(window, "chart", None) is not None:
         window.chart.setMinimumHeight(240)

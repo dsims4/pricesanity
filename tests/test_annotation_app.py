@@ -204,6 +204,61 @@ def test_cancel_pending_edit_never_deletes_persisted_annotation(
         window.close()
 
 
+@pytest.mark.parametrize(
+    ("key", "key_name"),
+    [
+        (Qt.Key.Key_Backspace, "Backspace"),
+        (Qt.Key.Key_Delete, "Delete"),
+    ],
+)
+def test_real_cancel_key_is_chart_scoped_and_preserves_saved_pair(
+    qt_application: QApplication,
+    candlestick_data: pd.DataFrame,
+    tmp_path,
+    key: Qt.Key,
+    key_name: str,
+) -> None:
+    """Real cancel-key events affect pending chart edits, never fields or SQLite."""
+
+    database_path = tmp_path / f"real-{key_name}.db"
+    saved = CandlestickAnnotation(
+        "candle-1",
+        MarketRegime.BEAR,
+        MarketRegime.RANGE,
+    )
+    save_annotation(database_path, saved)
+    window = AnnotationWindow(candlestick_data, database_path)
+    window.show()
+    try:
+        window.chart.setFocus(Qt.FocusReason.OtherFocusReason)
+        qt_application.processEvents()
+        QTest.keyClick(window.chart, Qt.Key.Key_1)
+        qt_application.processEvents()
+
+        assert window.selection_prompt.text().startswith("Step 2 of 2")
+        assert window.current_regime_value.text() == "1 - Bull"
+
+        window.start_date_input.setFocus(Qt.FocusReason.OtherFocusReason)
+        qt_application.processEvents()
+        QTest.keyClick(window.start_date_input, key)
+        qt_application.processEvents()
+
+        assert window.selection_prompt.text().startswith("Step 2 of 2")
+        assert window.annotation_store.load("candle-1") == saved
+
+        window.chart.setFocus(Qt.FocusReason.OtherFocusReason)
+        qt_application.processEvents()
+        QTest.keyClick(window.chart, key)
+        qt_application.processEvents()
+
+        assert window.selection_prompt.text().startswith("Step 1 of 2")
+        assert window.current_regime_value.text() == "2 - Bear"
+        assert window.anticipated_regime_value.text() == "3 - Range"
+        assert window.annotation_store.load("candle-1") == saved
+    finally:
+        window.close()
+
+
 def test_annotation_window_shortcuts_control_navigation(
     qt_application: QApplication,
     candlestick_data: pd.DataFrame,

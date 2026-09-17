@@ -14,7 +14,14 @@ from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QWidget
 
 
-from pricesanity.gui.theme import REGIME_COLORS
+from pricesanity.gui.theme import (
+    PLOT_LABEL_SIZE,
+    PLOT_LEGEND_SIZE,
+    PLOT_TICK_SIZE,
+    PLOT_TIMELINE_SIZE,
+    PLOT_TRACK_LABEL_SIZE,
+    REGIME_COLORS,
+)
 
 
 class CandlestickChart(FigureCanvasQTAgg):
@@ -38,10 +45,10 @@ class CandlestickChart(FigureCanvasQTAgg):
         # Give price geometry and categorical timelines separate aligned regions. This keeps
         # bars, their labels, and clock ticks from competing for the bottom of the price plot.
         figure = Figure(figsize=(12, 7))
-        grid = figure.add_gridspec(2, 1, height_ratios=(7, 1.6), hspace=0.06)
+        grid = figure.add_gridspec(2, 1, height_ratios=(9, 1), hspace=0.08)
         self.axes = figure.add_subplot(grid[0, 0])
         self.timeline_axes = figure.add_subplot(grid[1, 0], sharex=self.axes)
-        figure.subplots_adjust(left=0.14, right=0.94, top=0.90, bottom=0.12)
+        figure.subplots_adjust(left=0.13, right=0.95, top=0.88, bottom=0.15)
 
         # Retain the configured timestamp field and timezone for display labels.
         self.timestamp_column = timestamp_column
@@ -185,6 +192,7 @@ class CandlestickChart(FigureCanvasQTAgg):
                 active_high + arrow_offset,
             ),
             horizontalalignment="center",
+            fontsize=PLOT_TICK_SIZE,
             color="tab:blue",
             arrowprops={"arrowstyle": "-|>", "color": "tab:blue"},
         )
@@ -220,9 +228,10 @@ class CandlestickChart(FigureCanvasQTAgg):
         # edge, matching the layout commonly used for market charts.
         display_timezone = self.session_timezone.rsplit("/", 1)[-1].replace("_", " ")
         self._time_axis_label = f"Time of day ({display_timezone})"
-        self.axes.set_ylabel("Price")
+        self.axes.set_ylabel("Price", fontsize=PLOT_LABEL_SIZE)
         self.axes.yaxis.tick_right()
         self.axes.yaxis.set_label_position("right")
+        self.axes.tick_params(axis="y", labelsize=PLOT_TICK_SIZE)
         self.axes.grid(axis="y", alpha=0.2)
         self._configure_timeline_axes(track_count=0)
 
@@ -395,7 +404,7 @@ class CandlestickChart(FigureCanvasQTAgg):
                         names[regime],
                         ha="center",
                         va="center",
-                        fontsize=8,
+                        fontsize=PLOT_TIMELINE_SIZE,
                         fontweight="bold",
                         color=(
                             "#425966"
@@ -422,7 +431,7 @@ class CandlestickChart(FigureCanvasQTAgg):
             bbox_to_anchor=(0.52, 0.995),
             ncol=4,
             frameon=False,
-            fontsize=9,
+            fontsize=PLOT_LEGEND_SIZE,
         )
         self._regime_artists.append(legend)
         self.draw_idle()
@@ -432,7 +441,10 @@ class CandlestickChart(FigureCanvasQTAgg):
 
         self.timeline_axes.set_xlim(-1, len(self._highs))
         self.timeline_axes.set_xticks(self._tick_positions, self._tick_labels)
-        self.timeline_axes.set_xlabel(self._time_axis_label)
+        self.timeline_axes.set_xlabel(
+            self._time_axis_label,
+            fontsize=PLOT_LABEL_SIZE,
+        )
         self.timeline_axes.set_ylim(0, max(track_count, 1))
         if track_count:
             labels = [label for label, _ in reversed(self._regime_tracks)]
@@ -444,7 +456,8 @@ class CandlestickChart(FigureCanvasQTAgg):
             )
         else:
             self.timeline_axes.set_yticks([])
-        self.timeline_axes.tick_params(axis="both", labelsize=9)
+        self.timeline_axes.tick_params(axis="x", labelsize=PLOT_TICK_SIZE)
+        self.timeline_axes.tick_params(axis="y", labelsize=PLOT_TRACK_LABEL_SIZE)
         self.timeline_axes.grid(False)
         for spine in self.timeline_axes.spines.values():
             spine.set_color("#9fb1bd")
