@@ -6,16 +6,18 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from pricesanity.gui.theme import apply_theme, heading, REGIME_COLORS
+from pricesanity.gui.theme import SECTION_SPACING, apply_theme, heading
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -283,13 +285,15 @@ class TestResultsWindow(QMainWindow):
         self.stop_button.clicked.connect(self.close)
         navigation_layout.addWidget(self.stop_button)
 
-        self.session_information = QLabel("")
+        self.session_information = heading("", role="section")
         window_layout.addWidget(self.session_information)
-        self.starting_regime_label = QLabel("")
+        self.starting_regime_label = heading("", role="muted")
         window_layout.addWidget(self.starting_regime_label)
 
         self.chart_frame = QFrame(self)
         self.chart_frame.setFrameShape(QFrame.Shape.Box)
+        self.chart_frame.setProperty("role", "chart")
+        self.chart_frame.setLineWidth(2)
         chart_layout = QVBoxLayout(self.chart_frame)
         chart_layout.setContentsMargins(0, 0, 0, 0)
         self.chart = CandlestickChart(
@@ -297,29 +301,43 @@ class TestResultsWindow(QMainWindow):
             timestamp_column=timestamp_column,
             session_timezone=self.session_timezone,
         )
+        self.chart.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
         chart_layout.addWidget(self.chart)
-        window_layout.addWidget(self.chart_frame, stretch=1)
+        window_layout.addWidget(self.chart_frame, stretch=10)
 
-        model_information_layout = QHBoxLayout()
-        window_layout.addLayout(model_information_layout)
+        evidence_frame = QFrame()
+        evidence_frame.setProperty("role", "card")
+        evidence_layout = QGridLayout(evidence_frame)
+        evidence_layout.setContentsMargins(12, 10, 12, 10)
+        evidence_layout.setHorizontalSpacing(SECTION_SPACING)
+        evidence_layout.setVerticalSpacing(6)
         self.candle_information = QLabel("")
-        model_information_layout.addWidget(self.candle_information)
-        model_information_layout.addStretch()
+        self.candle_information.setProperty("role", "muted")
+        evidence_layout.addWidget(self.candle_information, 0, 0, 1, 3)
+        evidence_layout.addWidget(heading("MODEL", role="section"), 1, 0)
         self.model_current_label = QLabel("")
-        model_information_layout.addWidget(self.model_current_label)
+        self.model_current_label.setWordWrap(True)
+        evidence_layout.addWidget(self.model_current_label, 1, 1)
         self.model_anticipated_label = QLabel("")
-        model_information_layout.addWidget(self.model_anticipated_label)
-
-        human_information_layout = QHBoxLayout()
-        window_layout.addLayout(human_information_layout)
+        self.model_anticipated_label.setWordWrap(True)
+        evidence_layout.addWidget(self.model_anticipated_label, 1, 2)
         self.show_human_annotations = QCheckBox("Show human annotations")
-        self.show_human_annotations.toggled.connect(self._update_active_labels)
-        human_information_layout.addWidget(self.show_human_annotations)
+        self.show_human_annotations.toggled.connect(
+            self._set_human_annotations_visible
+        )
+        evidence_layout.addWidget(self.show_human_annotations, 2, 0)
         self.human_current_label = QLabel("Human current: Hidden")
-        human_information_layout.addWidget(self.human_current_label)
+        self.human_current_label.setWordWrap(True)
+        evidence_layout.addWidget(self.human_current_label, 2, 1)
         self.human_anticipated_label = QLabel("Human anticipated: Hidden")
-        human_information_layout.addWidget(self.human_anticipated_label)
-        human_information_layout.addStretch()
+        self.human_anticipated_label.setWordWrap(True)
+        evidence_layout.addWidget(self.human_anticipated_label, 2, 2)
+        evidence_layout.setColumnStretch(1, 1)
+        evidence_layout.setColumnStretch(2, 1)
+        window_layout.addWidget(evidence_frame)
 
         self.uncertainty_label = heading("", role="muted")
         window_layout.addWidget(self.uncertainty_label)
@@ -360,6 +378,7 @@ class TestResultsWindow(QMainWindow):
         self.chart.set_regime_change_markers(
             regime_change_markers, starting_regime=predicted_regimes[0]
         )
+        self._update_regime_timeline()
 
         if self.test_run.metadata.get("artifact_kind") == "benchmark":
             model_name = str(self.test_run.metadata.get("model_name", "Unknown model"))
@@ -428,15 +447,50 @@ class TestResultsWindow(QMainWindow):
 
         if self.show_human_annotations.isChecked():
             self.human_current_label.setText(
-                "Human current: " + str(active_candle["human_current_regime"]).title()
+                "Human current: "
+                + _display_regime(active_candle["human_current_regime"])
             )
             self.human_anticipated_label.setText(
                 "Human anticipated: "
-                + str(active_candle["human_anticipated_regime"]).title()
+                + _display_regime(active_candle["human_anticipated_regime"])
             )
         else:
             self.human_current_label.setText("Human current: Hidden")
             self.human_anticipated_label.setText("Human anticipated: Hidden")
+
+    def _set_human_annotations_visible(self) -> None:
+        """Synchronize detail text and read-only human timeline rows."""
+
+        self._update_active_labels()
+        self._update_regime_timeline()
+
+    def _update_regime_timeline(self) -> None:
+        """Map saved model and optional human labels to their exact candle positions."""
+
+        tracks = [
+            (
+                "MODEL · CURRENT",
+                _timeline_regimes(self.candlestick_data["predicted_current_regime"]),
+            )
+        ]
+        if self.show_human_annotations.isChecked():
+            tracks.extend(
+                [
+                    (
+                        "HUMAN · CURRENT",
+                        _timeline_regimes(
+                            self.candlestick_data["human_current_regime"]
+                        ),
+                    ),
+                    (
+                        "HUMAN · ANTICIPATED",
+                        _timeline_regimes(
+                            self.candlestick_data["human_anticipated_regime"]
+                        ),
+                    ),
+                ]
+            )
+        self.chart.set_regime_tracks(tracks)
 
     def move_candle(self, direction: int) -> None:
         """Move one candle, crossing test-session boundaries when necessary."""
@@ -469,3 +523,18 @@ class TestResultsWindow(QMainWindow):
             return
         self.active_session_position = requested_session
         self._load_active_session()
+
+
+def _timeline_regimes(values: pd.Series) -> tuple[str | None, ...]:
+    """Preserve row positions while representing absent saved labels explicitly."""
+
+    return tuple(
+        None if pd.isna(value) else str(value).lower()
+        for value in values
+    )
+
+
+def _display_regime(value: object) -> str:
+    """Format one saved human label without presenting missing data as a regime."""
+
+    return "Missing" if pd.isna(value) else str(value).title()

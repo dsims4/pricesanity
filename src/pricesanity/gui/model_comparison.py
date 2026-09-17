@@ -12,10 +12,12 @@ from pricesanity.gui.theme import apply_theme, heading, REGIME_COLORS
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QFrame,
     QGridLayout,
     QHeaderView,
     QLabel,
     QMainWindow,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -150,6 +152,12 @@ class ModelComparisonWindow(QMainWindow):
         layout = QVBoxLayout(central_widget)
         layout.addWidget(heading("Benchmark explorer · READ ONLY"))
         self.status_label = QLabel()
+        self.status_label.setWordWrap(True)
+        self.status_label.setProperty("role", "readonly")
+        self.status_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         layout.addWidget(self.status_label)
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, stretch=1)
@@ -216,8 +224,13 @@ class ModelComparisonWindow(QMainWindow):
         selectors.addWidget(QLabel("Session"), 0, 2)
         self.session_selector = QComboBox()
         selectors.addWidget(self.session_selector, 1, 2)
+        self.comparison_chart_frame = QFrame()
+        self.comparison_chart_frame.setProperty("role", "chart")
+        chart_layout = QVBoxLayout(self.comparison_chart_frame)
+        chart_layout.setContentsMargins(2, 2, 2, 2)
         self.comparison_chart = _ABSessionCanvas()
-        comparison_layout.addWidget(self.comparison_chart, stretch=1)
+        chart_layout.addWidget(self.comparison_chart)
+        comparison_layout.addWidget(self.comparison_chart_frame, stretch=10)
         self.candle_evidence = heading(
             "Click a candle to inspect both models' saved evidence.",
             role="muted",
@@ -254,9 +267,7 @@ class ModelComparisonWindow(QMainWindow):
         self.curve_filter.addItem("Choose a model")
         self.curve_filter.addItems(model_names)
         curve_layout.addWidget(self.curve_filter)
-        self.curve_canvas = FigureCanvasQTAgg(
-            Figure(figsize=(8, 4), tight_layout=True)
-        )
+        self.curve_canvas = FigureCanvasQTAgg(Figure(figsize=(8, 4), layout="constrained"))
         curve_layout.addWidget(self.curve_canvas, stretch=2)
         curve_layout.addWidget(self.learning_curves, stretch=1)
         self.curve_filter.currentTextChanged.connect(self._draw_learning_curve)
@@ -284,6 +295,8 @@ class ModelComparisonWindow(QMainWindow):
             self.model_a.setEnabled(False)
             self.model_b.setEnabled(False)
             self.session_selector.setEnabled(False)
+            self.tabs.setVisible(False)
+            layout.addStretch(1)
             return
 
         # Populate selectors only after the empty state exits, then choose two distinct defaults
@@ -676,8 +689,13 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
 
     def __init__(self) -> None:
         # Store only the currently displayed aligned session pair for click-to-candle lookup.
-        self.figure = Figure(figsize=(12, 7), tight_layout=True)
+        self.figure = Figure(figsize=(12, 7), layout="constrained")
         super().__init__(self.figure)
+        self.setMinimumHeight(460)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
 
         self._session_frames = None
         self.mpl_connect("button_press_event", self._select_candle)
@@ -811,8 +829,8 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
                 )
                 for name, color in REGIME_COLORS.items()
             ],
-            loc="upper center",
-            bbox_to_anchor=(0.5, 1.22),
+            loc="center left",
+            bbox_to_anchor=(1.01, 0.5),
             ncol=3,
             frameon=False,
             fontsize=8,
@@ -856,11 +874,16 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
             axis.set_ylabel(axis_prefix + uncertainty_label)
             if not is_score:
                 axis.set_ylim(0, 1)
-            axis.legend(loc="upper left", ncol=2 if separate_scores else 4, fontsize=8)
+            axis.legend(
+                loc="center left",
+                bbox_to_anchor=(1.01, 0.5),
+                ncol=1,
+                fontsize=8,
+            )
         axes[-1].set_xlabel("Candle position")
         session_date = str(first["session_date"].iloc[0])
         price_axes.set_title(
-            f"{session_date} — A: {first_name}\nB: {second_name}", fontsize=9
+            f"{session_date} — A: {first_name}\nB: {second_name}", fontsize=10
         )
         price_axes.grid(axis="y", alpha=0.2)
         self.draw_idle()
@@ -870,7 +893,7 @@ class _ConfusionCanvas(FigureCanvasQTAgg):
     """Show four readable matrices instead of nested-list text."""
 
     def __init__(self) -> None:
-        self.figure = Figure(figsize=(9, 6), tight_layout=True)
+        self.figure = Figure(figsize=(9, 6), layout="constrained")
         super().__init__(self.figure)
 
     def show_runs(self, first: ComparisonRun, second: ComparisonRun) -> None:

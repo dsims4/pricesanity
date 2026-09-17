@@ -60,10 +60,10 @@ def test_draw_session_displays_all_candles_and_active_arrow(
     assert len(chart.axes.texts) == 1
     assert chart.axes.texts[0].get_text() == "Active"
     assert chart.axes.texts[0].xy == (1, 103.0)
-    assert chart.axes.get_xlabel() == "Time of day (New York)"
+    assert chart.timeline_axes.get_xlabel() == "Time of day (New York)"
     assert chart.axes.get_ylabel() == "Price"
     assert chart.axes.yaxis.get_ticks_position() == "right"
-    assert chart.axes.get_xticklabels()[0].get_text() == "09:30"
+    assert chart.timeline_axes.get_xticklabels()[0].get_text() == "09:30"
     assert chart.focusPolicy() == Qt.FocusPolicy.StrongFocus
 
     chart.close()
@@ -150,20 +150,22 @@ def test_regime_strips_include_start_and_replace_without_vertical_lines(qt_appli
     chart.set_regime_change_markers([(2, "bear")], starting_regime="bull")
 
     # The first strip starts at candle zero's left edge and ends at the next regime's edge.
-    strips = list(chart.axes.patches)[4:]
+    strips = list(chart.timeline_axes.patches)
     assert [(strip.get_x(), strip.get_width()) for strip in strips] == [(-0.5, 2), (1.5, 2)]
     assert chart.regime_change_markers == ((2, "bear"),)
     assert len(chart.axes.lines) == 0
-    assert [label.get_text() for label in chart.axes.texts] == ["Active", "Bu", "Be", "Bear"]
-    assert chart.axes.texts[-1].xy == (2, 102.0)
-    assert chart.axes.get_xlabel() == "Time of day (Chicago)"
-    assert chart.axes.get_xticklabels()[0].get_text() == "08:30"
+    assert [label.get_text() for label in chart.axes.texts] == ["Active"]
+    assert chart.timeline_axes.get_xlabel() == "Time of day (Chicago)"
+    assert chart.timeline_axes.get_xticklabels()[0].get_text() == "08:30"
+    assert [label.get_text() for label in chart.timeline_axes.get_yticklabels()] == [
+        "MODEL · CURRENT"
+    ]
 
     # Refreshing a constant day replaces prior spans and retains its starting regime.
     chart.set_regime_change_markers([], starting_regime="range")
-    assert len(chart.axes.patches) == 5
-    assert chart.axes.patches[-1].get_width() == 4
-    assert [label.get_text() for label in chart.axes.texts] == ["Active", "Range"]
+    assert len(chart.timeline_axes.patches) == 1
+    assert chart.timeline_axes.patches[-1].get_width() == 4
+    assert [label.get_text() for label in chart.timeline_axes.texts] == ["Range"]
     assert chart.regime_change_markers == ()
     chart.close()
 
@@ -183,13 +185,20 @@ def test_regime_labels_leave_unannotated_candles_blank(qt_application) -> None:
         legend_title="Human current regime",
     )
 
-    strips = list(chart.axes.patches)[4:]
+    strips = list(chart.timeline_axes.patches)
     assert [(strip.get_x(), strip.get_width()) for strip in strips] == [
         (-0.5, 2),
+        (1.5, 1),
         (2.5, 1),
     ]
+    assert strips[1].get_hatch() == "///"
     assert chart.regime_labels == ("bull", "bull", None, "bear")
     assert chart.regime_change_markers == ()
-    assert chart.axes.get_legend().get_title().get_text() == "Human current regime"
+    assert [label.get_text() for label in chart.timeline_axes.get_yticklabels()] == [
+        "HUMAN CURRENT REGIME"
+    ]
+    assert {text.get_text() for text in chart.figure.legends[0].get_texts()} == {
+        "Bull", "Bear", "Range", "Missing"
+    }
 
     chart.close()

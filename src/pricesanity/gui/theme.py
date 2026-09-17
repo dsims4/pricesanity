@@ -13,26 +13,36 @@ from PySide6.QtWidgets import (
 # Share class order and meaning across annotation cards, label spans, and comparison bands.
 REGIME_COLORS = {"bull": "#17765e", "bear": "#b7444e", "range": "#946513"}
 REGIME_SYMBOLS = {"bull": "↗", "bear": "↘", "range": "↔"}
-SPACING = 12
-MARGIN = 20
+TIGHT_SPACING = 6
+CONTROL_SPACING = 10
+SECTION_SPACING = 16
+PANEL_MARGIN = 20
+# Backward-compatible names used by existing callers.
+SPACING = CONTROL_SPACING
+MARGIN = PANEL_MARGIN
 PRIMARY_HEIGHT = 44
 
 # Semantic roles let windows request emphasis without duplicating platform-specific styling.
 STYLE = """
 QMainWindow, QDialog { background: #f4f6f8; color: #172b3a; }
-QWidget { font-size: 13px; }
+QWidget { font-size: 14px; }
 QLabel { color: #172b3a; }
-QLabel[role="title"] { font-size: 24px; font-weight: 600; padding: 4px 0; }
-QLabel[role="muted"] { color: #506473; }
+QLabel[role="title"] { font-size: 24px; font-weight: 650; padding: 4px 0; }
+QLabel[role="section"] { font-size: 16px; font-weight: 600; }
+QLabel[role="muted"] { color: #506473; font-size: 13px; }
 QLabel[role="readonly"] {
-    color: #345b72; background: #e5eff5; padding: 8px; border-radius: 6px;
+    color: #264f67; background: #e5eff5; padding: 9px;
+    border: 1px solid #9fb4c2; border-radius: 6px; font-weight: 550;
 }
 QFrame[role="card"] {
-    background: white; border: 1px solid #d5dee5; border-radius: 8px;
+    background: white; border: 2px solid #b7c6d0; border-radius: 8px;
+}
+QFrame[role="chart"] {
+    background: white; border: 2px solid #9fb1bd; border-radius: 7px;
 }
 QPushButton, QToolButton {
-    background: white; color: #172b3a; border: 1px solid #b8c7d1;
-    border-radius: 6px; padding: 6px 12px; }
+    background: white; color: #172b3a; border: 2px solid #aebfc9;
+    border-radius: 6px; padding: 6px 12px; font-weight: 550; }
 QPushButton:hover, QToolButton:hover { background: #edf3f7; border-color: #66869b; }
 QPushButton:pressed, QToolButton:pressed { background: #dce8f0; }
 QPushButton:checked { background: #dceee9; border: 2px solid #17765e; font-weight: 600; }
@@ -46,21 +56,52 @@ QPushButton:disabled, QToolButton:disabled {
 }
 QComboBox, QDateEdit, QSpinBox {
     background: white; color: #172b3a; min-height: 32px;
-    padding: 4px 8px; border: 1px solid #b8c7d1; border-radius: 5px; }
-QTabWidget::pane { background: white; border: 1px solid #d5dee5; }
-QTabBar::tab { padding: 12px 18px; background: #e6ecf1; color: #344e60; }
+    padding: 4px 8px; border: 2px solid #aebfc9; border-radius: 5px; }
+QComboBox::drop-down, QDateEdit::drop-down {
+    width: 24px; border-left: 1px solid #aebfc9;
+}
+QTabWidget::pane { background: white; border: 2px solid #b7c6d0; }
+QTabBar::tab { padding: 12px 18px; background: #e6ecf1; color: #344e60; font-weight: 550; }
 QTabBar::tab:selected { background: white; border-bottom: 3px solid #246ba0; }
 QTableWidget {
-    background: white; alternate-background-color: #f3f6f8; gridline-color: #e1e7eb;
+    background: white; alternate-background-color: #f3f6f8;
+    gridline-color: #c8d4dc; border: 2px solid #b7c6d0;
 }
-QHeaderView::section { background: #e9eff3; color: #344e60; padding: 10px; border: none; }
+QHeaderView::section {
+    background: #e9eff3; color: #29485b; padding: 10px;
+    border: 0px; border-right: 1px solid #c3d0d8; border-bottom: 1px solid #aebfc9;
+    font-weight: 600;
+}
 QProgressBar {
-    border: 1px solid #c4d2dc; border-radius: 5px; background: #e8eff3;
+    border: 2px solid #afc0cb; border-radius: 5px; background: #e8eff3;
     min-height: 20px; text-align: center; color: #172b3a;
 }
 QProgressBar::chunk { background: #a7d5c7; border-radius: 4px; }
+QCheckBox { spacing: 8px; font-weight: 550; }
+QCheckBox::indicator { width: 18px; height: 18px; }
+QCalendarWidget {
+    background: white; border: 2px solid #9fb1bd; border-radius: 7px;
+}
+QCalendarWidget QWidget#qt_calendar_navigationbar {
+    background: #e5edf2; border-bottom: 1px solid #9fb1bd; padding: 6px;
+}
+QCalendarWidget QToolButton {
+    min-height: 30px; margin: 2px; padding: 3px 8px;
+    background: white; border: 1px solid #9fb1bd; font-weight: 600;
+}
+QCalendarWidget QAbstractItemView {
+    background: white; color: #172b3a; border: 1px solid #b7c6d0;
+    selection-background-color: #246ba0; selection-color: white;
+    outline: 0; alternate-background-color: white;
+}
+QCalendarWidget QAbstractItemView:item:hover {
+    background: #dce8f0; color: #172b3a;
+}
+QCalendarWidget QMenu {
+    background: white; color: #172b3a; border: 1px solid #9fb1bd; padding: 4px;
+}
 QToolButton#qt_calendar_monthbutton, QToolButton#qt_calendar_yearbutton {
-    padding: 0px; text-align: center;
+    padding: 3px 8px; text-align: center;
 }
 QToolButton#qt_calendar_monthbutton::menu-indicator,
 QToolButton#qt_calendar_yearbutton::menu-indicator { image: none; width: 0px; }
@@ -114,9 +155,9 @@ def apply_theme(window) -> None:
     compact = screen is not None and screen.availableGeometry().height() < 900
     if window.centralWidget() and window.centralWidget().layout():
         layout = window.centralWidget().layout()
-        margin = 8 if compact else MARGIN
+        margin = 4 if compact else PANEL_MARGIN
         layout.setContentsMargins(margin, margin, margin, margin)
-        layout.setSpacing(4 if compact else SPACING)
+        layout.setSpacing(2 if compact else CONTROL_SPACING)
 
     if compact and getattr(window, "chart", None) is not None:
         window.chart.setMinimumHeight(240)

@@ -258,8 +258,16 @@ def test_results_navigation_labels_timezone_and_read_only(bundle, monkeypatch) -
         assert window.chart.regime_change_markers == ((2, "range"),)
         assert "08:30 CST" in window.candle_information.text()
         assert window.starting_regime_label.text() == "Starting model regime: Bull"
+        assert window.chart.regime_tracks == (
+            ("MODEL · CURRENT", ("bull", "bull", "range")),
+        )
         window.show_human_annotations.setChecked(True)
         assert window.human_current_label.text() == "Human current: Bear"
+        assert window.chart.regime_tracks == (
+            ("MODEL · CURRENT", ("bull", "bull", "range")),
+            ("HUMAN · CURRENT", ("bear", "bear", "bear")),
+            ("HUMAN · ANTICIPATED", ("range", "range", "range")),
+        )
 
         window.move_candle(1)
         window.move_candle(1)
@@ -281,6 +289,43 @@ def test_results_navigation_labels_timezone_and_read_only(bundle, monkeypatch) -
         application.processEvents()
 
     assert file_sha256(bundle / "annotations.db") == database_checksum
+
+
+def test_human_timeline_preserves_missing_annotation_positions(bundle) -> None:
+    """Missing human labels remain neutral at their original candle indices."""
+
+    test_run = load_test_run(
+        bundle / "run",
+        bundle / "ohlc.parquet",
+        config=load_config("configs/default.yaml"),
+    )
+    test_run.candlesticks.loc[1, "human_current_regime"] = None
+    test_run.candlesticks.loc[2, "human_anticipated_regime"] = pd.NA
+    application = QApplication.instance() or QApplication([])
+    window = ResultsWindow(test_run)
+    try:
+        window.show_human_annotations.setChecked(True)
+
+        assert window.chart.regime_tracks[1] == (
+            "HUMAN · CURRENT",
+            ("bear", None, "bear"),
+        )
+        assert window.chart.regime_tracks[2] == (
+            "HUMAN · ANTICIPATED",
+            ("range", "range", None),
+        )
+        neutral_spans = [
+            patch
+            for patch in window.chart.timeline_axes.patches
+            if patch.get_hatch() == "///"
+        ]
+        assert sorted(patch.get_x() for patch in neutral_spans) == [0.5, 1.5]
+
+        window.move_candle(1)
+        assert window.human_current_label.text() == "Human current: Missing"
+    finally:
+        window.close()
+        application.processEvents()
 
 
 def test_resume_skips_only_valid_completed_runs(bundle, capsys) -> None:

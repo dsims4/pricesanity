@@ -35,11 +35,13 @@ class CandlestickChart(FigureCanvasQTAgg):
             session_timezone: Configured timezone used only for display labels.
         """
 
-        # Give this Qt widget its own figure so chart updates do not depend on global pyplot
-        # state.
-        figure = Figure(figsize=(12, 7), tight_layout=True)
-
-        self.axes = figure.add_subplot(1, 1, 1)
+        # Give price geometry and categorical timelines separate aligned regions. This keeps
+        # bars, their labels, and clock ticks from competing for the bottom of the price plot.
+        figure = Figure(figsize=(12, 7))
+        grid = figure.add_gridspec(2, 1, height_ratios=(7, 1.6), hspace=0.06)
+        self.axes = figure.add_subplot(grid[0, 0])
+        self.timeline_axes = figure.add_subplot(grid[1, 0], sharex=self.axes)
+        figure.subplots_adjust(left=0.14, right=0.94, top=0.90, bottom=0.12)
 
         # Retain the configured timestamp field and timezone for display labels.
         self.timestamp_column = timestamp_column
@@ -50,11 +52,15 @@ class CandlestickChart(FigureCanvasQTAgg):
         self._arrow_offset = 0.0
         self._regime_change_markers: tuple[tuple[int, str], ...] = ()
         self._regime_labels: tuple[str | None, ...] = ()
+        self._regime_tracks: tuple[tuple[str, tuple[str | None, ...]], ...] = ()
+        self._tick_positions: tuple[int, ...] = ()
+        self._tick_labels: tuple[str, ...] = ()
+        self._time_axis_label = ""
 
         super().__init__(figure)
 
         self.setParent(parent)
-        self.setMinimumHeight(280)
+        self.setMinimumHeight(360)
 
         # Allow a mouse click to give the chart keyboard focus so annotation
         # shortcuts remain inactive while the user is typing into date fields.
@@ -94,9 +100,13 @@ class CandlestickChart(FigureCanvasQTAgg):
 
         # Remove the previous chart before drawing the current session state.
         self.axes.clear()
+        self.timeline_axes.clear()
+        for legend in list(self.figure.legends):
+            legend.remove()
         self._regime_artists = []
         self._regime_change_markers = ()
         self._regime_labels = ()
+        self._regime_tracks = ()
 
         # Convert timestamps to session-local time only for readable axis labels;
         # their stored UTC values and annotation identifiers remain unchanged.
@@ -201,16 +211,20 @@ class CandlestickChart(FigureCanvasQTAgg):
         tick_labels = [
             display_timestamps.iloc[position].strftime("%H:%M") for position in tick_positions
         ]
-        self.axes.set_xticks(tick_positions, tick_labels)
+        self._tick_positions = tuple(tick_positions)
+        self._tick_labels = tuple(tick_labels)
+        self.axes.set_xticks(tick_positions)
+        self.axes.tick_params(axis="x", labelbottom=False)
 
         # Put session-local time below the chart and price values along its right
         # edge, matching the layout commonly used for market charts.
         display_timezone = self.session_timezone.rsplit("/", 1)[-1].replace("_", " ")
-        self.axes.set_xlabel(f"Time of day ({display_timezone})")
+        self._time_axis_label = f"Time of day ({display_timezone})"
         self.axes.set_ylabel("Price")
         self.axes.yaxis.tick_right()
         self.axes.yaxis.set_label_position("right")
         self.axes.grid(axis="y", alpha=0.2)
+        self._configure_timeline_axes(track_count=0)
 
         # Ask the existing Qt canvas to repaint after the chart has changed.
         self.draw_idle()
@@ -226,6 +240,12 @@ class CandlestickChart(FigureCanvasQTAgg):
         """Return the regime label displayed for each candle, including blank positions."""
 
         return self._regime_labels
+
+    @property
+    def regime_tracks(self) -> tuple[tuple[str, tuple[str | None, ...]], ...]:
+        """Return every candle-aligned timeline row in display order."""
+
+        return self._regime_tracks
 
     def set_regime_change_markers(
         self,
@@ -277,7 +297,8 @@ class CandlestickChart(FigureCanvasQTAgg):
                 ending_position - starting_position
             )
 
-        self._draw_regime_labels(regimes, legend_title="Model current regime")
+        self._regime_change_markers = tuple(validated_markers)
+        self._draw_regime_tracks((("MODEL · CURRENT", regimes),))
 
     def set_regime_labels(
         self,
@@ -304,107 +325,130 @@ class CandlestickChart(FigureCanvasQTAgg):
         if any(regime not in {None, "bull", "bear", "range"} for regime in regimes):
             raise ValueError("Regime labels contain an unknown regime.")
 
-        self._draw_regime_labels(regimes, legend_title=legend_title)
+        self._regime_change_markers = ()
+        self._draw_regime_tracks(((legend_title.upper(), regimes),))
 
-    def _draw_regime_labels(
+    def set_regime_tracks(
         self,
-        regimes: Sequence[str | None],
-        *,
-        legend_title: str,
+        tracks: Sequence[tuple[str, Sequence[str | None]]],
     ) -> None:
-        """Replace the existing overlay with exact contiguous labeled spans."""
+        """Show one or more exact candle-aligned model or human label timelines."""
 
-        # Replace overlays rather than accumulating artists after a save or session change.
-        for artist in self._regime_artists:
-            artist.remove()
+        if not self._highs:
+            raise ValueError("A session must be drawn before adding regime tracks.")
+        if not tracks:
+            raise ValueError("At least one regime track is required.")
+
+        validated = []
+        for label, regimes in tracks:
+            values = tuple(regimes)
+            if not label.strip():
+                raise ValueError("Regime track labels must be nonempty.")
+            if len(values) != len(self._highs):
+                raise ValueError("Regime tracks must match the displayed session length.")
+            if any(value not in {None, "bull", "bear", "range"} for value in values):
+                raise ValueError("Regime tracks contain an unknown regime.")
+            validated.append((label, values))
+        self._draw_regime_tracks(tuple(validated))
+
+    def _draw_regime_tracks(
+        self,
+        tracks: Sequence[tuple[str, Sequence[str | None]]],
+    ) -> None:
+        """Replace timeline rows with exact categorical spans, including missing labels."""
+
+        self.timeline_axes.clear()
+        for legend in list(self.figure.legends):
+            legend.remove()
         self._regime_artists = []
+        self._regime_tracks = tuple(
+            (label, tuple(regimes)) for label, regimes in tracks
+        )
+        self._regime_labels = self._regime_tracks[0][1]
+        self._configure_timeline_axes(track_count=len(tracks))
+        colors = {**REGIME_COLORS, None: "#d8e0e5"}
+        names = {"bull": "Bull", "bear": "Bear", "range": "Range", None: "Missing"}
 
-        regime_colors = REGIME_COLORS
-        short_labels = {"bull": "Bu", "bear": "Be", "range": "R"}
-        spans: list[tuple[int, int, str]] = []
-        change_markers: list[tuple[int, str]] = []
-        starting_position = 0
-        while starting_position < len(regimes):
-            regime = regimes[starting_position]
-            if regime is None:
-                starting_position += 1
-                continue
+        for track_index, (_, regimes) in enumerate(tracks):
+            row = len(tracks) - track_index - 1
+            start = 0
+            while start < len(regimes):
+                regime = regimes[start]
+                end = start + 1
+                while end < len(regimes) and regimes[end] == regime:
+                    end += 1
+                strip = Rectangle(
+                    (start - 0.5, row + 0.08),
+                    width=end - start,
+                    height=0.84,
+                    facecolor=colors[regime],
+                    edgecolor="white",
+                    linewidth=0.8,
+                    hatch="///" if regime is None else None,
+                )
+                self.timeline_axes.add_patch(strip)
+                self._regime_artists.append(strip)
+                if end - start >= 3:
+                    label = self.timeline_axes.text(
+                        (start + end - 1) / 2,
+                        row + 0.5,
+                        names[regime],
+                        ha="center",
+                        va="center",
+                        fontsize=8,
+                        fontweight="bold",
+                        color=(
+                            "#425966"
+                            if regime is None
+                            else "black" if regime == "range" else "white"
+                        ),
+                        clip_on=True,
+                    )
+                    self._regime_artists.append(label)
+                start = end
 
-            ending_position = starting_position + 1
-            while ending_position < len(regimes) and regimes[ending_position] == regime:
-                ending_position += 1
-            spans.append((starting_position, ending_position, regime))
-
-            # A change label requires two adjacent known regimes. A span after an
-            # annotation gap begins without inventing a transition across missing judgments.
-            if starting_position > 0 and regimes[starting_position - 1] is not None:
-                change_markers.append((starting_position, regime))
-            starting_position = ending_position
-
-        # A slim strip sits beneath the prices and retains exact candle-width boundaries.
-        for starting_position, ending_position, regime in spans:
-            strip = Rectangle(
-                (starting_position - 0.5, 0.015),
-                width=ending_position - starting_position,
-                height=0.035,
-                transform=self.axes.get_xaxis_transform(),
-                facecolor=regime_colors[regime],
-                edgecolor="white",
-                linewidth=0.5,
-                clip_on=True,
-            )
-            self.axes.add_patch(strip)
-            self._regime_artists.append(strip)
-
-            span_length = ending_position - starting_position
-            bar_label = self.axes.text(
-                (starting_position + ending_position - 1) / 2,
-                0.0325,
-                regime.title() if span_length >= 3 else short_labels[regime],
-                transform=self.axes.get_xaxis_transform(),
-                ha="center",
-                va="center",
-                fontsize=7,
-                fontweight="bold",
-                color="black" if regime == "range" else "white",
-                clip_on=True,
-            )
-            self._regime_artists.append(bar_label)
-
-        # Anchor each change label to its first candle. Alternating the text offset separates
-        # nearby changes without restoring vertical lines through the price chart.
-        for marker_index, (candle_position, regime) in enumerate(change_markers):
-            change_label = self.axes.annotate(
-                regime.title(),
-                xy=(candle_position, self._highs[candle_position]),
-                xytext=(0, 5 + 12 * (marker_index % 2)),
-                textcoords="offset points",
-                ha="center",
-                va="bottom",
-                fontsize=7,
-                color=regime_colors[regime],
-                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.8, "pad": 1},
-            )
-            self._regime_artists.append(change_label)
-
-        # A fixed legend identifies even one-candle spans without squeezing repeated text
-        # into the plot. Candle zero is a starting span, never a fabricated change marker.
-        if spans:
-            legend = self.axes.legend(
-                handles=[Rectangle((0, 0), 1, 1, facecolor=color,
-                                   label=f"{regime.title()} ({short_labels[regime]})")
-                         for regime, color in regime_colors.items()],
-                loc="upper left",
-                ncol=3,
-                frameon=False,
-                fontsize=9,
-                title=legend_title,
-            )
-            self._regime_artists.append(legend)
-
-        self._regime_change_markers = tuple(change_markers)
-        self._regime_labels = tuple(regimes)
+        legend = self.figure.legend(
+            handles=[
+                Rectangle(
+                    (0, 0), 1, 1,
+                    facecolor=colors[regime],
+                    edgecolor="#8799a5" if regime is None else "none",
+                    hatch="///" if regime is None else None,
+                    label=names[regime],
+                )
+                for regime in ("bull", "bear", "range", None)
+            ],
+            loc="upper center",
+            bbox_to_anchor=(0.52, 0.995),
+            ncol=4,
+            frameon=False,
+            fontsize=9,
+        )
+        self._regime_artists.append(legend)
         self.draw_idle()
+
+    def _configure_timeline_axes(self, *, track_count: int) -> None:
+        """Restore the shared candle/time scale after clearing timeline artists."""
+
+        self.timeline_axes.set_xlim(-1, len(self._highs))
+        self.timeline_axes.set_xticks(self._tick_positions, self._tick_labels)
+        self.timeline_axes.set_xlabel(self._time_axis_label)
+        self.timeline_axes.set_ylim(0, max(track_count, 1))
+        if track_count:
+            labels = [label for label, _ in reversed(self._regime_tracks)]
+            # During a redraw, use the incoming labels before _regime_tracks is replaced.
+            if len(labels) != track_count:
+                labels = [""] * track_count
+            self.timeline_axes.set_yticks(
+                [position + 0.5 for position in range(track_count)], labels
+            )
+        else:
+            self.timeline_axes.set_yticks([])
+        self.timeline_axes.tick_params(axis="both", labelsize=9)
+        self.timeline_axes.grid(False)
+        for spine in self.timeline_axes.spines.values():
+            spine.set_color("#9fb1bd")
+            spine.set_linewidth(1.0)
 
     def set_active_candlestick(self, position: int) -> None:
         """Move the marker without rebuilding the loaded session's artists.

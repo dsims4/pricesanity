@@ -1,6 +1,8 @@
 import numpy as np
+import pandas as pd
 import pytest
 
+from pricesanity.benchmark.artifacts import validate_benchmark_predictions
 from pricesanity.benchmark.registry import (
     build_model,
     get_model_family,
@@ -139,3 +141,57 @@ def test_estimator_adapter_saves_fitted_state_without_factory(tmp_path) -> None:
     loaded = SklearnDualHeadAdapter.load(path)
     assert loaded.predict(features).current.tolist() == [0] * 6
     assert loaded.predict(features).anticipated.tolist() == [1] * 6
+
+
+@pytest.mark.parametrize("classes", [(0, 1), (0, 2), (1, 2)])
+def test_binary_svc_scores_preserve_classes_and_serialize(tmp_path, classes):
+    """Absent classes have finite placeholders without changing native binary margins."""
+
+    features = np.array([[-2.0], [-1.0], [1.0], [2.0]], dtype=np.float32)
+    targets = np.array([classes[0], classes[0], classes[1], classes[1]])
+    model = build_model("rbf_svm", random_seed=42)
+    model.fit(features, targets, targets[::-1])
+    output = model.predict_output(features)
+    assert output.probabilities is None
+    assert output.uncertainty_kind == "uncalibrated_decision_score"
+
+    transformed, current, anticipated = model._prepare(features, None)
+    names = np.array(["bull", "bear", "range"])
+    absent = next(iter({0, 1, 2}.difference(classes)))
+    timestamps = pd.date_range("2026-01-05T14:30Z", periods=4, freq="5min")
+    rows = pd.DataFrame({
+        "candlestick_id": [f"binary-{i}" for i in range(4)],
+        "timestamp": timestamps,
+        "session_date": timestamps.date,
+        "session_index": 0,
+        "candle_position": np.arange(15, 19),
+        "uncertainty_kind": output.uncertainty_kind,
+    })
+    for head, estimator, truth in (
+        ("current", current, targets),
+        ("anticipated", anticipated, targets[::-1]),
+    ):
+        scores = getattr(output.scores, head)
+        predicted = getattr(output.predictions, head)
+        margins = estimator.decision_function(transformed)
+        assert scores.shape == (4, 3)
+        assert np.isfinite(scores).all()
+        np.testing.assert_allclose(scores[:, classes[0]], -margins)
+        np.testing.assert_allclose(scores[:, classes[1]], margins)
+        assert (scores[:, absent] < scores[:, classes].min(axis=1)).all()
+        np.testing.assert_array_equal(predicted, estimator.predict(transformed))
+        np.testing.assert_array_equal(predicted, truth)
+
+        rows[f"predicted_{head}_regime"] = names[predicted]
+        rows[f"human_{head}_regime"] = names[truth]
+        for index, name in enumerate(names):
+            rows[f"{head}_score_{name}"] = scores[:, index]
+            # Score-only artifacts deliberately leave probability columns unavailable.
+            rows[f"{head}_probability_{name}"] = np.nan
+
+    validated = validate_benchmark_predictions(rows)
+    path = tmp_path / "predictions.parquet"
+    validated.to_parquet(path, index=False)
+    pd.testing.assert_frame_equal(
+        validate_benchmark_predictions(pd.read_parquet(path)), validated
+    )

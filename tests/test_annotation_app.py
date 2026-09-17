@@ -128,9 +128,9 @@ def test_regime_hotkeys_save_then_restore_both_choices(
     assert saved_annotation.current_regime is MarketRegime.BULL
     assert saved_annotation.anticipated_regime is MarketRegime.BEAR
     assert window.chart.regime_labels == ("bull", None, None)
-    assert window.chart.axes.get_legend().get_title().get_text() == (
-        "Human current regime"
-    )
+    assert [label.get_text() for label in window.chart.timeline_axes.get_yticklabels()] == [
+        "HUMAN CURRENT REGIME"
+    ]
 
     # Returning to the completed candle restores both saved choices.
     window.move_to_previous_candlestick()
@@ -139,6 +139,69 @@ def test_regime_hotkeys_save_then_restore_both_choices(
     assert window.anticipated_regime_value.text() == "2 - Bear"
 
     window.close()
+
+
+@pytest.mark.parametrize("key_name", ["Backspace", "Delete"])
+def test_cancel_key_restores_unsaved_first_choice(
+    qt_application: QApplication,
+    candlestick_data: pd.DataFrame,
+    tmp_path,
+    key_name: str,
+) -> None:
+    """Backspace and Delete cancel the pending in-memory half without saving it."""
+
+    database_path = tmp_path / f"{key_name}.db"
+    window = AnnotationWindow(candlestick_data, database_path)
+    try:
+        window.regime_shortcuts["1"].activated.emit()
+        assert window.selection_prompt.text().startswith("Step 2 of 2")
+
+        window.cancel_pending_shortcuts[key_name].activated.emit()
+
+        assert window.selection_prompt.text().startswith("Step 1 of 2")
+        assert window.current_regime_value.text() == "Not selected"
+        assert window.anticipated_regime_value.text() == "Not selected"
+        assert not any(button.isChecked() for button in window.regime_buttons.values())
+        assert load_annotation(database_path, "candle-1") is None
+    finally:
+        window.close()
+
+
+def test_cancel_pending_edit_never_deletes_persisted_annotation(
+    qt_application: QApplication,
+    candlestick_data: pd.DataFrame,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Cancelling an edit restores the durable pair without making a database write."""
+
+    database_path = tmp_path / "persisted.db"
+    save_annotation(
+        database_path,
+        CandlestickAnnotation("candle-1", MarketRegime.BEAR, MarketRegime.RANGE),
+    )
+    window = AnnotationWindow(candlestick_data, database_path)
+    try:
+        monkeypatch.setattr(
+            window.annotation_store,
+            "save",
+            lambda annotation: pytest.fail("cancel attempted a database write"),
+        )
+        window.regime_shortcuts["1"].activated.emit()
+        window.cancel_pending_shortcuts["Delete"].activated.emit()
+
+        assert window.current_regime_value.text() == "2 - Bear"
+        assert window.anticipated_regime_value.text() == "3 - Range"
+        persisted = window.annotation_store.load("candle-1")
+        assert persisted == CandlestickAnnotation(
+            "candle-1", MarketRegime.BEAR, MarketRegime.RANGE
+        )
+
+        # With no pending edit, either key is a safe no-op.
+        window.cancel_pending_shortcuts["Backspace"].activated.emit()
+        assert window.current_regime_value.text() == "2 - Bear"
+    finally:
+        window.close()
 
 
 def test_annotation_window_shortcuts_control_navigation(
@@ -232,11 +295,17 @@ def test_date_inputs_are_compact_and_enforce_corpus_boundaries(
         assert date_input.maximumDate() == corpus_end
         assert calendar.minimumDate() == corpus_start
         assert calendar.maximumDate() == corpus_end
-        assert calendar.dateTextFormat(QDate(2026, 9, 7)).foreground().color() == QColor("red")
-        assert calendar.dateTextFormat(QDate(2026, 9, 8)).foreground().color() == QColor("red")
-        assert calendar.dateTextFormat(QDate(2026, 9, 9)).foreground().color() != QColor("red")
-        assert calendar.dateTextFormat(QDate(2026, 9, 10)).foreground().color() == QColor("red")
-        assert calendar.dateTextFormat(QDate(2026, 9, 11)).foreground().color() == QColor("red")
+        unavailable_color = QColor("#8796a1")
+        assert calendar.isGridVisible()
+        assert (
+            calendar.verticalHeaderFormat()
+            == calendar.VerticalHeaderFormat.NoVerticalHeader
+        )
+        assert calendar.dateTextFormat(QDate(2026, 9, 7)).foreground().color() == unavailable_color
+        assert calendar.dateTextFormat(QDate(2026, 9, 8)).foreground().color() == unavailable_color
+        assert calendar.dateTextFormat(QDate(2026, 9, 9)).foreground().color() != unavailable_color
+        assert calendar.dateTextFormat(QDate(2026, 9, 10)).foreground().color() == unavailable_color
+        assert calendar.dateTextFormat(QDate(2026, 9, 11)).foreground().color() == unavailable_color
 
         month_button = calendar.findChild(
             QToolButton,

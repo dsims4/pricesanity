@@ -191,8 +191,8 @@ def freeze_benchmark_snapshot_from_sessions(
                 "candlestick_id": str(row["candlestick_id"]),
                 "timestamp": timestamps.iloc[candle_position],
                 **{column: float(row[column]) for column in FEATURE_COLUMNS},
-                "current_target": int(row["current_target"]),
-                "anticipated_target": int(row["anticipated_target"]),
+                "current_target": row["current_target"],
+                "anticipated_target": row["anticipated_target"],
             })
 
     # Revalidate the fully flattened frame because cross-session uniqueness and finite features
@@ -435,13 +435,13 @@ def validate_snapshot_data(data: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("Benchmark snapshot identities must be uniquely chronological.")
     if not np.isfinite(data.loc[:, FEATURE_COLUMNS].to_numpy(dtype=float)).all():
         raise ValueError("Benchmark snapshot features must be finite.")
-    # Convert both target heads to the fixed bull/bear/range integer representation used by
-    # models and metrics, then check membership in that shared class vocabulary.
+    # Check numeric membership before integer conversion so fractional labels cannot be
+    # truncated into valid bull/bear/range classes, including during snapshot creation.
     for target in ("current_target", "anticipated_target"):
-        values = pd.to_numeric(data[target], errors="raise").to_numpy(dtype=np.int64)
-        if not np.isin(values, (0, 1, 2)).all():
+        values = pd.to_numeric(data[target], errors="raise")
+        if not values.isin((0, 1, 2)).all():
             raise ValueError("Benchmark snapshot contains an unknown regime target.")
-        data[target] = values
+        data[target] = values.to_numpy(dtype=np.int64)
     return data
 
 

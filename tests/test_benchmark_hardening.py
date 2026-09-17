@@ -254,6 +254,47 @@ def test_seed_aggregation_never_selects_one_lucky_seed() -> None:
         )
 
 
+@pytest.mark.parametrize("fingerprints, comparable", [
+    ([{"device": "cpu"}, {"device": "cpu"}], True),
+    ([{"device": "cpu"}, {"device": "mps"}], False),
+    ([{"device": "cpu"}, None], False),
+    ([None, None], False),
+])
+def test_seed_timing_requires_complete_compatible_hardware(fingerprints, comparable):
+    """Missing timing provenance must not remove valid predictive evidence."""
+
+    rows = pd.DataFrame([
+        {
+            "track": "controlled", "model_name": "mlp",
+            "model_configuration_sha256": "a", "representation_sha256": "b",
+            "test_session_ids_sha256": "c", "seed": seed,
+            "current_macro_f1": score, "anticipated_macro_f1": score,
+            "hardware_fingerprint": fingerprint,
+            "training_seconds": 2.0 * seed,
+            "inference_seconds": float(seed),
+            "inference_samples_per_second": 10.0 * seed,
+        }
+        for seed, score, fingerprint in zip((1, 2), (0.25, 0.75), fingerprints)
+    ])
+    result = aggregate_seed_results(
+        rows, stochastic_models=["mlp"], expected_stochastic_seed_count=2
+    ).iloc[0]
+    assert bool(result["hardware_compatible"]) is comparable
+    assert result["seed_count"] == 2
+    assert result["mean_head_macro_f1"] == pytest.approx(0.5)
+    assert result["individual_current_macro_f1"] == (0.25, 0.75)
+    for field, expected in (
+        ("training_seconds_mean", 3.0),
+        ("inference_seconds_mean", 1.5),
+        ("inference_samples_per_second_mean", 15.0),
+    ):
+        if comparable:
+            assert result[field] == pytest.approx(expected)
+        else:
+            assert pd.isna(result[field])
+    assert result["hardware_fingerprint"] == ({"device": "cpu"} if comparable else None)
+
+
 def test_session_bootstrap_is_reproducible_and_paired() -> None:
     first = pd.DataFrame({"session_index": [1, 2, 3], "macro_f1": [0.6, 0.7, 0.8]})
     second = pd.DataFrame({"session_index": [1, 2, 3], "macro_f1": [0.5, 0.6, 0.7]})

@@ -331,9 +331,11 @@ def _ordered_decision_scores(estimator: Any, features: np.ndarray) -> np.ndarray
         raw_scores = np.column_stack((-raw_scores, raw_scores))
     if raw_scores.shape != (len(features), len(classes)):
         raise ValueError("Estimator returned malformed class scores.")
-    scores = np.full((len(features), 3), np.nan, dtype=np.float64)
-    # NaN marks a class absent from this training fold; zero would be a meaningful margin and
-    # would incorrectly imply that the estimator evaluated the class.
+    # An absent class has no learned margin. Use a finite floor below this row's learned scores
+    # as a serialization placeholder, not a probability or measured margin. Native predict()
+    # remains authoritative; present-class margins are copied without modification.
+    absent_score = raw_scores.min(axis=1) - 1.0
+    scores = np.repeat(absent_score[:, None], 3, axis=1)
     for source_index, class_index in enumerate(classes):
         if class_index not in (0, 1, 2):
             raise ValueError("Estimator returned an unknown regime class.")

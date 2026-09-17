@@ -125,7 +125,8 @@ def aggregate_seed_results(
         )
 
         # Canonicalize available hardware evidence before comparing recorded environments.
-        # Legacy rows can omit this field; entirely absent fingerprints leave timing N/A.
+        # Every contributing run must provide it; missing evidence leaves timing N/A without
+        # excluding the run's predictive metrics.
         hardware_values = (
             group["hardware_fingerprint"]
             .dropna()
@@ -135,7 +136,7 @@ def aggregate_seed_results(
             else []
         )
         hardware_compatible = (
-            bool(hardware_values) and len(set(hardware_values)) == 1
+            len(hardware_values) == len(group) and len(set(hardware_values)) == 1
         )
         row["hardware_compatible"] = hardware_compatible
         row["hardware_fingerprint"] = (

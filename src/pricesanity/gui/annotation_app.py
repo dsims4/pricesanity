@@ -8,7 +8,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from PySide6.QtCore import QDate, QSignalBlocker, Qt
-from PySide6.QtGui import QColor, QCloseEvent, QKeySequence, QShortcut, QTextCharFormat
+from PySide6.QtGui import (
+    QColor,
+    QCloseEvent,
+    QFont,
+    QKeySequence,
+    QShortcut,
+    QTextCharFormat,
+)
 from PySide6.QtWidgets import (
     QCalendarWidget,
     QDateEdit,
@@ -29,7 +36,13 @@ from PySide6.QtWidgets import (
 from pricesanity.annotation.schema import CandlestickAnnotation, MarketRegime
 from pricesanity.annotation.store import AnnotationStore
 from pricesanity.gui.chart_widget import CandlestickChart
-from pricesanity.gui.theme import apply_theme, heading, regime_icon
+from pricesanity.gui.theme import (
+    CONTROL_SPACING,
+    TIGHT_SPACING,
+    apply_theme,
+    heading,
+    regime_icon,
+)
 
 # Use one key map for shortcut creation and visible selection feedback.
 REGIME_SHORTCUT_OPTIONS = {
@@ -185,6 +198,9 @@ class AnnotationWindow(QMainWindow):
         # one complete annotation.
         self.selected_current_regime: MarketRegime | None = None
         self.selected_anticipated_regime: MarketRegime | None = None
+        self._pending_previous_pair: tuple[
+            MarketRegime | None, MarketRegime | None
+        ] | None = None
 
         central_widget = QWidget(self)
         window_layout = QVBoxLayout(central_widget)
@@ -342,7 +358,8 @@ class AnnotationWindow(QMainWindow):
         # and contract with the main window.
         self.chart_frame = QFrame(self)
         self.chart_frame.setFrameShape(QFrame.Shape.Box)
-        self.chart_frame.setLineWidth(1)
+        self.chart_frame.setProperty("role", "chart")
+        self.chart_frame.setLineWidth(2)
         chart_layout = QVBoxLayout(self.chart_frame)
         chart_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -360,12 +377,13 @@ class AnnotationWindow(QMainWindow):
         # Keep both targets together at the lower-left so the chart retains
         # most of the horizontal space and the paired judgment reads naturally.
         regime_layout = QHBoxLayout()
-        regime_layout.setSpacing(16)
+        regime_layout.setSpacing(CONTROL_SPACING)
         window_layout.addLayout(regime_layout)
 
         # Place each value below its label so their left edges remain aligned.
         current_regime_layout = QVBoxLayout()
-        current_regime_layout.setSpacing(3)
+        current_regime_layout.setContentsMargins(12, 10, 12, 12)
+        current_regime_layout.setSpacing(TIGHT_SPACING)
         self.current_regime_label = heading("CURRENT REGIME", role="muted")
         current_regime_layout.addWidget(self.current_regime_label)
         self.current_regime_value = QLabel(UNSELECTED_REGIME_TEXT)
@@ -384,7 +402,8 @@ class AnnotationWindow(QMainWindow):
 
         # A separate classification head is planned for this future target.
         anticipated_regime_layout = QVBoxLayout()
-        anticipated_regime_layout.setSpacing(3)
+        anticipated_regime_layout.setContentsMargins(12, 10, 12, 12)
+        anticipated_regime_layout.setSpacing(TIGHT_SPACING)
         self.anticipated_regime_label = heading("ANTICIPATED REGIME", role="muted")
         anticipated_regime_layout.addWidget(self.anticipated_regime_label)
         self.anticipated_regime_value = QLabel(UNSELECTED_REGIME_TEXT)
@@ -508,6 +527,15 @@ class AnnotationWindow(QMainWindow):
             )
             self.regime_shortcuts[number_key] = regime_shortcut
 
+        # These shortcuts are chart-scoped, so editing a date field retains native delete
+        # behavior. They only undo an in-memory first choice and never touch SQLite.
+        self.cancel_pending_shortcuts: dict[str, QShortcut] = {}
+        for key_name in ("Backspace", "Delete"):
+            shortcut = QShortcut(QKeySequence(key_name), self.chart)
+            shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+            shortcut.activated.connect(self.cancel_pending_selection)
+            self.cancel_pending_shortcuts[key_name] = shortcut
+
     def _click_regime(self, head, regime, checked=False):
         if head == "current":
             self.is_selecting_current_regime = True
@@ -535,6 +563,26 @@ class AnnotationWindow(QMainWindow):
         # Customize the existing calendar so date selection keeps the field's configured bounds.
         calendar = date_input.calendarWidget()
         calendar.setMinimumWidth(300)
+        calendar.setGridVisible(True)
+        calendar.setHorizontalHeaderFormat(
+            QCalendarWidget.HorizontalHeaderFormat.ShortDayNames
+        )
+        calendar.setVerticalHeaderFormat(
+            QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader
+        )
+        weekday_format = QTextCharFormat()
+        weekday_format.setForeground(QColor("#345b72"))
+        weekday_format.setFontWeight(int(QFont.Weight.DemiBold))
+        for weekday in (
+            Qt.DayOfWeek.Monday,
+            Qt.DayOfWeek.Tuesday,
+            Qt.DayOfWeek.Wednesday,
+            Qt.DayOfWeek.Thursday,
+            Qt.DayOfWeek.Friday,
+            Qt.DayOfWeek.Saturday,
+            Qt.DayOfWeek.Sunday,
+        ):
+            calendar.setWeekdayTextFormat(weekday, weekday_format)
 
         # Keep the calendar's navigation bar visible so the month and year can
         # be selected through the field's dropdown instead of typed manually.
@@ -579,11 +627,6 @@ class AnnotationWindow(QMainWindow):
         year_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         year_button.setFixedWidth(75)
         year_editor.hide()
-
-        # The complete month and year button surfaces open their menus, so an
-        # extra indicator is unnecessary. Centering the text keeps both compact
-        # controls balanced in the calendar heading.
-
 
         # QDateEdit's date range prevents out-of-corpus cells from being
         # selected. Qt's disabled palette does not reliably color calendar
@@ -664,9 +707,14 @@ class AnnotationWindow(QMainWindow):
             visible_month,
             QDate(visible_year, visible_month, 1).daysInMonth(),
         ).addDays(7)
-        red_date_format = QTextCharFormat()
-        red_date_format.setForeground(QColor("red"))
+        unavailable_date_format = QTextCharFormat()
+        unavailable_date_format.setForeground(QColor("#8796a1"))
+        unavailable_date_format.setBackground(QColor("#edf1f3"))
         available_date_format = QTextCharFormat()
+        today_date_format = QTextCharFormat()
+        today_date_format.setForeground(QColor("#1e628f"))
+        today_date_format.setFontWeight(int(QFont.Weight.DemiBold))
+        today_date_format.setFontUnderline(True)
 
         visible_date = first_visible_date
 
@@ -677,10 +725,13 @@ class AnnotationWindow(QMainWindow):
                 minimum_date <= visible_date <= maximum_date
                 and visible_date.toPython() in selectable_dates
             )
-            calendar.setDateTextFormat(
-                visible_date,
-                available_date_format if is_available_session else red_date_format,
-            )
+            if not is_available_session:
+                date_format = unavailable_date_format
+            elif visible_date == QDate.currentDate():
+                date_format = today_date_format
+            else:
+                date_format = available_date_format
+            calendar.setDateTextFormat(visible_date, date_format)
 
             visible_date = visible_date.addDays(1)
 
@@ -791,6 +842,11 @@ class AnnotationWindow(QMainWindow):
 
         # The first number describes the regime after the active candlestick.
         if self.is_selecting_current_regime:
+            if self._pending_previous_pair is None:
+                self._pending_previous_pair = (
+                    self.selected_current_regime,
+                    self.selected_anticipated_regime,
+                )
             self.selected_current_regime = regime
 
             # Clear any old anticipated choice because changing the current regime
@@ -837,6 +893,7 @@ class AnnotationWindow(QMainWindow):
             return
 
         self._saved_ids.add(self._active_candlestick_id())
+        self._pending_previous_pair = None
         day = self.selected_session_dates[self.active_session_position]
         if self._session_ids_for_progress[day].issubset(self._saved_ids):
             self._completed_session_dates.add(day)
@@ -918,6 +975,9 @@ class AnnotationWindow(QMainWindow):
     def _load_active_annotation(self) -> None:
         """Display the saved choices for the active candlestick."""
 
+        # Moving or reloading abandons only the in-memory edit; persisted pairs are loaded below.
+        self._pending_previous_pair = None
+
         # Convert the stored ratio into a signed percentage that is easier to
         # interpret while reading the active candle's real price geometry.
         active_opening_gap = float(
@@ -948,7 +1008,6 @@ class AnnotationWindow(QMainWindow):
 
         self._annotation_load_failed = False
         self.statusBar().clearMessage()
-
         # Navigation always starts a fresh two-key entry if the user decides to
         # replace the choices currently displayed.
         self.is_selecting_current_regime = True
@@ -975,6 +1034,30 @@ class AnnotationWindow(QMainWindow):
         )
         self._update_selection_prompt()
 
+    def cancel_pending_selection(self) -> None:
+        """Restore the pre-edit pair when only an unsaved pair is pending."""
+
+        if self.is_selecting_current_regime or self._pending_previous_pair is None:
+            return
+
+        previous_current, previous_anticipated = self._pending_previous_pair
+        self.selected_current_regime = previous_current
+        self.selected_anticipated_regime = previous_anticipated
+        self.current_regime_value.setText(
+            self._format_regime_choice(previous_current)
+            if previous_current is not None
+            else UNSELECTED_REGIME_TEXT
+        )
+        self.anticipated_regime_value.setText(
+            self._format_regime_choice(previous_anticipated)
+            if previous_anticipated is not None
+            else UNSELECTED_REGIME_TEXT
+        )
+        self.is_selecting_current_regime = True
+        self._pending_previous_pair = None
+        self.statusBar().clearMessage()
+        self._update_selection_prompt()
+
     def _update_selection_prompt(self) -> None:
         """Show which scalar the next number key will fill."""
 
@@ -989,7 +1072,7 @@ class AnnotationWindow(QMainWindow):
             instruction = (
                 "Step 2 of 2: Press 1 for Bull, 2 for Bear, or 3 for Range "
                 "to choose the anticipated regime. This saves both choices "
-                "and moves to the next candle."
+                "and moves to the next candle. Backspace or Delete cancels this edit."
             )
 
         self.selection_prompt.setText(instruction)

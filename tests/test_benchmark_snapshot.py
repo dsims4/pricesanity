@@ -8,6 +8,7 @@ from pricesanity.benchmark.snapshot import (
     freeze_benchmark_snapshot_from_sessions,
     load_benchmark_snapshot,
     load_snapshot_sessions,
+    validate_snapshot_data,
 )
 from pricesanity.features import FEATURE_COLUMNS
 
@@ -58,3 +59,39 @@ def test_frozen_snapshot_is_immutable_after_live_sources_change(tmp_path) -> Non
         freeze_benchmark_snapshot_from_sessions(
             sessions, output_directory=snapshot.directory
         )
+
+
+@pytest.mark.parametrize("targets", [[0, 1, 2], [0.0, 1.0, 2.0], ["0", "1", "2"]])
+def test_snapshot_preserves_integer_target_representations(tmp_path, targets):
+    """Numeric strings and integral floats retain the same three-class contract."""
+
+    session = _sessions(count=1, length=3)[0]
+    for head in ("current", "anticipated"):
+        session[f"{head}_target"] = targets
+    snapshot = freeze_benchmark_snapshot_from_sessions(
+        [session], output_directory=tmp_path / "snapshot"
+    )
+    loaded = load_snapshot_sessions(snapshot)[0]
+    for head in ("current", "anticipated"):
+        np.testing.assert_array_equal(loaded[f"{head}_target"], [0, 1, 2])
+        assert loaded[f"{head}_target"].dtype == np.int64
+
+
+@pytest.mark.parametrize("head", ["current", "anticipated"])
+@pytest.mark.parametrize("invalid", [0.5, 1.5, 2.5, -1, 3, "1.5", np.nan, np.inf])
+def test_snapshot_rejects_invalid_targets_before_coercion(tmp_path, head, invalid):
+    """Both direct validation and publication reject original invalid target values."""
+
+    session = _sessions(count=1, length=3)[0]
+    session[f"{head}_target"] = [invalid, invalid, invalid]
+    data = session.rename(columns={"ts_event": "timestamp"}).assign(
+        session_index=0, candle_position=np.arange(3)
+    )
+    with pytest.raises(ValueError, match="unknown regime target"):
+        validate_snapshot_data(data)
+
+    # The publisher must not truncate labels while flattening sessions before validation.
+    destination = tmp_path / "snapshot"
+    with pytest.raises(ValueError, match="unknown regime target"):
+        freeze_benchmark_snapshot_from_sessions([session], output_directory=destination)
+    assert not destination.exists()

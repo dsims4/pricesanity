@@ -70,7 +70,9 @@ def test_theme_inherits_qt_platform_font(qt_application):
     """Avoid asking Qt to resolve a generic family that may not be installed."""
 
     assert "font-family" not in STYLE
-    assert "font-size: 13px" in STYLE
+    assert "font-size: 14px" in STYLE
+    assert 'QFrame[role="chart"]' in STYLE
+    assert "QCalendarWidget" in STYLE
 
 
 def test_annotation_fits_scaled_1080p(
@@ -102,6 +104,30 @@ def test_annotation_fits_scaled_1080p(
             button.minimumHeight() >= 44
             for button in window.findChildren(QPushButton)
         )
+    finally:
+        window.close()
+
+
+def test_chart_receives_resize_growth(
+    qt_application,
+    candlestick_data,
+    tmp_path,
+):
+    """The primary chart, rather than fixed controls, receives added window height."""
+
+    window = AnnotationWindow(candlestick_data, tmp_path / "resize.db")
+    try:
+        window.resize(1100, 700)
+        window.show()
+        qt_application.processEvents()
+        compact_height = window.chart_frame.height()
+
+        window.resize(1400, 900)
+        qt_application.processEvents()
+
+        assert compact_height >= 240
+        assert window.chart_frame.height() > compact_height
+        assert window.chart_frame.height() > window.current_card.height() * 2
     finally:
         window.close()
 
