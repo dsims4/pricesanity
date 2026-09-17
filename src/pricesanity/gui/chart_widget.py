@@ -263,6 +263,8 @@ class CandlestickChart(FigureCanvasQTAgg):
         if positions != sorted(set(positions)):
             raise ValueError("Regime changes must have unique chronological positions.")
 
+        # Expand change points into candle-aligned spans. An absent starting regime leaves the
+        # opening segment unknown rather than borrowing the first later prediction backward.
         regimes: list[str | None] = [None] * len(self._highs)
         span_starts = list(validated_markers)
         if starting_regime is not None:
@@ -293,6 +295,8 @@ class CandlestickChart(FigureCanvasQTAgg):
             ValueError: If labels do not match the displayed session.
         """
 
+        # Positional overlays must cover this exact chart population. Accepting a shorter list
+        # could make omitted candles look unannotated instead of exposing alignment damage.
         if not self._highs:
             raise ValueError("A session must be drawn before adding regime labels.")
         if len(regimes) != len(self._highs):

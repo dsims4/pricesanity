@@ -32,6 +32,8 @@ def completed_bundle(tmp_path_factory):
     """Train a tiny real bundle once; each mutation test receives its own copy."""
 
     directory = tmp_path_factory.mktemp("completed-test-run")
+    # The shorter final session exercises real-length artifact alignment and GUI navigation;
+    # these minimal synthetic days do not assert production schedule eligibility.
     timestamps = pd.DatetimeIndex([
         timestamp
         for session_date, length in zip(

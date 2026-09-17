@@ -22,6 +22,8 @@ from pricesanity.benchmark.metrics import (
 )
 
 
+# Persist one schema across families; separate uncertainty columns retain probability versus
+# margin semantics without forcing a model to invent unsupported probability estimates.
 BENCHMARK_PREDICTION_COLUMNS = (
     "candlestick_id",
     "timestamp",
@@ -359,6 +361,8 @@ def _save_benchmark_run_locked(
         # A new stochastic instance is not equivalent merely because it has the same settings.
         # Downstream output must come from the exact checkpoint that survived the crash.
         raise ValueError("Resumed model instance does not match the checkpointed fitted model.")
+
+    # Predictions form the next durable stage only after exact fitted-state agreement.
     if not _component_is_complete(paths.predictions, completed.get("predictions")):
         # Round-trip through Parquet validation before publication so serialization cannot alter
         # timestamps, labels, or uncertainty values without detection.
@@ -373,6 +377,7 @@ def _save_benchmark_run_locked(
         _write_json_atomic(paths.progress, progress)
     elif completed.get("predictions_source_model_state_sha256") != model_state_sha256:
         raise ValueError("Checkpointed predictions were not produced by this fitted model.")
+
     # Scientific metrics are derived from the exact persisted prediction rows. The caller's
     # efficiency evidence is retained, but cannot substitute results from another model pass.
     persisted_predictions = validate_benchmark_predictions(
@@ -526,6 +531,7 @@ def audit_benchmark_run(
     saved_scientific_metrics = dict(metrics)
     saved_scientific_metrics.pop("efficiency", None)
     recomputed.pop("efficiency", None)
+
     # Additive diagnostics do not make an older completed result unreadable. Audit every
     # field it actually recorded; new runs always include both transition anchors.
     for added in ("anticipated_transitions", "anticipated_transition_neighborhoods"):
@@ -624,6 +630,7 @@ def validate_benchmark_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
     predictions = predictions.loc[:, BENCHMARK_PREDICTION_COLUMNS].copy()
     if predictions.empty:
         raise ValueError("Benchmark predictions cannot be empty.")
+
     # Normalize temporal values while retaining caller order. Sorting here would hide a model that
     # emitted predictions for the correct candles in the wrong causal sequence.
     predictions["timestamp"] = pd.to_datetime(
@@ -655,7 +662,7 @@ def validate_benchmark_predictions(predictions: pd.DataFrame) -> pd.DataFrame:
 
     uncertainty_kinds = set(predictions["uncertainty_kind"])
 
-    # One run must use one uncertainty interpretation. Mixing calibrated probabilities with raw
+    # One run must use one uncertainty interpretation. Mixing probability estimates with raw
     # scores would make both row-level display and aggregate probability metrics ambiguous.
     if len(uncertainty_kinds) != 1:
         raise ValueError("One benchmark run must use one uncertainty-value contract.")
@@ -757,8 +764,8 @@ def _write_json_atomic(
 ) -> None:
     """Replace only the small progress checkpoint after durable component writes."""
 
-    # Exclusive manifests represent one-time state transitions. Check before writing, then check
-    # again before rename to close the race with a noncooperating writer.
+    # Exclusive manifests represent one-time state transitions. Recheck before publication;
+    # advisory locking remains responsible for coordinating cooperating writers.
     if exclusive and path.exists():
         raise FileExistsError(f"Artifact already exists: {path}")
     temporary_path = _temporary_path(path)
@@ -832,7 +839,7 @@ def _run_lock(lock_path: Path):
 
 
 def _git_identity(run_directory: Path) -> dict[str, Any]:
-    """Record revision state when the output directory belongs to a Git checkout."""
+    """Record revision state for the checkout containing the supplied source directory."""
 
     import subprocess
 

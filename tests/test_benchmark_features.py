@@ -18,6 +18,8 @@ def _session(session_index: int, length: int = 18) -> pd.DataFrame:
     """Build one traceable session whose values reveal any boundary crossing."""
 
     session_date = date(2026, 1, session_index + 2)
+    # Separate sessions by much more than the feature offsets so a borrowed neighboring candle
+    # is distinguishable from both a reordered time step and a swapped feature column.
     base = session_index * 1000
     return pd.DataFrame({
         "session_date": [session_date] * length,
@@ -89,6 +91,8 @@ def test_controlled_standardizer_counts_unique_candles_not_overlapping_windows()
     """An interior candle gets one vote even though it appears in many causal windows."""
 
     session = _session(0, length=18)
+    # An interior outlier appears in more windows than edge candles, exposing duplicated weight
+    # if preprocessing accidentally fits the window tensor instead of unique training candles.
     session.loc[8, "open_gap"] = 10_000.0
     standardizer = fit_unique_candle_standardizer(
         (session,), feature_columns=FEATURE_COLUMNS

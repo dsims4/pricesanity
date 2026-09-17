@@ -83,6 +83,7 @@ def format_uncertainty_values(row: Any, *, head: str) -> str:
     # read an arbitrary field from an artifact row.
     if head not in {"current", "anticipated"}:
         raise ValueError("Prediction head must be current or anticipated.")
+
     # Select values according to their native contract. Decision margins remain signed scores and
     # are never relabeled as calibrated certainty.
     values = ", ".join(
@@ -326,8 +327,11 @@ class ModelComparisonWindow(QMainWindow):
         # Registry stochasticity controls seed completeness. Partial groups stay visible as
         # explanations but receive no aggregate score or ranking.
         stochastic = [family.name for family in list_model_families() if family.stochastic]
-        aggregated, incomplete = partition_seed_results(raw, stochastic_models=stochastic,
-                                                       expected_stochastic_seed_count=3)
+        aggregated, incomplete = partition_seed_results(
+            raw,
+            stochastic_models=stochastic,
+            expected_stochastic_seed_count=3,
+        )
         if aggregated.empty:
             reasons = "; ".join(row["reason"] for row in incomplete)
             self.status_label.setText("Incomplete final seed set: " + reasons)
@@ -370,6 +374,7 @@ class ModelComparisonWindow(QMainWindow):
         # Compute baseline deltas only after strict seed aggregation, ensuring the reference and
         # compared configuration share an identical frozen target population.
         aggregated = add_baseline_deltas(aggregated)
+
         # Sorting during insertion moves a row after its first cell is written, separating
         # its model/configuration from its metrics. Populate complete rows before sorting.
         self.leaderboard.setSortingEnabled(False)
@@ -882,8 +887,13 @@ class _ConfusionCanvas(FigureCanvasQTAgg):
                 target.imshow(matrix, cmap="Blues")
                 for human in range(3):
                     for predicted in range(3):
-                        target.text(predicted, human, str(matrix[human, predicted]),
-                                    ha="center", va="center")
+                        target.text(
+                            predicted,
+                            human,
+                            str(matrix[human, predicted]),
+                            ha="center",
+                            va="center",
+                        )
                 target.set_xticks(range(3), ["Bull", "Bear", "Range"])
                 target.set_yticks(range(3), ["Bull", "Bear", "Range"])
                 target.set_xlabel("Predicted")
@@ -981,14 +991,18 @@ def _fill_table(table: QTableWidget, rows: list[tuple[Any, ...]]) -> None:
 def _draw_candles(axes: Any, candles: pd.DataFrame) -> None:
     """Draw the checksummed OHLC source behind saved prediction evidence."""
 
+    # Candle positions align prices with regime bands and click lookup. Timestamp equality
+    # has already been verified; elapsed wall time must not shift one panel against another.
     for position, candle in enumerate(candles.itertuples(index=False)):
         open_price = float(candle.open)
         high_price = float(candle.high)
         low_price = float(candle.low)
         close_price = float(candle.close)
+        # Monochrome price direction stays distinct from the annotated regime colors.
         color = "white" if close_price >= open_price else "black"
         axes.vlines(position, low_price, high_price, color="black", linewidth=0.8)
         bottom = min(open_price, close_price)
+        # Keep doji geometry visible even when the mathematical candle body has zero height.
         height = max(abs(close_price - open_price), 1e-9)
         axes.add_patch(
             Rectangle(

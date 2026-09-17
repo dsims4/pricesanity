@@ -10,7 +10,11 @@ import numpy as np
 
 @dataclass(frozen=True)
 class PredictionContext:
-    """Audit context needed only by reference baselines, never learned models."""
+    """Session/mask context plus prior human targets reserved for reference baselines.
+
+    Learned adapters consume validity masks to distinguish padding from real candles.
+    Previous human targets are diagnostic baseline inputs, never learned market features.
+    """
 
     session_indices: np.ndarray
     previous_current_targets: np.ndarray | None = None

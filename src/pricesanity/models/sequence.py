@@ -67,7 +67,11 @@ class CausalConvolutionBlock(nn.Module):
 
 
 class RegimeTCN(nn.Module):
-    """Classify both regimes with stacked causal dilated convolutions."""
+    """Classify both regimes with stacked causal dilated convolutions.
+
+    PyTorch supplies convolutions, activation, and linear heads. Price Sanity chooses their
+    residual arrangement, exponentially growing dilation, and absent-history clearing rule.
+    """
 
     def __init__(
         self,
@@ -81,6 +85,7 @@ class RegimeTCN(nn.Module):
         super().__init__()
         if min(feature_count, channel_width, kernel_size, layer_count, regime_count) <= 0:
             raise ValueError("TCN dimensions must be positive.")
+        # Save architecture choices separately from tensors so reload can reconstruct capacity.
         self.configuration = {
             "feature_count": feature_count,
             "channel_width": channel_width,
@@ -88,13 +93,17 @@ class RegimeTCN(nn.Module):
             "layer_count": layer_count,
             "regime_count": regime_count,
         }
+
         # A one-step projection places every candle in the temporal channel space without
         # mixing positions before the explicitly causal convolution stack begins.
         self.input_projection = nn.Conv1d(feature_count, channel_width, kernel_size=1)
+
+        # Doubling dilation expands historical reach without multiplying kernel parameters.
         self.blocks = nn.ModuleList(
             CausalConvolutionBlock(channel_width, kernel_size, dilation=2**layer_index)
             for layer_index in range(layer_count)
         )
+
         # The two annotation questions share learned price-action context but retain separate
         # output heads so one label distribution cannot overwrite the other.
         self.current_head = nn.Linear(channel_width, regime_count)
@@ -121,6 +130,7 @@ class RegimeTCN(nn.Module):
                 features.shape[:2], dtype=torch.bool, device=features.device
             )
         _validate_history_mask(valid_history_mask, features)
+        # Conv1d consumes channel-first values; expand the same candle mask over channels.
         mask = valid_history_mask.unsqueeze(1)
         hidden = self.input_projection(features.transpose(1, 2))
         hidden = hidden.masked_fill(~mask, 0.0)
@@ -129,6 +139,7 @@ class RegimeTCN(nn.Module):
             # Convolution bias can make padded positions nonzero. Clearing them after every
             # block ensures artificial history cannot propagate toward the target candle.
             hidden = hidden.masked_fill(~mask, 0.0)
+        # Restore the shared [sample, time, class] output convention before the two heads.
         hidden = hidden.transpose(1, 2)
         return SequenceModelOutput(
             current_logits=self.current_head(hidden),
@@ -137,7 +148,11 @@ class RegimeTCN(nn.Module):
 
 
 class RegimeGRU(nn.Module):
-    """Carry a recurrent state forward through each causal candle sequence."""
+    """Carry a recurrent state forward through each causal candle sequence.
+
+    PyTorch owns the gated recurrence. Price Sanity owns the forward-only chronology,
+    shared representation, two label heads, and packed-history handling in the adapter.
+    """
 
     def __init__(
         self,
@@ -156,6 +171,7 @@ class RegimeGRU(nn.Module):
             "layer_count": layer_count,
             "regime_count": regime_count,
         }
+        # The default unidirectional recurrence cannot read later candles into earlier states.
         self.gru = nn.GRU(
             input_size=feature_count,
             hidden_size=hidden_size,
@@ -189,13 +205,14 @@ class ExistingTransformerBridge(nn.Module):
         features: torch.Tensor,
         valid_history_mask: torch.Tensor | None = None,
     ) -> SequenceModelOutput:
-        """Reuse the tested causal mask with no padding inside fixed benchmark windows."""
+        """Reuse causal attention while masking absent history in benchmark windows."""
 
         if valid_history_mask is None:
             valid_history_mask = torch.ones(
                 features.shape[:2], dtype=torch.bool, device=features.device
             )
         _validate_history_mask(valid_history_mask, features)
+        # PyTorch uses True for exclusion, opposite to the representation's validity contract.
         padding_mask = ~valid_history_mask
         output = self.transformer(features, padding_mask)
         return SequenceModelOutput(
@@ -254,6 +271,7 @@ class TorchSequenceAdapter:
             current_targets,
             anticipated_targets,
         )
+
         # Device resolution is explicit: a requested accelerator must never silently fall
         # back to CPU and invalidate benchmark timing comparisons.
         device = _resolve_device(self.device_name)
@@ -265,6 +283,7 @@ class TorchSequenceAdapter:
                 context=context,
                 device=device,
             )
+        # Publish fitted state only after every epoch and queued device operation succeeds.
         self._fitted = True
 
     def _fit_seeded(
@@ -281,6 +300,7 @@ class TorchSequenceAdapter:
         # These statistics belong only to this training partition. Reusing them across folds
         # would leak later price distributions into an earlier validation experiment.
         valid_history_mask = _context_history_mask(context, features.shape[:2])
+
         # Fit normalization on real candles only. Left padding represents unavailable history,
         # not a market observation at price zero.
         real_features = features[valid_history_mask]
@@ -294,22 +314,27 @@ class TorchSequenceAdapter:
             if self.standardize
             else np.ones(features.shape[2], dtype=np.float64)
         )
+        # A constant training feature has no informative scale; one avoids division by zero
+        # while retaining centered values without learning anything from evaluation history.
         self._feature_scale = np.where(
             self._feature_scale > np.finfo(np.float64).eps,
             self._feature_scale,
             1.0,
         )
         standardized = self._standardize(features)
+
         # Padding is restored to zero after standardization. Otherwise `(0 - mean) / scale`
         # would turn absence into a plausible nonzero candle.
         standardized[~valid_history_mask] = 0.0
+
+        # Build aligned host tensors once; each batch transfers only its own rows to the device.
         feature_tensor = torch.from_numpy(standardized)
         mask_tensor = torch.from_numpy(valid_history_mask)
         current_tensor = torch.from_numpy(current_targets)
         anticipated_tensor = torch.from_numpy(anticipated_targets)
-        generator = torch.Generator().manual_seed(self.random_seed)
         # A private shuffle generator makes batch order part of the declared experiment seed
         # instead of ambient global RNG state.
+        generator = torch.Generator().manual_seed(self.random_seed)
         loader = torch.utils.data.DataLoader(
             torch.utils.data.TensorDataset(
                 feature_tensor,
@@ -332,6 +357,8 @@ class TorchSequenceAdapter:
             lr=self.training_configuration.learning_rate,
             weight_decay=self.training_configuration.weight_decay,
         )
+        # Epoch count is selected outside this fit by chronological folds. No internal random
+        # validation split or evaluation-dependent stopping rule is introduced here.
         for _ in range(self.training_configuration.epochs):
             for batch_features, batch_mask, batch_current, batch_anticipated in loader:
                 batch_features = batch_features.to(device)
@@ -341,15 +368,19 @@ class TorchSequenceAdapter:
                 current_logits, anticipated_logits = self._final_logits(
                     batch_features, batch_mask
                 )
+                # Equal head weights preserve the benchmark's symmetric two-task objective.
                 loss = (
                     torch.nn.functional.cross_entropy(current_logits, batch_current)
                     + torch.nn.functional.cross_entropy(
                         anticipated_logits, batch_anticipated
                     )
                 ) / 2.0
+
+                # Clear prior-batch gradients so each update corresponds to this batch alone.
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
+        # Complete queued accelerator work before the enclosing runner stops its fit timer.
         _synchronize_device(device)
 
     def predict_output(
@@ -371,6 +402,8 @@ class TorchSequenceAdapter:
         device = _resolve_device(self.device_name)
         self._model.to(device)
         self._model.eval()
+
+        # Keep both output streams in batch order for exact identity alignment in artifacts.
         current_probabilities = []
         anticipated_probabilities = []
 
@@ -453,6 +486,8 @@ class TorchSequenceAdapter:
         """Persist fitted state without changing the production Transformer format."""
 
         self._require_fitted()
+        # CPU tensors make the saved state reloadable on a different available device without
+        # changing the separate compatibility checks required for partial-run continuation.
         torch.save(
             {
                 "format_version": 1,
@@ -475,6 +510,8 @@ class TorchSequenceAdapter:
         import hashlib
 
         self._require_fitted()
+        # Hash names, dtype, shape, values, and preprocessing, not configuration alone: two
+        # stochastic fits with identical settings must still have distinct fitted identities.
         digest = hashlib.sha256()
         for name, tensor in sorted(self._model.state_dict().items()):
             values = tensor.detach().cpu().contiguous()
@@ -495,6 +532,8 @@ class TorchSequenceAdapter:
     ) -> "TorchSequenceAdapter":
         """Restore one benchmark sequence model without reading production checkpoints."""
 
+        # Decode onto CPU before selecting the requested runtime device. The state uses only
+        # primitive metadata and tensors, so unrestricted pickle loading is unnecessary.
         state = torch.load(Path(path), map_location="cpu", weights_only=True)
         # Rebuild through the normal factory before loading weights so architecture validation
         # is shared between fresh training and artifact restoration.
@@ -540,6 +579,7 @@ class TorchSequenceAdapter:
         """Return target-candle logits while excluding artificial history by architecture."""
 
         if isinstance(self._model, RegimeGRU):
+            # Packing needs host lengths and omits padded timesteps from recurrent updates.
             lengths = valid_history_mask.sum(dim=1).cpu()
             # pack_padded_sequence expects real values on the left. Move each right-aligned
             # suffix temporarily; only the final recurrent state is used for classification.
@@ -550,6 +590,7 @@ class TorchSequenceAdapter:
                 compact, lengths, batch_first=True, enforce_sorted=False
             )
             _, hidden = self._model.gru(packed)
+            # Use the top recurrent layer after each row's last real candle, not after padding.
             final_hidden = hidden[-1]
             return (
                 self._model.current_head(final_hidden),
@@ -592,7 +633,9 @@ def build_sequence_adapter(
 ) -> TorchSequenceAdapter:
     """Translate conceptual sequence settings into one readable PyTorch architecture."""
 
+    # Consume a private copy; removing constructor fields must not alter selection identity.
     parameters = dict(parameters)
+
     # Remove optimization controls before architecture construction so unused settings fail
     # explicitly instead of being silently ignored by one model family.
     standardize = bool(parameters.pop("standardize", True))
@@ -697,6 +740,7 @@ def _context_history_mask(
         raise ValueError("Prediction history mask does not match sequence features.")
     if np.any(mask[:, :-1] & ~mask[:, 1:]):
         raise ValueError("Prediction history mask must be right aligned.")
+    # Callers may clear artificial values; do not expose the representation's shared mask.
     return mask.copy()
 
 
@@ -754,7 +798,7 @@ class _scoped_training_seed:
 
 
 def _validate_sequence_array(features: np.ndarray) -> np.ndarray:
-    """Return an owned contiguous float32 sequence array suitable for PyTorch."""
+    """Return a contiguous float32 sequence array, reusing compatible input storage."""
 
     features = np.asarray(features, dtype=np.float32)
     if features.ndim != 3 or features.shape[0] == 0 or not np.isfinite(features).all():

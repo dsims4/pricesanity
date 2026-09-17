@@ -305,8 +305,13 @@ def _session_confusions(arrays: dict, session_ids: tuple) -> np.ndarray:
     # pooled macro-F1 after any whole-session bootstrap draw.
     matrices = np.zeros((len(session_ids), 2, 3, 3), dtype=np.int64)
     for head_index, head in enumerate(("current", "anticipated")):
-        np.add.at(matrices[:, head_index],
-                  (row_sessions, arrays[f"human_{head}"], arrays[f"predicted_{head}"]), 1)
+        # Indexed addition accumulates repeated class pairs; ordinary advanced-index += would
+        # not reliably count every candle when the same session/class index appears twice.
+        np.add.at(
+            matrices[:, head_index],
+            (row_sessions, arrays[f"human_{head}"], arrays[f"predicted_{head}"]),
+            1,
+        )
     return matrices
 
 
@@ -317,6 +322,10 @@ def _confusion_f1(matrices: np.ndarray) -> np.ndarray:
     # per-class F1 formula and preserves the shared zero-division policy for absent classes.
     true_positive = np.diagonal(matrices, axis1=-2, axis2=-1)
     denominator = matrices.sum(axis=-1) + matrices.sum(axis=-2)
-    per_class = np.divide(2.0 * true_positive, denominator,
-                          out=np.zeros_like(denominator, dtype=float), where=denominator != 0)
+    per_class = np.divide(
+        2.0 * true_positive,
+        denominator,
+        out=np.zeros_like(denominator, dtype=float),
+        where=denominator != 0,
+    )
     return per_class.mean(axis=-1)

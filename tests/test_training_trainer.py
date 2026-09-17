@@ -30,6 +30,8 @@ def _build_training_session(session_date: str, target: int) -> pd.DataFrame:
         periods=3,
         freq="5min",
     )
+    # Sign carries a learnable signal while constant wick features exercise zero-variance
+    # scaling. The tiny fixture tests plumbing rather than realistic market generalization.
     direction = 1.0 if target == 0 else -1.0
     return pd.DataFrame(
         {
@@ -74,6 +76,8 @@ def test_fit_feature_standardizer_uses_only_supplied_training_sessions() -> None
 def test_calculate_dual_regime_loss_ignores_padding() -> None:
     """Artificial target positions make no contribution to either loss."""
 
+    # Extreme padded logits would dominate an unmasked loss. Both real positions have the same
+    # class-relative logits, so their independent losses must match the one-candle reference.
     current_logits = torch.tensor(
         [[[4.0, 0.0, 0.0], [100.0, -100.0, -100.0]]],
         dtype=torch.float32,

@@ -32,6 +32,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Benchmark YAML configuration.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # Environment and infrastructure checks are usable without private data or a study. Keep
+    # their arguments separate from commands that publish or unlock scientific artifacts.
     subparsers.add_parser(
         "hardware",
         help="Inspect Python, WSL, PyTorch build, and detected accelerators.",
@@ -51,6 +54,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
     profile_parser.add_argument("--candles-per-session", type=int, default=81)
     profile_parser.add_argument("--artifact-root", type=Path)
     profile_parser.add_argument("--output", type=Path)
+
+    # Snapshot initialization and global freezing each have their own evidence requirements;
+    # neither accepts the model-specific execution options below.
     initialize_parser = subparsers.add_parser(
         "initialize", help="Freeze one immutable benchmark snapshot from current annotations."
     )
@@ -75,6 +81,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=Path("configs/benchmark/search_spaces.yaml"),
     )
 
+    # Share model, track, and device vocabulary across execution stages while limiting final
+    # confirmation and scaling acknowledgement to the stages that consume those decisions.
     for command, help_text in (
         ("tune", "Run or resume chronological development tuning."),
         ("pilot", "Run one candidate on one development fold."),
@@ -113,6 +121,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
                 "--confirm-final-holdout", action="store_true",
                 help="Explicitly unlock the frozen final holdout after development is complete.",
             )
+    # Planning surfaces validate configuration without invoking the executor or fitting models.
     plan_parser = subparsers.add_parser(
         "plan", help="Validate and print chronological session boundaries."
     )

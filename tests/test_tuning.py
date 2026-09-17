@@ -115,8 +115,11 @@ def test_context_padding_has_finite_gradients_and_preserves_absolute_positions()
     mask[1, 3:] = True
     output = model(features, mask)
     output.current_logits[~mask].sum().backward()
-    assert all(torch.isfinite(parameter.grad).all() for parameter in model.parameters()
-               if parameter.grad is not None)
+    assert all(
+        torch.isfinite(parameter.grad).all()
+        for parameter in model.parameters()
+        if parameter.grad is not None
+    )
 
     # Full context and sessions shorter than the limit retain the original forward path.
     original = RegimeTransformer(configuration)
@@ -124,8 +127,10 @@ def test_context_padding_has_finite_gradients_and_preserves_absolute_positions()
     model.eval()
     original.eval()
     with torch.inference_mode():
-        torch.testing.assert_close(model(features[:, :3], mask[:, :3]).current_logits,
-                                   original(features[:, :3], mask[:, :3]).current_logits)
+        torch.testing.assert_close(
+            model(features[:, :3], mask[:, :3]).current_logits,
+            original(features[:, :3], mask[:, :3]).current_logits,
+        )
 
 
 @pytest.mark.parametrize(

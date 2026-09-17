@@ -19,15 +19,21 @@ def main(arguments: Sequence[str] | None = None) -> int:
         default=Path("data/models/benchmark"),
     )
     parsed = parser.parse_args(arguments)
+
+    # Reuse the host Qt application for embedded launches; the window owns artifact summaries.
     application = QApplication.instance() or QApplication([])
     try:
+        # Startup needs summaries only, not every saved prediction table or fitted model.
         runs = load_comparison_runs(parsed.artifact_root)
     except ValueError as error:
         parser.error(str(error))
+
     window = ModelComparisonWindow(runs)
     window.setWindowTitle("Price Sanity Model Comparison")
     window.resize(1400, 900)
     window.show()
+
+    # Keep the window alive for navigation without invoking any training workflow.
     return application.exec()
 
 

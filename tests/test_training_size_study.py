@@ -14,6 +14,8 @@ from pricesanity.training import tuning
 def make_sessions():
     """Create enough chronological sessions to cover every fixed training prefix."""
 
+    # One row per session isolates membership from sequence length: 150 historical sessions
+    # precede the same 26-session holdout, and the opening feature reveals each prefix's mean.
     sessions = []
     for index, timestamp in enumerate(
         pd.date_range("2016-01-01", periods=176, tz="UTC")
@@ -207,6 +209,8 @@ def test_final_epoch_is_kept_even_when_reported_training_loss_increases(tmp_path
                     for name, value in model.state_dict().items()
                 }
             )
+            # Force worsening reported loss without changing real optimization. Saving the first
+            # state would reveal accidental best-loss selection in this fixed-duration study.
             return replace_metrics(metrics, total_loss=float(len(trained_states)))
         assert len(trained_states) == 2
         return metrics

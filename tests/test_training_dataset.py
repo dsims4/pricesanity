@@ -36,7 +36,8 @@ def _build_annotated_session(
         freq="5min",
     )
 
-    # Give every row the same production columns that tensor conversion expects.
+    # Distinct feature constants expose axis reordering, and different head labels expose target
+    # swaps. Varying candle_count exercises padding without changing the feature contract.
     return pd.DataFrame(
         {
             "session_date": [timestamps[0].date()] * candle_count,

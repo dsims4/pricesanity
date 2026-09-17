@@ -15,6 +15,7 @@ class EvaluationUniverse:
     first_scored_candle_position: int
 
     def __post_init__(self) -> None:
+        # Persistence needs a preceding candle; every context shares that target population.
         if self.first_scored_candle_position < 1:
             raise ValueError("Evaluation must begin after a prior candle exists.")
 
@@ -44,6 +45,7 @@ class RepresentationSpec:
     def to_dict(self) -> dict[str, object]:
         """Return a complete experiment-identity mapping."""
 
+        # Omitting padding or feature order would give incompatible model inputs one identity.
         return asdict(self)
 
 

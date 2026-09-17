@@ -1,4 +1,4 @@
-"""Budget and candidate-selection contracts for later chronological tuning."""
+"""Candidate-selection contracts for chronological development tuning."""
 
 from dataclasses import dataclass
 from typing import Any
@@ -16,6 +16,7 @@ class CandidateResult:
     def mean_macro_f1(self) -> float:
         """Average only chronological validation folds."""
 
+        # An unevaluated candidate has no score; zero would conceal missing validation.
         if not self.fold_macro_f1:
             raise ValueError("A tuning candidate requires validation-fold scores.")
         return sum(self.fold_macro_f1) / len(self.fold_macro_f1)
@@ -26,10 +27,12 @@ def select_best_candidate(
 ) -> CandidateResult:
     """Select validation macro-F1 with stable earliest-candidate tie breaking."""
 
+    # Unique candidate indices supply provenance and deterministic tie breaking.
     if not candidates:
         raise ValueError("Tuning requires at least one completed candidate.")
     if len({candidate.candidate_index for candidate in candidates}) != len(candidates):
         raise ValueError("Tuning candidate indices must be unique.")
+    # Equal scores prefer the earliest candidate rather than arbitrary container order.
     return max(
         candidates,
         key=lambda candidate: (candidate.mean_macro_f1, -candidate.candidate_index),

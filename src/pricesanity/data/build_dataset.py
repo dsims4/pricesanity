@@ -152,20 +152,17 @@ def build_dataset_from_exports(
             destination.parent.mkdir(parents=True, exist_ok=True)
             directory = staging.enter_context(
                 TemporaryDirectory(
-                prefix=".pricesanity-", dir=destination.parent
-            )
+                    prefix=".pricesanity-", dir=destination.parent
+                )
             )
             temporary_path = Path(directory) / destination.name
             table.to_parquet(temporary_path, index=False)
             staged_paths.append((temporary_path, destination))
 
-        # Recheck before publication in case an output appeared during staging.
+        # Check both destinations before publishing either file: another operation may have
+        # created an output while these tables were being written.
         if not overwrite:
-            # Check both destinations again because a file may have appeared while the tables
-            # were being written.
             for _, destination in staged_paths:
-                # Honor overwrite protection even if another operation created a file during
-                # staging.
                 if destination.exists():
                     raise FileExistsError(
                         f"Output already exists: {destination}. "

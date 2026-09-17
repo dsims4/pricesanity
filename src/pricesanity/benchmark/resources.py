@@ -22,6 +22,8 @@ def controlled_thread_budget(worker_count: int):
     except ImportError:
         torch = None
 
+    # These controls affect process-wide library pools; retain caller state before entering
+    # the bounded benchmark region, including when optional PyTorch is absent.
     previous_torch_threads = torch.get_num_threads() if torch is not None else None
     limits = threadpool_limits(limits=worker_count) if threadpool_limits else None
     try:
@@ -42,6 +44,8 @@ def controlled_thread_budget(worker_count: int):
 def hardware_fingerprint(*, device: str, cpu_worker_count: int) -> dict[str, Any]:
     """Describe hardware sufficiently to avoid false cross-machine runtime comparisons."""
 
+    # Record actual resource allocation alongside machine identity: the same CPU with a
+    # different worker budget is not a comparable runtime measurement.
     fingerprint: dict[str, Any] = {
         "platform": platform.platform(),
         "machine": platform.machine(),
@@ -58,6 +62,7 @@ def hardware_fingerprint(*, device: str, cpu_worker_count: int) -> dict[str, Any
         fingerprint["ram_bytes"] = int(psutil.virtual_memory().total)
     except ImportError:
         fingerprint["physical_cpu_count"] = None
+    # POSIX page counts expose memory available to this OS/VM, not necessarily host RAM.
     if hasattr(os, "sysconf"):
         try:
             fingerprint["ram_bytes"] = int(os.sysconf("SC_PAGE_SIZE")) * int(
@@ -68,6 +73,7 @@ def hardware_fingerprint(*, device: str, cpu_worker_count: int) -> dict[str, Any
     try:
         import torch
 
+        # Build metadata distinguishes ROCm from NVIDIA even though both use the cuda API.
         fingerprint["pytorch_version"] = torch.__version__
         fingerprint["pytorch_cuda_version"] = torch.version.cuda
         fingerprint["pytorch_hip_version"] = torch.version.hip
@@ -84,8 +90,9 @@ def hardware_fingerprint(*, device: str, cpu_worker_count: int) -> dict[str, Any
 
 
 def _processor_name() -> str | None:
-    """Fill platform.processor's common macOS blank without making hardware mandatory."""
+    """Recover a readable CPU model without making platform-specific probes mandatory."""
 
+    # The generic processor field is often blank; OS-native sources improve timing provenance.
     if platform.system() == "Linux":
         from pathlib import Path
         try:
@@ -97,6 +104,7 @@ def _processor_name() -> str | None:
     value = platform.processor().strip()
     if value:
         return value
+    # Bound the subprocess wait so optional diagnostic metadata cannot stall an experiment.
     if platform.system() == "Darwin":
         try:
             return subprocess.check_output(

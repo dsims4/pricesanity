@@ -21,6 +21,7 @@ class MajorityClassBaseline:
     name = "majority_class"
 
     def __init__(self) -> None:
+        # None distinguishes an unfitted reference from the valid Bull class index zero.
         self._current_class: int | None = None
         self._anticipated_class: int | None = None
 
@@ -35,6 +36,7 @@ class MajorityClassBaseline:
         """Learn both class frequencies only from the supplied training labels."""
 
         _validate_fit_arrays(features, current_targets, anticipated_targets)
+
         # The annotation questions have different class distributions, so one shared
         # majority would weaken the baseline and obscure which head is genuinely difficult.
         self._current_class = _majority_class(current_targets)
@@ -140,7 +142,7 @@ class MajorityClassBaseline:
 
 
 class PreviousRegimeBaseline:
-    """Repeat the prior candle's human regimes as an online reference."""
+    """Repeat prior human regimes as a diagnostic, non-deployable persistence reference."""
 
     name = "previous_regime"
 
@@ -183,6 +185,8 @@ class PreviousRegimeBaseline:
             anticipated, (0, 1, 2)
         ).all():
             raise ValueError("Prior-label context contains an unknown regime class.")
+        # Prediction outputs own their arrays so later consumers cannot mutate prior-label
+        # context retained by the shared corpus or another baseline evaluation.
         return DualRegimePredictions(current=current.copy(), anticipated=anticipated.copy())
 
     def predict_proba(

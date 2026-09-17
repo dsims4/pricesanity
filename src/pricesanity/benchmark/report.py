@@ -14,6 +14,7 @@ from pricesanity.benchmark.registry import list_model_families
 def collect_completed_runs(artifact_root: str | Path) -> pd.DataFrame:
     """Load every verified complete run into one leaderboard-shaped table."""
 
+    # Gather small summaries first; model loading and inference have no role in reporting.
     rows = []
 
     # Discover only final metadata commit markers. Partial run directories intentionally remain
@@ -115,6 +116,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         default=Path("data/models/benchmark"),
     )
     parsed = parser.parse_args(arguments)
+
+    # The CLI delegates grouping and completeness to the same helper used by notebooks.
     leaderboard = collect_aggregated_runs(parsed.artifact_root)
 
     # Make an unfinished corpus explicit in terminal output rather than printing an ambiguous

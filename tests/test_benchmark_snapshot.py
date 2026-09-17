@@ -13,6 +13,8 @@ from pricesanity.features import FEATURE_COLUMNS
 
 
 def _sessions(count: int = 3, length: int = 5) -> list[pd.DataFrame]:
+    """Build distinct synthetic rows for snapshot identity and mutation checks."""
+
     sessions = []
     for session_index in range(count):
         session_date = date(2026, 1, 5) + timedelta(days=session_index)

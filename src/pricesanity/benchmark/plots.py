@@ -11,14 +11,17 @@ def plot_learning_curve(values: pd.DataFrame, *, axis: Any = None) -> Any:
 
     import matplotlib.pyplot as plt
 
+    # Accept an owned GUI/notebook axis while allowing standalone reports to create one.
     axis = axis or plt.subplots()[1]
     required = {"training_session_count", "macro_f1", "model_name"}
+    # Empty artifacts mean no measured curve; a blank or zero-valued plot would imply results.
     if values.empty:
         axis.text(0.5, 0.5, "No learning-curve artifacts yet.", ha="center", va="center")
         axis.set_axis_off()
         return axis
     if not required.issubset(values.columns):
         raise ValueError("Learning-curve values are missing required columns.")
+    # Sort by training history so line segments describe increasing evidence, not file order.
     for model_name, model_values in values.groupby("model_name", sort=True):
         ordered = model_values.sort_values("training_session_count")
         axis.plot(
@@ -40,11 +43,13 @@ def plot_confusion_matrix(
 
     import matplotlib.pyplot as plt
 
+    # Preserve the fixed truth-row/prediction-column three-class contract used by metrics.
     values = np.asarray(confusion_matrix, dtype=int)
     if values.shape != (3, 3):
         raise ValueError("Regime confusion matrices must have three rows and columns.")
     axis = axis or plt.subplots()[1]
     image = axis.imshow(values, cmap="Blues")
+    # Print counts as well as color so small differences and zero cells remain interpretable.
     for row in range(3):
         for column in range(3):
             axis.text(column, row, str(values[row, column]), ha="center", va="center")

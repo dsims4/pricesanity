@@ -24,6 +24,7 @@ class ContextExperimentTransformer(RegimeTransformer):
         if context_length is not None and not 1 <= context_length <= config.maximum_session_length:
             raise ValueError("Context length must fit within the configured session length.")
         self.context_length = context_length
+
         # A None experiment is the unchanged full-session reference; explicit lengths create
         # equally wide trailing windows whose future slots will be masked near session open.
         window_length = context_length or config.maximum_session_length
@@ -37,8 +38,11 @@ class ContextExperimentTransformer(RegimeTransformer):
         self.register_buffer(
             "_window_future_mask", window_positions > candle_positions[:, None], persistent=False
         )
-        self.register_buffer("_window_last_positions", candle_positions - window_starts,
-                             persistent=False)
+        self.register_buffer(
+            "_window_last_positions",
+            candle_positions - window_starts,
+            persistent=False,
+        )
 
     def forward(self, features, padding_mask) -> RegimeTransformerOutput:
         """Evaluate independent trailing windows when a strict context limit is active."""
@@ -56,9 +60,9 @@ class ContextExperimentTransformer(RegimeTransformer):
             # Short sessions already fit inside the declared context and need no window expansion.
             return super().forward(features, padding_mask)
 
-        window_length = self.context_length
         # Indexing materializes one independent causal history per target candle, preventing
         # deeper encoder layers from relaying information from outside the declared context.
+        window_length = self.context_length
         window_positions = self._window_positions[:session_length]
         windows = features[:, window_positions].reshape(-1, window_length, feature_count)
         window_padding = (
@@ -69,6 +73,9 @@ class ContextExperimentTransformer(RegimeTransformer):
         # attention softmax is defined; otherwise all-masked attention can produce NaN gradients.
         window_padding = window_padding.clone()
         window_padding[:, 0] &= ~window_padding.all(dim=1)
+
+        # Absolute session positions keep this context experiment comparable with the full-session
+        # model; restarting positions in each window would change a second experimental factor.
         hidden = self.feature_projection(windows)
         positions = self.position_embedding(window_positions).repeat(batch_size, 1, 1)
         hidden = self.input_dropout(hidden + positions)

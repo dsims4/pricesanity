@@ -721,6 +721,8 @@ def download_raw_data(
     ):
         raise ValueError("Managed downloads require standard filenames in one directory")
 
+    # Reuse the managed lifecycle so Python callers inherit the same locking, checkpoints,
+    # retries, and additional-cost ceiling as the download CLI.
     plan = ManagedDownload(
         request,
         directory,

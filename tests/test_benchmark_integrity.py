@@ -302,6 +302,8 @@ def test_crash_resume_preserves_timing_without_repeating_work(
 def test_bootstrap_matches_reference_draws():
     rng = np.random.default_rng(55)
     labels = np.array(["bull", "bear", "range"])
+    # Unequal lengths distinguish whole-session draws from candle resampling; nonconsecutive
+    # IDs also prevent the optimized implementation from relying on array-position identities.
     sessions = np.repeat([2, 8, 13], [5, 8, 3])
     sample_count = len(sessions)
     predictions = pd.DataFrame(

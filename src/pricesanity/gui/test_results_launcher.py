@@ -13,6 +13,8 @@ from pricesanity.gui.test_results import TestResultsWindow, load_test_run
 def build_argument_parser() -> argparse.ArgumentParser:
     """Build the terminal interface for saved test-result inspection."""
 
+    # Require a saved run and project configuration. The optional OHLC override permits
+    # relocating chart evidence independently of the portable run bundle.
     argument_parser = argparse.ArgumentParser(
         description="Inspect saved Price Sanity test predictions."
     )
@@ -41,6 +43,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
 
     argument_parser = build_argument_parser()
     parsed_arguments = argument_parser.parse_args(arguments)
+
+    # Validate persisted identity and chart alignment before displaying predictions.
     try:
         config = load_config(parsed_arguments.config)
         test_run = load_test_run(
@@ -52,6 +56,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         argument_parser.error(str(error))
 
     application = QApplication.instance() or QApplication([])
+
+    # A loaded bundle owns the data; GUI navigation has no estimator dependency.
     window = TestResultsWindow(
         test_run,
         timestamp_column=config.data.timestamp_column,

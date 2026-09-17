@@ -67,13 +67,14 @@ class RegimeTransformer(nn.Module):
         # Retain the architecture settings for validation and saved model metadata.
         self.config = config
 
-        # Learn useful combinations of the four candle measurements in twelve dimensions.
+        # Project four candle measurements into the configured learned representation width.
         self.feature_projection = nn.Linear(
             config.feature_count,
             config.model_dimension,
         )
 
-        # Give the model a learned representation of where each candle occurs in the session.
+        # Position indices describe time within the supplied sequence: absolute session
+        # position for standalone training, relative window position in the benchmark bridge.
         self.position_embedding = nn.Embedding(
             config.maximum_session_length,
             config.model_dimension,
@@ -190,8 +191,8 @@ class RegimeTransformer(nn.Module):
         # Require the exact tensor layout produced by the session collator.
         _, session_length, _ = self._validate_inputs(features, padding_mask)
 
-        # Number candles from the session open so the same position shares one
-        # learned time-of-session representation across every training day.
+        # Number from the supplied sequence's start. Complete-session training shares
+        # time-of-session positions; benchmark contexts restart their relative indices.
         candle_positions = torch.arange(
             session_length,
             device=features.device,

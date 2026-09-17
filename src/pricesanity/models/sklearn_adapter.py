@@ -52,9 +52,12 @@ class SklearnDualHeadAdapter:
     ) -> None:
         """Fit preprocessing and both estimators using training rows only."""
 
+        # Flattening belongs to the representation layer; this boundary only normalizes dtype
+        # and verifies shape before either head or preprocessing can acquire fitted state.
         features = _tabular_features(features)
         current_targets = np.asarray(current_targets, dtype=np.int64)
         anticipated_targets = np.asarray(anticipated_targets, dtype=np.int64)
+
         # Both annotation heads must describe the identical candle population.
         if current_targets.shape != (len(features),) or anticipated_targets.shape != (
             len(features),
@@ -109,6 +112,7 @@ class SklearnDualHeadAdapter:
     ) -> DualRegimeOutput:
         """Run each fitted head once and preserve its native prediction semantics."""
 
+        # Transform once for both heads, preserving their independent fitted classifiers.
         transformed, current_estimator, anticipated_estimator = self._prepare(features, context)
         current_predictions = np.asarray(
             current_estimator.predict(transformed), dtype=np.int64
@@ -116,6 +120,8 @@ class SklearnDualHeadAdapter:
         anticipated_predictions = np.asarray(
             anticipated_estimator.predict(transformed), dtype=np.int64
         )
+
+        # Native classes remain authoritative even if probability argmax would differ.
         predictions = DualRegimePredictions(
             current=current_predictions,
             anticipated=anticipated_predictions,
@@ -166,6 +172,7 @@ class SklearnDualHeadAdapter:
         """Write internal model state; run checksums protect later loading."""
 
         self._require_fitted()
+
         # Factories describe construction, but only fitted estimator state is required to
         # reproduce inference from an artifact.
         state = {
@@ -189,6 +196,7 @@ class SklearnDualHeadAdapter:
         import hashlib
 
         current_estimator, anticipated_estimator = self._require_fitted()
+        # Bind preprocessing as well as both estimators; weights alone do not define inference.
         payload = pickle.dumps(
             (current_estimator, anticipated_estimator, self._standardizer),
             protocol=pickle.HIGHEST_PROTOCOL,
@@ -215,6 +223,8 @@ class SklearnDualHeadAdapter:
         model._current_estimator = state["current_estimator"]
         model._anticipated_estimator = state["anticipated_estimator"]
         model._standardizer = state["standardizer"]
+
+        # An incomplete pair must not appear loaded merely because deserialization succeeded.
         model._require_fitted()
         return model
 
@@ -240,6 +250,7 @@ class SklearnDualHeadAdapter:
     ) -> np.ndarray:
         """Scale market geometry while preserving binary history indicators."""
 
+        # Keep availability out of geometric statistics and restore absent lags after scaling.
         market, validity, indicators = _market_features(features, context)
         transformed = self._standardizer.transform(market)
         if validity is not None:
@@ -279,6 +290,8 @@ def _market_features(features: np.ndarray, context: PredictionContext | None):
     market = features[:, :length * 4] if has_indicators else features
     if market.shape[1] != length * 4:
         raise ValueError("Tabular OHLC and history mask dimensions disagree.")
+    # Chronological flattening stores four adjacent market coordinates per candle; repeat
+    # each validity bit across exactly those coordinates to exclude the same missing history.
     validity = np.repeat(history, 4, axis=1)
     indicators = features[:, length * 4 :] if has_indicators else None
     return market, validity, indicators

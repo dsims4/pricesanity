@@ -46,6 +46,9 @@ def build_scalability_preflight(
     )
     if any(value <= 0 for value in values):
         raise ValueError("Preflight dimensions must be positive.")
+
+    # Most families consume the raw representation width. Polynomial logistic alone expands
+    # that width before fitting, so memory estimates must use its transformed dimension.
     transformed = feature_dimension
     if polynomial_degree is not None:
         if polynomial_degree < 1:
@@ -69,8 +72,10 @@ def build_scalability_preflight(
     if model_name == "polynomial_logistic" and transformed >= 10_000:
         warnings.append("Polynomial expansion creates a high-dimensional design matrix.")
         acknowledgement_required = True
+    # These are design-matrix lower bounds, excluding estimator workspaces and temporary copies.
     training_values = training_samples * transformed
     evaluation_values = evaluation_samples * transformed
+
     # Report both common floating-point widths because scikit-learn may promote float32 inputs
     # internally; presenting one optimistic allocation would understate the risk.
     return ScalabilityPreflight(

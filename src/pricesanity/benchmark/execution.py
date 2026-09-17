@@ -95,6 +95,8 @@ def _study_locked(method):
 
     @wraps(method)
     def locked(self, *args, **kwargs):
+        # Hold the study lock across checks and publication, not just the final write; another
+        # process must not freeze selections while this invocation is still developing them.
         with _run_lock(self.paths.root / ".study.lock"):
             return method(self, *args, **kwargs)
 
@@ -185,6 +187,8 @@ class BenchmarkExecutor:
                 _write_json_replace(scope_path, self.scope)
 
     def _require_source(self) -> None:
+        """Refuse to mix installed source states during one executor lifetime."""
+
         # A long-lived executor may outlast an edit in the working tree. Stop at every lifecycle
         # boundary rather than mixing outputs from two source states under one study identity.
         if source_identity() != self.execution_source:
@@ -194,6 +198,8 @@ class BenchmarkExecutor:
             )
 
     def _require_development(self) -> None:
+        """Require unchanged source and an unsealed study before development mutations."""
+
         self._require_source()
 
         # The global seal is a one-way transition. Once present, no additional tuning, pilots, or
@@ -204,6 +210,8 @@ class BenchmarkExecutor:
             )
 
     def _space(self, model_name: str, track: BenchmarkTrack) -> dict:
+        """Resolve only declared family/track distributions without mutating their source."""
+
         # Reject undeclared work before resolving a search space. Ad hoc models or tracks would
         # evade the complete-scope requirement enforced by the global development freeze.
         if (
@@ -280,6 +288,8 @@ class BenchmarkExecutor:
 
     @_study_locked
     def freeze_development(self) -> dict:
+        """Publish or verify the single seal binding every declared development decision."""
+
         # Every declared track freezes together: inspecting one final track must never
         # influence continued selection in the other.
         contents = self._freeze_contents()
@@ -381,6 +391,9 @@ class BenchmarkExecutor:
             )
         else:
             _write_json_replace(identity_path, tuning_identity)
+
+        # Open optimization storage only after its external identity is established. Optuna's
+        # matching study name alone cannot prove equivalent folds or scientific inputs.
         study = optuna.create_study(
             study_name=(
                 f"{track.value}_{model_name}_{fold_scope}_"
@@ -433,6 +446,7 @@ class BenchmarkExecutor:
             study.optimize(objective, n_trials=remaining_trials)
         if not study.best_trials:
             raise RuntimeError("Tuning did not complete a legal candidate.")
+
         best = study.best_trial
 
         # Freeze the exact all-fold evidence and parameters used by the winning Optuna trial. A
@@ -811,6 +825,7 @@ class BenchmarkExecutor:
             self.config.window_length,
         )
         cached = self._representation_cache.get(cache_key)
+
         # Best-of-family contexts share one maximum-length corpus. Shorter candidates take a
         # trailing view, preserving target identities while avoiding repeated window builds.
         build_context = (
@@ -938,6 +953,7 @@ class BenchmarkExecutor:
         """Run or resume one identity-bound model fit through atomic publication."""
 
         self._require_source()
+
         # Tabular libraries execute on CPU; only the registered sequence families may use the
         # explicitly selected accelerator in timing evidence and model restoration.
         actual_device = (
@@ -1030,6 +1046,9 @@ class BenchmarkExecutor:
         if completed.get("metrics"):
             publish_checkpointed_run(paths, identity, model_configuration, dataset_description)
             return paths.directory
+
+        # Below this boundary at least one computational stage remains. Determine whether
+        # the exact fitted model survived before choosing fresh fitting or resumed inference.
         model_is_checkpointed = _component_is_complete(
             paths.model,
             completed.get("model"),
@@ -1123,6 +1142,8 @@ class BenchmarkExecutor:
         *,
         prestandardized: bool,
     ) -> Any:
+        """Construct each stage's model through the same seeded registry contract."""
+
         # Centralize construction so tuning, pilots, learning curves, and final runs pass identical
         # seed, worker, device, and preprocessing declarations to the model registry.
         return build_model(
@@ -1224,6 +1245,8 @@ class BenchmarkExecutor:
         _write_json_replace(path, selected)
 
     def _selected_path(self, model_name: str, track: BenchmarkTrack) -> Path:
+        """Keep all-fold winners separate from diagnostic and candidate artifacts."""
+
         return self.paths.selected / track.value / f"{model_name}.json"
 
     def _require_scaling_acknowledgement(

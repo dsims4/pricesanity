@@ -41,7 +41,7 @@ class TransitionToleranceMetrics:
 
 @dataclass(frozen=True)
 class TransitionMetrics:
-    """Exact and near-candle current-regime transition measurements."""
+    """Exact and near-candle transition measurements for one named prediction head."""
 
     exact: TransitionToleranceMetrics
     within_one_candle: TransitionToleranceMetrics
@@ -50,7 +50,7 @@ class TransitionMetrics:
 
 @dataclass(frozen=True)
 class TransitionNeighborhoodMetrics:
-    """Classification quality at and around human current-regime transitions."""
+    """Both heads' classification quality around one human transition anchor."""
 
     exact_current: ClassificationMetrics | None
     exact_anticipated: ClassificationMetrics | None
@@ -201,7 +201,7 @@ def evaluate_benchmark_predictions(
     anticipated_probabilities: np.ndarray | None = None,
     efficiency: EfficiencyMetrics | None = None,
 ) -> BenchmarkMetrics:
-    """Evaluate both labels and current-regime transitions without crossing sessions."""
+    """Evaluate both labels and their transition diagnostics without crossing sessions."""
 
     # Current-regime transitions are session-local events, so their session identity vector must
     # align exactly with the current targets before any neighborhood is constructed.
@@ -346,6 +346,7 @@ def _probability_metrics(
         or not np.allclose(probabilities.sum(axis=1), 1.0, atol=1e-6)
     ):
         raise ValueError("Probability estimates must be finite rows summing to one.")
+
     # Clipping protects log(0) numerically; Brier score still uses the original probabilities.
     clipped = np.clip(probabilities, 1e-15, 1.0)
 
@@ -473,6 +474,7 @@ def _transition_events(
 
     if regimes.shape != session_indices.shape:
         raise ValueError("Transition regimes and session identities must align.")
+
     # Session-relative positions allow the same tolerance meaning on every session regardless of
     # its location in the concatenated evaluation vector.
     events = []

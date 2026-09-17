@@ -266,12 +266,16 @@ def _sklearn_factory(
     if name == "gaussian_naive_bayes":
         from sklearn.naive_bayes import GaussianNB
 
+        # This fast likelihood reference assumes independent lagged features within each regime.
+        # Training-only scaling and variance smoothing keep near-constant geometry manageable.
         configuration = {"var_smoothing": 1e-9, **conceptual_parameters}
         return lambda: GaussianNB(**configuration), configuration, True, "probability_estimate"
 
     if name == "logistic_regression":
         from sklearn.linear_model import LogisticRegression
 
+        # A linear boundary on ordered candle values is the reference for deciding whether
+        # nonlinear families gain anything from additional capacity.
         configuration = {
             "C": 1.0,
             "class_weight": None,
@@ -313,6 +317,8 @@ def _sklearn_factory(
     if name == "knn":
         from sklearn.neighbors import KNeighborsClassifier
 
+        # Store the training windows for exact distance-based voting. Scaling is essential here,
+        # and the preflight must account for inference work growing with the stored population.
         configuration = {
             "n_neighbors": 15,
             "weights": "uniform",
@@ -328,6 +334,8 @@ def _sklearn_factory(
     if name == "decision_tree":
         from sklearn.tree import DecisionTreeClassifier
 
+        # Axis-aligned splits need no adapter scaling. Bound depth and leaf support to expose
+        # readable nonlinear rules without making unrestricted memorization the default.
         configuration = {
             "max_depth": 8,
             "min_samples_leaf": 1,
@@ -371,7 +379,7 @@ def _sklearn_factory(
             # Random internal validation leaks overlapping windows across its row split.
             # Chronological outer folds select max_iter instead.
             "early_stopping": False,
-            # WHY: This seed is inert for the current <200k-row benchmark with full feature
+            # This seed is inert for the current <200k-row benchmark with full feature
             # use, but retaining it keeps existing configurations/artifacts compatible.
             "random_state": random_seed,
             **conceptual_parameters,

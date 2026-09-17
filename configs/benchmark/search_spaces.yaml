@@ -1,7 +1,7 @@
 format_version: 1
 
-# These bounded spaces are proposals for the completed corpus. They are readable inputs to a
-# later tuning engine, not evidence that searches or final evaluations have been run.
+# These bounded spaces define the executor's candidate distributions. Declaring them does not
+# establish that searches or final evaluations have been run.
 # Context length appears only in best-of-family searches. The controlled track removes it so
 # every learned family receives the same 16-candle information budget.
 gaussian_naive_bayes:
@@ -10,6 +10,8 @@ logistic_regression:
   C: {type: log_float, low: 1.0e-3, high: 100.0}
   class_weight: {type: categorical, values: [null, balanced]}
 polynomial_logistic:
+  # Quadratic interactions expand the flattened design matrix substantially; higher degrees
+  # would change both the comparison and its resource requirements.
   degree: {type: fixed, value: 2}
   C: {type: log_float, low: 1.0e-3, high: 10.0}
 knn:
@@ -34,6 +36,7 @@ mlp:
   hidden_layers: {type: categorical, values: [1, 2, 3]}
   learning_rate_init: {type: log_float, low: 1.0e-4, high: 1.0e-2}
 tcn:
+  # Best-of-family context is session-local even when left padding is needed near the open.
   context_length: {type: categorical, values: [16, 32, 64]}
   channel_width: {type: categorical, values: [16, 32, 64]}
   kernel_size: {type: categorical, values: [2, 3, 5]}

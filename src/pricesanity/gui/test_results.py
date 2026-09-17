@@ -50,6 +50,8 @@ def find_regime_change_markers(
     if not set(predicted_current_regimes).issubset(valid_regimes):
         raise ValueError("Test session contains an unknown predicted regime.")
 
+    # Compare neighbors only inside this supplied session. The starting regime is displayed
+    # separately, so overnight boundaries cannot create artificial change markers.
     return tuple(
         (candle_position, predicted_current_regimes[candle_position])
         for candle_position in range(1, len(predicted_current_regimes))
@@ -87,6 +89,9 @@ def load_test_run(
         identity = benchmark_metadata.get("identity", {})
         if not isinstance(dataset, dict) or not isinstance(identity, dict):
             raise ValueError("Benchmark run is missing dataset or model identity.")
+
+        # Market and interval must match before adapting benchmark metadata to the viewer's
+        # shared display fields; model-family identity alone does not establish candle identity.
         for field, expected_value in (
             ("instrument", config.data.instrument),
             ("target_interval", config.data.target_interval),
@@ -94,6 +99,7 @@ def load_test_run(
         ):
             if dataset.get(field) != expected_value:
                 raise ValueError(f"Benchmark {field} does not match project configuration.")
+
         metadata = {
             "artifact_kind": "benchmark",
             "run_index": 1,
@@ -354,6 +360,7 @@ class TestResultsWindow(QMainWindow):
         self.chart.set_regime_change_markers(
             regime_change_markers, starting_regime=predicted_regimes[0]
         )
+
         if self.test_run.metadata.get("artifact_kind") == "benchmark":
             model_name = str(self.test_run.metadata.get("model_name", "Unknown model"))
             track = str(self.test_run.metadata.get("track", "unknown track"))
@@ -370,6 +377,7 @@ class TestResultsWindow(QMainWindow):
                 f"Test session {self.active_session_position + 1} / "
                 f"{len(self.session_dates)} | {session_date}"
             )
+
         self.starting_regime_label.setText(
             "Starting model regime: " + predicted_regimes[0].title()
         )

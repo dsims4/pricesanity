@@ -58,7 +58,8 @@ class AnnotationStore:
             annotation: Complete current and anticipated regime judgment to persist.
         """
 
-        # Commit the entire annotation together, or roll it back if SQLite rejects the write.
+        # Commit the entire pair or roll it back if SQLite rejects the write. The upsert uses
+        # stable candle identity so revisiting a label replaces one judgment, never duplicates it.
         with self._connection:
             self._connection.execute(
                 """
@@ -147,6 +148,8 @@ class AnnotationStore:
             ValueError: If an identifier is empty or repeated.
         """
 
+        # Freeze and validate the requested population before constructing SQL placeholders;
+        # duplicate IDs would hide a caller-side chart alignment error.
         requested_ids = tuple(str(candlestick_id) for candlestick_id in candlestick_ids)
         if any(not candlestick_id.strip() for candlestick_id in requested_ids):
             raise ValueError("Candlestick identifiers cannot be empty.")

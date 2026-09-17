@@ -44,7 +44,7 @@ class ChronologicalValidationFold:
 
 @dataclass(frozen=True)
 class BenchmarkConfig:
-    """Validated defaults for a future full-corpus benchmark."""
+    """Validated corpus accounting, representation, and execution policy."""
 
     format_version: int
     output_root: Path

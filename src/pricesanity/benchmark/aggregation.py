@@ -89,6 +89,7 @@ def aggregate_seed_results(
                     raise ValueError(
                         "Completed results do not match the declared final seed set."
                     )
+                # Exact membership supersedes count-only compatibility for older artifacts.
                 expected_count = len(expected_seeds)
 
         if len(group) != expected_count:
@@ -123,8 +124,8 @@ def aggregate_seed_results(
             }
         )
 
-        # Timing can be pooled only when every replicate reports the same canonical hardware.
-        # Missing fingerprints therefore make timing unavailable rather than implicitly equal.
+        # Canonicalize available hardware evidence before comparing recorded environments.
+        # Legacy rows can omit this field; entirely absent fingerprints leave timing N/A.
         hardware_values = (
             group["hardware_fingerprint"]
             .dropna()

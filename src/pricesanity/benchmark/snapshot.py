@@ -19,6 +19,8 @@ from pricesanity.features import FEATURE_COLUMNS
 from pricesanity.training.dataset import build_complete_annotated_sessions
 
 
+# Restrict frozen rows to identity, four market measurements, and the two annotation targets.
+# Vendor metadata and incidental DataFrame columns cannot become undeclared model inputs.
 SNAPSHOT_COLUMNS = (
     "session_index", "candle_position", "session_date", "candlestick_id", "timestamp",
     *FEATURE_COLUMNS, "current_target", "anticipated_target",
@@ -357,8 +359,12 @@ def load_sealed_holdout(
     scope = seal.get("scope", {})
     models = scope.get("models", [])
     tracks = scope.get("tracks", [])
-    if (seal_path.name != "development_frozen.json" or not models or not tracks
-            or any(Path(name).name != name for name in (*models, *tracks))):
+    if (
+        seal_path.name != "development_frozen.json"
+        or not models
+        or not tracks
+        or any(Path(name).name != name for name in (*models, *tracks))
+    ):
         raise PermissionError(
             "Final holdout requires the global development seal, not a model winner."
         )
@@ -373,11 +379,13 @@ def load_sealed_holdout(
         # invalidates the seal before holdout bytes are opened.
         selected_path = seal_path.parent / "selected" / f"{key}.json"
         selected = json.loads(selected_path.read_text())
-        if (canonical_sha256(selected) != seal["selected"][key]["configuration_sha256"]
-                or selected.get("state") != "frozen"
-                or not selected.get("all_development_folds")
-                or selected.get("fold_count", 0) < 2
-                or selected.get("protocol_sha256") != seal.get("protocol_sha256")):
+        if (
+            canonical_sha256(selected) != seal["selected"][key]["configuration_sha256"]
+            or selected.get("state") != "frozen"
+            or not selected.get("all_development_folds")
+            or selected.get("fold_count", 0) < 2
+            or selected.get("protocol_sha256") != seal.get("protocol_sha256")
+        ):
             raise ValueError("Development seal contains an incompatible or incomplete selection.")
     if seal.get("snapshot_sha256") != snapshot.identity_sha256 or seal.get("state") != "frozen":
         raise ValueError("Development seal belongs to another snapshot or is not frozen.")
@@ -427,8 +435,8 @@ def validate_snapshot_data(data: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("Benchmark snapshot identities must be uniquely chronological.")
     if not np.isfinite(data.loc[:, FEATURE_COLUMNS].to_numpy(dtype=float)).all():
         raise ValueError("Benchmark snapshot features must be finite.")
-    # Both target heads share the fixed bull/bear/range integer contract used by every model and
-    # metric. Numeric conversion also rejects text or fractional labels before serialization.
+    # Convert both target heads to the fixed bull/bear/range integer representation used by
+    # models and metrics, then check membership in that shared class vocabulary.
     for target in ("current_target", "anticipated_target"):
         values = pd.to_numeric(data[target], errors="raise").to_numpy(dtype=np.int64)
         if not np.isin(values, (0, 1, 2)).all():

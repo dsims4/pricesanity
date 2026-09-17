@@ -262,6 +262,7 @@ def _validate_completed_experiment(
 ) -> dict:
     """Verify a reusable result and migrate one valid legacy bundle exactly once."""
 
+    # Resolve the complete bundle together so reuse checks cannot mix evidence from candidates.
     report_path = directory / "report.json"
     weights_path = directory / "diagnostic_weights.pt"
     identity_path = directory / EXPERIMENT_IDENTITY_FILENAME
@@ -364,6 +365,8 @@ def _validate_completed_experiment(
     ):
         raise ValueError(f"Completed experiment weights do not match its report: {name}")
 
+    # Statistics must cover the ordered feature axis, not session or batch dimensions. They are
+    # restored with the weights because recomputing them could change the fitted model.
     feature_mean = weights["feature_mean"]
     feature_standard_deviation = weights["feature_standard_deviation"]
     if (
@@ -394,6 +397,7 @@ def _validate_completed_experiment(
     ):
         raise ValueError(f"Completed experiment parameter count is inconsistent: {name}")
 
+    # Bind semantic snapshot identity to the exact report and checkpoint bytes being reused.
     expected_identity = _experiment_identity(
         snapshot_sha256=snapshot_sha256,
         settings=settings,
@@ -535,14 +539,23 @@ def run_experiment(
     training_loader = build_loader(
         [tensor_cache[id(session)] for session in training_sessions], settings, shuffle=True
     )
+
+    # Evaluate training without reshuffling so memorization diagnostics use a stable row order;
+    # validation has its own loader and never contributes updates or fitted statistics.
     training_evaluation_loader = build_loader(
         [tensor_cache[id(session)] for session in training_sessions], settings, shuffle=False
     )
     validation_loader = (
-        build_loader([tensor_cache[id(session)] for session in validation_sessions],
-                     settings, shuffle=False)
+        build_loader(
+            [tensor_cache[id(session)] for session in validation_sessions],
+            settings,
+            shuffle=False,
+        )
         if validation_sessions else None
     )
+
+    # Each experiment owns fresh optimizer state. The ledger below records the selected epoch
+    # independently of the live weights that continue changing during optimization.
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=settings.learning_rate, weight_decay=settings.weight_decay
     )
@@ -551,6 +564,7 @@ def run_experiment(
     best_epoch = 0
     history = []
     tiny_passed = False
+
     # Candidate selection is based on validation loss. The diagnostic macro-F1 report remains
     # an outcome, not an epoch-by-epoch test-tuned stopping signal.
     for epoch in range(1, settings.epochs + 1):
@@ -587,8 +601,10 @@ def run_experiment(
                 optimizer=None, gradient_clip=1.0, loss_setup=settings.loss_setup,
             )
             record["memorization"] = asdict(memorization)
-            tiny_passed = min(memorization.current.accuracy,
-                              memorization.anticipated.accuracy) >= 0.98
+            tiny_passed = min(
+                memorization.current.accuracy,
+                memorization.anticipated.accuracy,
+            ) >= 0.98
             if tiny_passed:
                 best_state = deepcopy(model.state_dict())
                 best_epoch = epoch
@@ -664,8 +680,10 @@ def run_experiment(
 def validation_score(report: dict) -> float:
     """Rank two-head candidates without consulting any test measurement."""
 
-    return sum(report["validation"][head]["macro_f1"]
-               for head in ("current", "anticipated")) / 2
+    return sum(
+        report["validation"][head]["macro_f1"]
+        for head in ("current", "anticipated")
+    ) / 2
 
 
 def _select_stage_result(stage, reference, stage_reports, *, margin=SELECTION_MARGIN_MEAN_F1):
@@ -747,6 +765,8 @@ def run_checklist(baseline, training_sessions, validation_sessions, tensor_cache
     diagnostic only and cannot replace the selected two-head candidate implicitly.
     """
 
+    # Carry the practical selection across stages while retaining all completed evidence. A later
+    # simplicity decision must not erase the raw winner or change an earlier comparison.
     selected = baseline
     experiments = {baseline["name"]: baseline}
     stages = []
@@ -764,7 +784,7 @@ def run_checklist(baseline, training_sessions, validation_sessions, tensor_cache
         })
 
     def persist_progress(*, status, current_stage=None, next_step=None):
-        """Expose the current gate without leaving the original learning-rate note stale."""
+        """Publish the active gate separately from completed candidate evidence."""
 
         write_json(output_directory / "stage_summary.json", {
             "status": status,
@@ -788,8 +808,13 @@ def run_checklist(baseline, training_sessions, validation_sessions, tensor_cache
         for name, candidate_settings in candidates:
             persist_progress(status="running", current_stage=stage)
             persist_ledger(active_stage=stage)
-            existing = next((report for report in experiments.values()
-                             if report["settings"] == asdict(candidate_settings)), None)
+            existing = next(
+                (
+                    report for report in experiments.values()
+                    if report["settings"] == asdict(candidate_settings)
+                ),
+                None,
+            )
             # Reuse identical settings reached through another stage; duplicate training would
             # add runtime without adding an independent controlled comparison.
             report = existing or run_experiment(
@@ -1053,6 +1078,8 @@ def _ensure_snapshot_identity(
 ):
     """Bind the frozen Parquet bytes and declared roles before experiments may reuse it."""
 
+    # Semantic identity protects values and role membership; the byte checksum additionally
+    # detects replacement of the physical snapshot that supplies every candidate.
     identity_path = output_directory / SNAPSHOT_IDENTITY_FILENAME
     expected_identity = {
         "format_version": 1,
@@ -1064,6 +1091,8 @@ def _ensure_snapshot_identity(
         "snapshot_file_sha256": _file_sha256(snapshot_path),
         "manifest_sha256": _json_sha256(manifest),
     }
+    # Creating a missing sidecar is a deliberate migration path, never a repair for conflicting
+    # evidence. An existing identity must match before any experiment can be reused.
     if identity_path.exists():
         recorded_identity = _read_json_mapping(identity_path, "tuning snapshot identity")
         if recorded_identity != expected_identity:
@@ -1085,6 +1114,8 @@ def _migrate_legacy_experiment_identities(
 ):
     """Validate every legacy completed result before adding its missing identity sidecar."""
 
+    # Only committed reports enter migration. Partial candidates have no trustworthy result to
+    # bless with an identity and follow the normal restart path instead.
     for report_path in sorted(output_directory.glob("*/report.json")):
         directory = report_path.parent
         report = _read_json_mapping(report_path, "legacy experiment report")
@@ -1097,6 +1128,8 @@ def _migrate_legacy_experiment_identities(
                 f"Legacy completed experiment is malformed: {directory.name}"
             ) from error
 
+        # Reconstruct only the two supported diagnostic populations: the declared full split or
+        # the five-session memorization check. Counts cannot authorize an arbitrary new subset.
         if (
             training_session_count == len(split.training)
             and validation_session_count == len(split.validation)
@@ -1112,6 +1145,8 @@ def _migrate_legacy_experiment_identities(
                 f"{directory.name}"
             )
 
+        # The shared validator reproduces legacy evidence before writing the sidecar, preserving
+        # the report and weight bytes rather than treating plausible metadata as proof.
         _validate_completed_experiment(
             directory.name,
             training_sessions,
@@ -1236,11 +1271,15 @@ def main(arguments=None) -> int:
             snapshot_sha256,
             timestamp_column=configuration.data.timestamp_column,
         )
-    tensor_cache = {id(session): convert_session_to_tensors(
-        session, timestamp_column=configuration.data.timestamp_column
-    ) for session in tuning_sessions}
     # Tensor conversion is deterministic and label-preserving, so cache it across candidates;
     # fitted weights and training-only standardizers are still rebuilt per experiment.
+    tensor_cache = {
+        id(session): convert_session_to_tensors(
+            session, timestamp_column=configuration.data.timestamp_column
+        )
+        for session in tuning_sessions
+    }
+
     settings = TuningSettings(random_seed=configuration.project.random_seed)
     baseline = run_experiment(
         "baseline", split.training, split.validation, tensor_cache, settings,

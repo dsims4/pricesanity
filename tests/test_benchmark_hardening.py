@@ -29,6 +29,8 @@ from pricesanity.models.sklearn_adapter import SklearnDualHeadAdapter
 
 
 def _long_session(session_index: int, length: int = 70) -> pd.DataFrame:
+    """Expose candle position in values so context and causal-boundary errors are visible."""
+
     session_date = date(2020, 1, 2) + timedelta(days=session_index)
     values = np.arange(length, dtype=np.float32)
     return pd.DataFrame({
@@ -180,6 +182,8 @@ def test_every_search_space_builds_fits_predicts_and_reloads(tmp_path) -> None:
     spaces = load_search_spaces("configs/benchmark/search_spaces.yaml")
     generator = np.random.default_rng(42)
     targets = np.array([0, 1, 2] * 4)
+    # Short fits validate estimator compatibility and round trips, not convergence. All three
+    # labels are present so every family's ordinary multiclass output path is exercised.
     for model_name, space in spaces.items():
         parameters = representative_candidate(space)
         if model_name == "mlp":
@@ -227,6 +231,7 @@ def test_svc_native_prediction_can_disagree_with_probability_argmax() -> None:
 
 
 def test_seed_aggregation_never_selects_one_lucky_seed() -> None:
+    # Deliberately uneven scores make choosing the best seed differ from the required mean.
     rows = []
     for seed, current, anticipated in [(1, 0.2, 0.4), (2, 0.8, 0.6), (3, 0.5, 0.5)]:
         rows.append({

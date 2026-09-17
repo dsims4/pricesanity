@@ -249,12 +249,12 @@ data/annotations/*
 # Run metadata and predictions belong with local model artifacts, not source control.
 data/models/
 
-# Review archive and operating-system debris
-__MACOSX/
-.DS_Store
+# Local source-review archives
 Archive.zip
 pricesanity-source.zip
 
 # Downloaded ROCm installer packages are environment setup artifacts, not source.
 rocdxg*.deb
 amd-smi*.deb
+amdgpu-install*.deb
+rocm*.deb

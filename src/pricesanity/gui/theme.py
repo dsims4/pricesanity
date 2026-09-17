@@ -10,12 +10,14 @@ from PySide6.QtWidgets import (
     QToolButton,
 )
 
+# Share class order and meaning across annotation cards, label spans, and comparison bands.
 REGIME_COLORS = {"bull": "#17765e", "bear": "#b7444e", "range": "#946513"}
 REGIME_SYMBOLS = {"bull": "↗", "bear": "↘", "range": "↔"}
 SPACING = 12
 MARGIN = 20
 PRIMARY_HEIGHT = 44
 
+# Semantic roles let windows request emphasis without duplicating platform-specific styling.
 STYLE = """
 QMainWindow, QDialog { background: #f4f6f8; color: #172b3a; }
 QWidget { font-size: 13px; }

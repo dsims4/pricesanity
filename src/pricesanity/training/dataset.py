@@ -496,6 +496,8 @@ def collate_tensor_sessions(
     if not sessions:
         raise ValueError("A tensor batch requires at least one session.")
 
+    # Validate each natural-length sequence before padding can conceal a shape mismatch between
+    # its feature rows, two targets, and audit identities.
     session_lengths = []
     for session in sessions:
         session_length = session.features.shape[0]
@@ -548,6 +550,8 @@ def collate_tensor_sessions(
         padding_value=IGNORED_TARGET,
     )
 
+    # Broadcast one position axis against each session's real length. Equal-valued market
+    # features, including genuine zeros, must never be mistaken for artificial padding.
     lengths = torch.tensor(session_lengths, dtype=torch.int64)
     candle_positions = torch.arange(padded_features.shape[1]).unsqueeze(0)
 

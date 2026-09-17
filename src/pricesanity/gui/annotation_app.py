@@ -194,6 +194,9 @@ class AnnotationWindow(QMainWindow):
         # does not require closing or restarting the application.
         date_range_layout = QHBoxLayout()
         window_layout.addLayout(date_range_layout)
+
+        # Calendar bounds describe the requested corpus, while the initial selection uses dates
+        # that actually passed session eligibility. Missing dates remain visibly unavailable.
         minimum_session_date = self.corpus_start_date
         maximum_session_date = self.corpus_end_date
         minimum_qdate = QDate(
@@ -206,6 +209,7 @@ class AnnotationWindow(QMainWindow):
             maximum_session_date.month,
             maximum_session_date.day,
         )
+
         first_available_date = self.available_session_dates[0]
         last_available_date = self.available_session_dates[-1]
         first_available_qdate = QDate(
@@ -396,6 +400,9 @@ class AnnotationWindow(QMainWindow):
         self.anticipated_card.setProperty("role", "card")
         self.anticipated_card.setLayout(anticipated_regime_layout)
         regime_layout.addWidget(self.anticipated_card, stretch=1)
+
+        # Retain buttons by head and regime so refresh can show both pending and saved choices
+        # without giving each widget its own annotation state.
         self.regime_buttons = {}
         head_layouts = (
             ("current", current_regime_layout),
@@ -859,10 +866,15 @@ class AnnotationWindow(QMainWindow):
     def _refresh_annotation_regime_bar(self) -> None:
         """Draw saved current-regime annotations for the complete active session."""
 
+        # Fetch one consistent set of saved pairs in chart order. A pending first choice does
+        # not belong in this overlay until its anticipated label has also been committed.
         candlestick_ids = tuple(
             self.candlestick_data["candlestick_id"].astype(str)
         )
         annotations = self.annotation_store.load_many(candlestick_ids)
+
+        # Preserve blank positions for unsaved candles; dropping them would shift later labels
+        # onto the wrong market candles.
         current_regimes = [
             annotations[candlestick_id].current_regime.value
             if candlestick_id in annotations
@@ -998,6 +1010,8 @@ class AnnotationWindow(QMainWindow):
 
         # Progress counts use the complete eligible corpus, while the candle fraction uses the
         # currently selected session so revisiting earlier work remains easy to orient.
+        # Progress counts committed pairs, independent of the active two-key choice. Keep the
+        # per-session bar and corpus completion text synchronized with the same saved-ID cache.
         day = self.selected_session_dates[self.active_session_position]
         ids = self._session_ids_for_progress[day]
         saved = len(ids.intersection(self._saved_ids))
@@ -1011,6 +1025,9 @@ class AnnotationWindow(QMainWindow):
         self.session_progress.setRange(0, len(ids))
         self.session_progress.setValue(saved)
         self.session_progress.setFormat(f"Session: {saved} / {len(ids)} candles saved")
+
+        # Revisiting a saved candle and editing its first label are different states even when
+        # both still have an older complete pair in SQLite.
         committed = (
             self.is_selecting_current_regime
             and self._active_candlestick_id() in self._saved_ids

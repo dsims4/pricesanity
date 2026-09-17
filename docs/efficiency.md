@@ -17,7 +17,7 @@ Causal windows use NumPy stride views within each session and concatenate once i
 corpus. Fold selection owns its rows. Standardizers are never reused across folds because their
 values belong only to each fold's training history.
 
-The preparation executor bounds its immutable representation cache at 512 MiB. Cache eviction
+The benchmark executor bounds its immutable representation cache at 512 MiB. Cache eviction
 is safe and may reduce speedup in large studies. Best-of-family contexts share a maximum-context
 window and exact target/mask identities. Training-fitted model state remains specific to each
 fold. Use `pricesanity-benchmark profile --synthetic` to measure the same infrastructure on the

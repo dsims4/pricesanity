@@ -35,9 +35,10 @@ model examples remain causal and end at their target candle.
 
 ## Installation and environments
 
-The package metadata requires Python 3.11 or newer. Python 3.14.7 is the current tested project
-environment. A project-local virtual environment keeps Qt, PyTorch, and benchmark dependencies
-isolated:
+The package metadata requires Python 3.11 or newer; the `training` extra requires PyTorch >=2.4.
+A project-local virtual environment keeps Qt, PyTorch, and benchmark dependencies isolated.
+For accelerator execution, first choose the platform-specific PyTorch binary as described in
+[accelerator setup](accelerator_setup.md), then install the required extras:
 
 ```bash
 python -m venv .venv
@@ -57,21 +58,12 @@ Databento SDK series. Optional extras are:
 | `benchmark` | scikit-learn, Optuna, threadpoolctl, psutil |
 | `notebooks` | JupyterLab and Matplotlib only |
 
-### Apple Silicon
+### Device selection
 
-Use `--device mps` for PyTorch sequence models after the smoke test succeeds. Classical
-scikit-learn models remain on CPU. `--device auto` is available in the standalone Transformer and
-the synthetic device smoke helper; benchmark study commands otherwise default to CPU.
-
-### Linux and WSL with AMD ROCm
-
-Install a mutually compatible AMD driver, ROCm/PyTorch wheel, Linux distribution, and Python
-version using AMD and PyTorch's current compatibility tables. PyTorch deliberately exposes a ROCm
-device through the `torch.cuda` API, so Price Sanity selects it with `--device cuda`. A valid
-diagnostic distinguishes ROCm by a nonempty `torch.version.hip` value and reports the actual Radeon
-device name.
-
-Keep the checkout in WSL's Linux filesystem rather than `/mnt/c`. Run:
+Sequence models accept `cpu`, Apple Silicon `mps`, or `cuda` for compatible NVIDIA CUDA and
+AMD ROCm builds. Classical estimators stay on CPU. The standalone Transformer and synthetic
+smoke helper accept `auto`; benchmark study commands default to CPU. Verify the selected
+environment before launching a study:
 
 ```bash
 pricesanity-benchmark hardware
@@ -79,10 +71,9 @@ pricesanity-benchmark device-smoke --device cpu
 pricesanity-benchmark device-smoke --device cuda --compare
 ```
 
-The project workflow has been exercised on macOS ARM64 with MPS and on Linux/WSL with AMD ROCm
-through the `cuda` selector. Device availability remains machine-specific; diagnostics and saved
-hardware metadata are authoritative for an individual run. See [WSL and AMD
-training](wsl_amd_training.md).
+Use `--device mps --compare` for Apple Silicon. Installation instructions, build interpretation,
+WSL filesystem guidance, and tested-environment limitations live in
+[accelerator setup](accelerator_setup.md); saved hardware evidence describes each actual run.
 
 ## Configuration
 
@@ -445,8 +436,8 @@ pricesanity-test --run data/models/walk_forward/run_001 --config configs/default
 
 Global `--config` defaults to `configs/benchmark/default.yaml`. Subcommands are:
 
-| Subcommand | Required or important options | Effect |
-| --- | --- | --- |
+| Subcommand | Required or important options | Effect | Example |
+| --- | --- | --- | --- |
 | `hardware` | none | read-only; print environment/backend evidence | `pricesanity-benchmark hardware` |
 | `device-smoke` | device; optional compare | temporary synthetic fit/save/reload; no study mutation | `pricesanity-benchmark device-smoke --device mps --compare` |
 | `models` | none | read-only registry list | `pricesanity-benchmark models` |
@@ -500,7 +491,7 @@ Notebook files use tested artifact helpers rather than duplicating metrics or tr
 Run the complete suite from the repository root:
 
 ```bash
-python -m pytest
+QT_QPA_PLATFORM=offscreen python -m pytest -q
 ```
 
 Create a source-only review archive from committed files with:
@@ -533,4 +524,5 @@ to bypass.
 - [Statistical comparison](statistical_comparison.md): metrics and bootstrap design
 - [GUI design](gui_design.md): interaction and report requirements
 - [Efficiency](efficiency.md): resource policy
-- [WSL and AMD training](wsl_amd_training.md): ROCm setup and diagnostics
+- [Accelerator setup](accelerator_setup.md): CPU, MPS, CUDA, and ROCm installation and diagnostics
+- [Documentation index](README.md): scientific, architecture, operations, and verification map

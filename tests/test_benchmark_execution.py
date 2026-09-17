@@ -18,6 +18,8 @@ MODEL_NAMES = (
 
 
 def _session(session_index: int, length: int = 6) -> pd.DataFrame:
+    """Give every synthetic fold all three classes and distinct chronological identities."""
+
     session_date = date(2026, 1, 5) + timedelta(days=session_index)
     positions = np.arange(length, dtype=np.float32)
     return pd.DataFrame({
@@ -65,6 +67,8 @@ def _tiny_study(tmp_path):
         "batch_size": 4,
         "weight_decay": 0.0,
     }
+    # Shrink the corpus while preserving the real separation between tuning validation,
+    # fixed learning-curve evaluation, and the sealed final holdout.
     config = replace(
         base,
         window_length=3,
@@ -82,6 +86,8 @@ def _tiny_study(tmp_path):
         transformer_incumbent=incumbent,
         model_tuning_budgets={name: 1 for name in MODEL_NAMES},
     )
+    # Fixed candidate spaces exercise persistence and resume cheaply; they do not replace
+    # production search budgets or claim meaningful model-performance evidence.
     sequence_training = {
         "context_length": _fixed(3), "learning_rate": _fixed(1e-3),
         "epochs": _fixed(1), "batch_size": _fixed(4), "weight_decay": _fixed(0.0),

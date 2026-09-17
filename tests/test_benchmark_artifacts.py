@@ -19,6 +19,10 @@ from pricesanity.models.baselines import MajorityClassBaseline
 
 
 def _identity() -> BenchmarkRunIdentity:
+    """Describe a development fold with no final-holdout membership."""
+
+    # Independent digests let corruption tests change one identity dimension without needing
+    # licensed prices, live annotations, or a completed full-corpus study.
     model_configuration = {"model_name": "majority_class", "adapter": "native"}
     return BenchmarkRunIdentity(
         track="controlled",
@@ -45,6 +49,10 @@ def _identity() -> BenchmarkRunIdentity:
 
 
 def _predictions() -> pd.DataFrame:
+    """Match the majority model's native classes and fixed uncertainty schema."""
+
+    # A point distribution is available for this baseline; score columns are deliberately NaN
+    # because absent margins must not be represented as measured zero confidence.
     probabilities = [1.0, 0.0, 0.0]
     return pd.DataFrame({
         "candlestick_id": ["candle-1", "candle-2"],

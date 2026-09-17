@@ -60,6 +60,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     argument_parser = argparse.ArgumentParser(
         description="Train the causal Price Sanity regime Transformer."
     )
+
+    # Data and configuration define the experiment independently of the selected execution scope.
     argument_parser.add_argument(
         "--normalized",
         required=True,
@@ -100,6 +102,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=Path("data/models/walk_forward"),
         help="Parent directory for walk-forward run folders.",
     )
+    # Select a single chronological run or a suffix of the full plan without redefining its
+    # boundaries. Resume then validates artifacts belonging to those same run identities.
     run_selection = argument_parser.add_mutually_exclusive_group()
     run_selection.add_argument(
         "--run-index", type=int, help="Train only this one-based walk-forward run."
@@ -112,6 +116,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip verified completed runs; rebuild interrupted runs from their first epoch.",
     )
+    # Role counts are whole sessions; no option permits a random candle-level split.
     argument_parser.add_argument(
         "--training-sessions",
         type=int,
@@ -132,6 +137,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=10,
         help="Number of final sessions untouched until official evaluation.",
     )
+    # Architecture and optimization options enter checkpoint metadata and the resume signature.
     argument_parser.add_argument(
         "--model-dimension",
         type=int,
@@ -259,6 +265,8 @@ def _experiment_metadata(
         boundary_data["end_date"] = boundary.end_date.isoformat()
         return boundary_data
 
+    # Source paths document provenance; bundle-internal basenames allow a completed run to move
+    # without redirecting its loader back to files on the machine that trained it.
     return {
         "format_version": 2,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),

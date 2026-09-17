@@ -68,8 +68,8 @@ def profile_synthetic_infrastructure(
         measurements["unique_candle_standardization_fit_seconds"] = (
             perf_counter() - started
         )
-        # Building windows is timed from immutable snapshot rows. This is the operation a
-        # future cache would need to beat, so it is measured before adding cache complexity.
+        # Measure uncached window construction from immutable rows. This isolates the operation
+        # the executor's representation cache avoids, without conflating hits with rebuilds.
         specification = RepresentationSpec(
             name="profile_sequential",
             window_length=context_length,
@@ -87,13 +87,18 @@ def profile_synthetic_infrastructure(
         )
         measurements["causal_window_construction_seconds"] = perf_counter() - started
 
+        # Measure layout conversion and whole-session selection separately: they have different
+        # allocation costs even when both consume the same immutable sequence corpus.
         started = perf_counter()
         tabular = tabular_representation(corpus)
         measurements["tabular_representation_seconds"] = perf_counter() - started
+
         started = perf_counter()
         selected = corpus.select_sessions(range(min(2000, session_count)))
         measurements["fold_session_selection_seconds"] = perf_counter() - started
 
+        # Record dimensions beside timings so a faster invocation cannot be mistaken for an
+        # optimization when it merely used a smaller synthetic workload.
         measurements.update({
             "session_count": session_count,
             "candles_per_session": candles_per_session,
