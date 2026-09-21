@@ -174,6 +174,7 @@ def test_cancel_key_is_chart_scoped_and_preserves_annotation_state(
     )
     save_annotation(database_path, saved)
     window = AnnotationWindow(candlestick_data, database_path)
+    window.move_to_previous_candlestick()
     window.show()
     try:
         monkeypatch.setattr(
@@ -203,6 +204,33 @@ def test_cancel_key_is_chart_scoped_and_preserves_annotation_state(
         assert window.annotation_store.load("candle-1") == saved
     finally:
         window.close()
+
+
+def test_annotation_window_opens_at_first_unannotated_candle(
+    qt_application: QApplication,
+    candlestick_data: pd.DataFrame,
+    tmp_path,
+) -> None:
+    """Startup skips the saved prefix and draws the earliest candle still needing labels."""
+
+    database_path = tmp_path / "annotations.db"
+    for candlestick_id in ("candle-1", "candle-2"):
+        save_annotation(
+            database_path,
+            CandlestickAnnotation(
+                candlestick_id,
+                MarketRegime.BULL,
+                MarketRegime.RANGE,
+            ),
+        )
+
+    window = AnnotationWindow(candlestick_data, database_path)
+
+    assert window._active_candlestick_id() == "candle-3"
+    assert window.active_candlestick_position == 2
+    assert window.current_regime_value.text() == "Not selected"
+
+    window.close()
 
 
 def test_annotation_window_shortcuts_control_navigation(

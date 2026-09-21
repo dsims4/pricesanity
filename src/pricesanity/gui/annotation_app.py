@@ -512,7 +512,7 @@ class AnnotationWindow(QMainWindow):
         for widget in (central_widget, *central_widget.findChildren(QWidget)):
             widget.installEventFilter(self)
 
-        # Begin with the complete available range and its first trading session.
+        # Begin with the complete available range at its earliest unannotated candle.
         self.annotation_store = AnnotationStore(self.database_path)
         self._annotation_load_failed = False
         # Initial progress and navigation both read SQLite; close the connection if either
@@ -527,7 +527,7 @@ class AnnotationWindow(QMainWindow):
                 day for day, ids in self._session_ids_for_progress.items()
                 if ids.issubset(self._saved_ids)
             }
-            self.apply_date_range()
+            self.apply_date_range(seek_first_unannotated=True)
 
         # Release the store when construction fails because no window will exist to close it
         # later.
@@ -821,8 +821,12 @@ class AnnotationWindow(QMainWindow):
 
             visible_date = visible_date.addDays(1)
 
-    def apply_date_range(self) -> None:
-        """Use the selected inclusive dates without reopening the GUI."""
+    def apply_date_range(self, *, seek_first_unannotated: bool = False) -> None:
+        """Use the selected inclusive dates without reopening the GUI.
+
+        Args:
+            seek_first_unannotated: Open the earliest unsaved candle on initial launch.
+        """
 
         # Convert the first Qt date explicitly so type checking can prove it is
         # comparable with the exchange-local Python session dates.
@@ -864,10 +868,28 @@ class AnnotationWindow(QMainWindow):
 
             return
 
-        # Restart navigation at the beginning of the newly selected range.
+        # Restart ordinary range changes at the first candle. Initial launch instead locates the
+        # earliest missing label before drawing anything, avoiding a flash of an old candle.
         self.selected_session_dates = selected_session_dates
         self.active_session_position = 0
-        self._load_active_session(candlestick_position=0)
+        candlestick_position = 0
+        if seek_first_unannotated:
+            for session_position, session_date in enumerate(selected_session_dates):
+                session_indices = self._session_indices[session_date]
+                session_ids = self.all_candlestick_data.iloc[session_indices][
+                    "candlestick_id"
+                ]
+                missing_positions = [
+                    position
+                    for position, candlestick_id in enumerate(session_ids)
+                    if str(candlestick_id) not in self._saved_ids
+                ]
+                if missing_positions:
+                    self.active_session_position = session_position
+                    candlestick_position = missing_positions[0]
+                    break
+
+        self._load_active_session(candlestick_position=candlestick_position)
 
         # Return keyboard control to annotation after the user applies dates.
         self.chart.setFocus(Qt.FocusReason.OtherFocusReason)
