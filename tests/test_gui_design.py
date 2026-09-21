@@ -26,7 +26,9 @@ def test_regime_buttons_save_pair_and_update_progress(
     try:
         assert window.property("pricesanityTheme") == "shared-v1"
         assert all(
-            button.minimumHeight() >= 40
+            button.minimumHeight() >= (
+                32 if button.property("compact") else 40
+            )
             for button in window.findChildren(QPushButton)
         )
         assert window.current_card is not window.anticipated_card

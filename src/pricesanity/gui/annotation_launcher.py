@@ -376,9 +376,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         corpus_start_date=corpus_start_date,
         corpus_end_date=corpus_end_date,
     )
-    window.setWindowTitle("Price Sanity Annotation")
-    window.resize(1400, 900)
-    window.show()
+    window.setWindowTitle("Market Regime Annotation")
+    window.showMaximized()
 
     return application.exec()
 

@@ -27,97 +27,108 @@ PLOT_TICK_SIZE = 11
 PLOT_LEGEND_SIZE = 11
 PLOT_TIMELINE_SIZE = 10
 PLOT_TRACK_LABEL_SIZE = 8
+PLOT_FIGURE_COLOR = "#22282c"
+PLOT_AXES_COLOR = "#2d3439"
+PLOT_TEXT_COLOR = "#e4ebef"
+PLOT_GRID_COLOR = "#69757d"
+PLOT_SPINE_COLOR = "#11171b"
 
 # Semantic roles let windows request emphasis without duplicating platform-specific styling.
 STYLE = """
-QMainWindow, QDialog { background: #f4f6f8; color: #172b3a; }
-QWidget { font-size: 14px; }
-QLabel { color: #172b3a; }
+QMainWindow, QDialog { background: #22282c; color: #e4ebef; }
+QWidget { color: #e4ebef; font-size: 14px; }
+QLabel { color: #e4ebef; }
 QLabel[role="title"] { font-size: 24px; font-weight: 650; padding: 4px 0; }
 QLabel[role="section"] { font-size: 16px; font-weight: 600; }
-QLabel[role="muted"] { color: #506473; font-size: 13px; }
+QLabel[role="muted"] { color: #a9b6be; font-size: 13px; }
 QLabel[role="readonly"] {
-    color: #264f67; background: #e5eff5; padding: 9px;
-    border: 1px solid #9fb4c2; border-radius: 6px; font-weight: 550;
+    color: #c6dfed; background: #293943; padding: 9px;
+    border: 2px solid #11171b; border-radius: 6px; font-weight: 550;
 }
 QLabel[role="openingGap"] {
-    padding: 4px 10px; border: 1px solid #aebfc9; border-radius: 5px;
+    padding: 4px 10px; border: 2px solid #11171b; border-radius: 5px;
     font-size: 16px; font-weight: 600;
 }
-QLabel[gapDirection="positive"] { background: #edf8f4; color: #17634f; }
-QLabel[gapDirection="negative"] { background: #fbeff0; color: #963943; }
-QLabel[gapDirection="neutral"] { background: #f1f4f6; color: #425966; }
+QLabel[gapDirection="positive"] { background: #233b34; color: #8fd3bd; }
+QLabel[gapDirection="negative"] { background: #432b30; color: #e4a1a8; }
+QLabel[gapDirection="neutral"] { background: #30383d; color: #c2cdd3; }
+QLabel[role="regimeValue"] {
+    background: #2d3439; color: #e4ebef; padding: 7px 10px;
+    border: 2px solid #11171b; border-radius: 5px;
+}
 QFrame[role="card"] {
-    background: white; border: 2px solid #b7c6d0; border-radius: 8px;
+    background: #2d3439; border: 2px solid #11171b; border-radius: 8px;
 }
 QFrame[role="chart"] {
-    background: white; border: 2px solid #9fb1bd; border-radius: 7px;
+    background: #2d3439; border: 2px solid #11171b; border-radius: 8px;
 }
 QPushButton, QToolButton {
-    background: white; color: #172b3a; border: 2px solid #aebfc9;
+    background: #343d43; color: #e4ebef; border: 2px solid #11171b;
     border-radius: 6px; padding: 6px 12px; font-weight: 550; }
-QPushButton:hover, QToolButton:hover { background: #edf3f7; border-color: #66869b; }
-QPushButton:pressed, QToolButton:pressed { background: #dce8f0; }
-QPushButton:checked { background: #dceee9; border: 2px solid #17765e; font-weight: 600; }
-QPushButton[regime="bear"]:checked { background: #f8e5e7; border-color: #b7444e; }
-QPushButton[regime="range"]:checked { background: #f7eddb; border-color: #946513; }
+QPushButton:hover, QToolButton:hover { background: #46535b; border-color: #778b97; }
+QPushButton:pressed, QToolButton:pressed { background: #53636d; }
+QPushButton[compact="true"] { min-height: 32px; padding: 4px 9px; }
+QPushButton[largeAction="true"] { min-height: 52px; padding: 8px 16px; }
+QPushButton:checked { background: #1e5145; border: 2px solid #42a78b; font-weight: 600; }
+QPushButton[regime="bear"]:checked { background: #5a2c33; border-color: #d06b75; }
+QPushButton[regime="range"]:checked { background: #59451f; border-color: #c99745; }
 QPushButton:focus, QToolButton:focus, QComboBox:focus, QDateEdit:focus {
-    border: 2px solid #246ba0;
+    border: 2px solid #67a9d3;
 }
 QPushButton:disabled, QToolButton:disabled {
-    color: #667681; background: #ebeff2; border-color: #d5dee5;
+    color: #74818a; background: #2a3034; border-color: #171e22;
 }
 QComboBox, QDateEdit, QSpinBox {
-    background: white; color: #172b3a; min-height: 32px;
-    padding: 4px 8px; border: 2px solid #aebfc9; border-radius: 5px; }
+    background: #30383d; color: #e4ebef; min-height: 32px;
+    padding: 4px 8px; border: 2px solid #11171b; border-radius: 5px; }
 QComboBox::drop-down, QDateEdit::drop-down {
-    width: 24px; border-left: 1px solid #aebfc9;
+    width: 24px; border-left: 2px solid #11171b;
 }
-QDateEdit::drop-down:hover { background: #dce8f0; }
-QDateEdit::drop-down:pressed { background: #cbdce7; }
+QDateEdit::drop-down:hover { background: #46535b; }
+QDateEdit::drop-down:pressed { background: #53636d; }
 QDateEdit::down-arrow { image: none; width: 0px; height: 0px; }
-QTabWidget::pane { background: white; border: 2px solid #b7c6d0; }
-QTabBar::tab { padding: 12px 18px; background: #e6ecf1; color: #344e60; font-weight: 550; }
-QTabBar::tab:selected { background: white; border-bottom: 3px solid #246ba0; }
+QTabWidget::pane { background: #2d3439; border: 2px solid #11171b; }
+QTabBar::tab { padding: 12px 18px; background: #30383d; color: #bac6cc; font-weight: 550; }
+QTabBar::tab:selected { background: #3a444a; color: #f1f5f7; border-bottom: 3px solid #67a9d3; }
 QTableWidget {
-    background: white; alternate-background-color: #f3f6f8;
-    gridline-color: #c8d4dc; border: 2px solid #b7c6d0;
+    background: #2d3439; color: #e4ebef; alternate-background-color: #333c42;
+    gridline-color: #151c20; border: 2px solid #11171b;
 }
 QHeaderView::section {
-    background: #e9eff3; color: #29485b; padding: 10px;
-    border: 0px; border-right: 1px solid #c3d0d8; border-bottom: 1px solid #aebfc9;
+    background: #374147; color: #e4ebef; padding: 10px;
+    border: 0px; border-right: 1px solid #151c20; border-bottom: 2px solid #11171b;
     font-weight: 600;
 }
 QProgressBar {
-    border: 2px solid #afc0cb; border-radius: 5px; background: #e8eff3;
-    min-height: 20px; text-align: center; color: #172b3a;
+    border: 2px solid #11171b; border-radius: 5px; background: #30383d;
+    min-height: 20px; text-align: center; color: #e4ebef;
 }
-QProgressBar::chunk { background: #a7d5c7; border-radius: 4px; }
+QProgressBar::chunk { background: #2f806c; border-radius: 4px; }
 QCheckBox { spacing: 8px; font-weight: 550; }
 QCheckBox::indicator { width: 18px; height: 18px; }
 QCalendarWidget {
-    background: white; border: 2px solid #9fb1bd; border-radius: 7px;
+    background: #2d3439; border: 2px solid #11171b; border-radius: 7px;
 }
 QCalendarWidget QWidget#qt_calendar_navigationbar {
-    background: #e5edf2; border-bottom: 1px solid #9fb1bd; padding: 6px;
+    background: #30383d; border-bottom: 2px solid #11171b; padding: 6px;
 }
 QCalendarWidget QToolButton {
     min-height: 30px; margin: 2px; padding: 3px 8px;
-    background: white; border: 1px solid #9fb1bd; font-weight: 600;
+    background: #374147; border: 2px solid #11171b; font-weight: 600;
 }
 QCalendarWidget QAbstractItemView {
-    background: white; color: #172b3a; border: 1px solid #b7c6d0;
-    selection-background-color: #246ba0; selection-color: white;
-    outline: 0; alternate-background-color: white;
+    background: #2d3439; color: #e4ebef; border: 1px solid #11171b;
+    selection-background-color: #397da8; selection-color: white;
+    outline: 0; alternate-background-color: #2d3439;
 }
 QCalendarWidget QAbstractItemView:item:hover {
-    background: #dce8f0; color: #172b3a;
+    background: #46535b; color: #f1f5f7;
 }
 QCalendarWidget QMenu {
-    background: white; color: #172b3a; border: 1px solid #9fb1bd; padding: 4px;
+    background: #30383d; color: #e4ebef; border: 2px solid #11171b; padding: 4px;
 }
 QCalendarWidget QMenu::item { padding: 6px 18px 6px 10px; border-radius: 3px; }
-QCalendarWidget QMenu::item:selected { background: #dce8f0; color: #172b3a; }
+QCalendarWidget QMenu::item:selected { background: #46535b; color: #f1f5f7; }
 QToolButton#qt_calendar_monthbutton, QToolButton#qt_calendar_yearbutton {
     padding: 3px 8px; text-align: center;
 }
@@ -185,8 +196,21 @@ def apply_theme(window) -> None:
     # Enforce consistent hit targets and read-only result tables after each window has built
     # its children, avoiding duplicated widget policy in every GUI module.
     for button in window.findChildren(QPushButton):
-        button.setMinimumHeight(PRIMARY_HEIGHT)
+        button.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        button.setMouseTracking(True)
+        if button.property("largeAction"):
+            button.setMinimumHeight(52)
+        elif button.property("compact"):
+            button.setMinimumHeight(32)
+        else:
+            button.setMinimumHeight(PRIMARY_HEIGHT)
         button.setAccessibleName(button.text())
+
+    # Qt tool buttons include the calendar popup controls. Explicit hover tracking keeps their
+    # feedback responsive even while the chart or a date editor owns keyboard focus.
+    for button in window.findChildren(QToolButton):
+        button.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        button.setMouseTracking(True)
 
     for table in window.findChildren(QTableWidget):
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)

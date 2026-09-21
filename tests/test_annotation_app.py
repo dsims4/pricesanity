@@ -103,16 +103,16 @@ def test_regime_hotkeys_save_then_restore_both_choices(
     assert window.current_regime_value.text() == "Not selected"
     assert window.anticipated_regime_value.text() == "Not selected"
     assert window.selection_prompt.text().startswith("Step 1 of 2")
-    assert "press 1 for Bull" in window.selection_prompt.text()
+    assert 'Press "1" for Bull' in window.selection_prompt.text()
     assert window.chart.regime_labels == (None, None, None)
 
     # The first key fills only the current-regime scalar.
     window.regime_shortcuts["1"].activated.emit()
 
-    assert window.current_regime_value.text() == "1 - Bull"
+    assert window.current_regime_value.text() == "Bull"
     assert window.anticipated_regime_value.text() == "Not selected"
     assert window.selection_prompt.text().startswith("Step 2 of 2")
-    assert "saves both choices" in window.selection_prompt.text()
+    assert "Both choices will be saved" in window.selection_prompt.text()
     assert load_annotation(database_path, "candle-1") is None
 
     # The second key completes, saves, and advances the annotation.
@@ -128,15 +128,13 @@ def test_regime_hotkeys_save_then_restore_both_choices(
     assert saved_annotation.current_regime is MarketRegime.BULL
     assert saved_annotation.anticipated_regime is MarketRegime.BEAR
     assert window.chart.regime_labels == ("bull", None, None)
-    assert [label.get_text() for label in window.chart.timeline_axes.get_yticklabels()] == [
-        "HUMAN CURRENT REGIME"
-    ]
+    assert [label.get_text() for label in window.chart.timeline_axes.get_yticklabels()] == []
 
     # Returning to the completed candle restores both saved choices.
     window.move_to_previous_candlestick()
 
-    assert window.current_regime_value.text() == "1 - Bull"
-    assert window.anticipated_regime_value.text() == "2 - Bear"
+    assert window.current_regime_value.text() == "Bull"
+    assert window.anticipated_regime_value.text() == "Bear"
 
     window.close()
 
@@ -190,8 +188,8 @@ def test_cancel_pending_edit_never_deletes_persisted_annotation(
         window.regime_shortcuts["1"].activated.emit()
         window.cancel_pending_shortcuts["Delete"].activated.emit()
 
-        assert window.current_regime_value.text() == "2 - Bear"
-        assert window.anticipated_regime_value.text() == "3 - Range"
+        assert window.current_regime_value.text() == "Bear"
+        assert window.anticipated_regime_value.text() == "Range"
         persisted = window.annotation_store.load("candle-1")
         assert persisted == CandlestickAnnotation(
             "candle-1", MarketRegime.BEAR, MarketRegime.RANGE
@@ -199,7 +197,7 @@ def test_cancel_pending_edit_never_deletes_persisted_annotation(
 
         # With no pending edit, either key is a safe no-op.
         window.cancel_pending_shortcuts["Backspace"].activated.emit()
-        assert window.current_regime_value.text() == "2 - Bear"
+        assert window.current_regime_value.text() == "Bear"
     finally:
         window.close()
 
@@ -236,7 +234,7 @@ def test_real_cancel_key_is_chart_scoped_and_preserves_saved_pair(
         qt_application.processEvents()
 
         assert window.selection_prompt.text().startswith("Step 2 of 2")
-        assert window.current_regime_value.text() == "1 - Bull"
+        assert window.current_regime_value.text() == "Bull"
 
         window.start_date_input.setFocus(Qt.FocusReason.OtherFocusReason)
         qt_application.processEvents()
@@ -252,8 +250,8 @@ def test_real_cancel_key_is_chart_scoped_and_preserves_saved_pair(
         qt_application.processEvents()
 
         assert window.selection_prompt.text().startswith("Step 1 of 2")
-        assert window.current_regime_value.text() == "2 - Bear"
-        assert window.anticipated_regime_value.text() == "3 - Range"
+        assert window.current_regime_value.text() == "Bear"
+        assert window.anticipated_regime_value.text() == "Range"
         assert window.annotation_store.load("candle-1") == saved
     finally:
         window.close()
@@ -313,6 +311,11 @@ def test_chart_and_date_inputs_receive_click_focus(
     assert window.start_date_input.hasFocus()
     assert not window.chart.hasFocus()
     assert window.chart_frame.frameShape() == QFrame.Shape.Box
+
+    # Clicking any non-date panel restores the chart's keyboard shortcuts.
+    QTest.mouseClick(window.current_card, Qt.MouseButton.LeftButton)
+    qt_application.processEvents()
+    assert window.chart.hasFocus()
 
     # Each lower value begins directly below its label, and the two compact
     # columns stay together at the left edge instead of spanning the window.
@@ -452,7 +455,7 @@ def test_date_range_stays_open_while_navigation_crosses_sessions(
 
     assert window.active_session_position == 1
     assert window.active_candlestick_position == 0
-    assert "2026-09-10" in window.session_position_label.text()
+    assert window.selected_session_dates[window.active_session_position].isoformat() == "2026-09-10"
 
     # Moving backward from an opening candle returns to the prior session end.
     window.move_to_previous_candlestick()
@@ -620,7 +623,7 @@ def test_day_buttons_skip_unavailable_dates_and_respect_range(
         window.next_day_button.click()
 
         assert window._active_candlestick_id() == "later-1"
-        assert "2026-09-14" in window.session_position_label.text()
+        assert window.selected_session_dates[window.active_session_position].isoformat() == "2026-09-14"
         assert not window.next_day_button.isEnabled()
 
         window.previous_day_button.click()
@@ -648,7 +651,7 @@ def test_seek_buttons_skip_saved_candles_across_sessions(
 
     try:
         # Simulate another writer after the GUI opens so a stale startup cache cannot pass.
-        for candlestick_id in ("candle-2", "candle-3", "later-1"):
+        for candlestick_id in ("candle-1", "candle-2", "candle-3", "later-1"):
             save_annotation(
                 database_path,
                 CandlestickAnnotation(candlestick_id, MarketRegime.BULL, MarketRegime.BEAR),
@@ -662,9 +665,10 @@ def test_seek_buttons_skip_saved_candles_across_sessions(
 
         window.seek_back_button.click()
 
-        assert window._active_candlestick_id() == "candle-1"
+        assert window._active_candlestick_id() == "later-2"
+        assert "No earlier unannotated candle" in window.statusBar().currentMessage()
         assert window.annotation_store.load_annotated_ids() == {
-            "candle-2", "candle-3", "later-1"
+            "candle-1", "candle-2", "candle-3", "later-1"
         }
 
         # Seeking cannot escape a selected range to find an otherwise eligible candle.
@@ -694,7 +698,12 @@ def test_seek_within_session_reuses_chart_and_reports_boundaries(
     monkeypatch.setattr(window.chart, "draw_session", unexpected_redraw)
 
     try:
+        # Forward seeking must not skip the earliest missing candle when it is active.
         window.seek_forward_button.click()
+
+        assert window._active_candlestick_id() == "candle-1"
+
+        window.move_to_next_candlestick()
 
         assert window._active_candlestick_id() == "candle-2"
 
@@ -736,7 +745,7 @@ def test_failed_seek_preserves_selection_and_can_retry(
         monkeypatch.setattr(window.annotation_store, "load_annotated_ids", original_read)
         window.seek_forward_button.click()
 
-        assert window._active_candlestick_id() == "candle-2"
+        assert window._active_candlestick_id() == "candle-1"
         assert window.statusBar().currentMessage() == ""
 
     finally:

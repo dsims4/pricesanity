@@ -10,8 +10,13 @@ import pandas as pd
 
 from pricesanity.gui.theme import (
     CONTROL_SPACING,
+    PLOT_AXES_COLOR,
+    PLOT_FIGURE_COLOR,
+    PLOT_GRID_COLOR,
     PLOT_LABEL_SIZE,
     PLOT_LEGEND_SIZE,
+    PLOT_SPINE_COLOR,
+    PLOT_TEXT_COLOR,
     PLOT_TICK_SIZE,
     PLOT_TITLE_SIZE,
     REGIME_COLORS,
@@ -289,7 +294,9 @@ class ModelComparisonWindow(QMainWindow):
         self.curve_filter.addItem("Choose a model")
         self.curve_filter.addItems(model_names)
         curve_layout.addWidget(self.curve_filter)
-        self.curve_canvas = FigureCanvasQTAgg(Figure(figsize=(8, 4), layout="constrained"))
+        self.curve_canvas = FigureCanvasQTAgg(Figure(
+            figsize=(8, 4), layout="constrained", facecolor=PLOT_FIGURE_COLOR
+        ))
         curve_layout.addWidget(self.curve_canvas, stretch=2)
         curve_layout.addWidget(self.learning_curves, stretch=1)
         self.curve_filter.currentTextChanged.connect(self._draw_learning_curve)
@@ -644,6 +651,7 @@ class ModelComparisonWindow(QMainWindow):
         # Recreate the axis on every selection so artists from the previous model cannot remain in
         # an empty or shorter curve.
         axis = self.curve_canvas.figure.add_subplot(111)
+        _style_plot_axes(axis)
         plot_learning_curve(pd.DataFrame(rows), axis=axis)
         axis.set_title(
             "Exploratory learning curve · fixed development evaluation",
@@ -717,7 +725,9 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
 
     def __init__(self) -> None:
         # Store only the currently displayed aligned session pair for click-to-candle lookup.
-        self.figure = Figure(figsize=(12, 7), layout="constrained")
+        self.figure = Figure(
+            figsize=(12, 7), layout="constrained", facecolor=PLOT_FIGURE_COLOR
+        )
         super().__init__(self.figure)
         self.setMinimumHeight(460)
         self.setSizePolicy(
@@ -757,6 +767,7 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
 
         self.figure.clear()
         axes = self.figure.add_subplot(1, 1, 1)
+        _style_plot_axes(axes)
         axes.text(
             0.5,
             0.5,
@@ -800,6 +811,8 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
             sharex=True,
             gridspec_kw={"height_ratios": height_ratios},
         )
+        for axis in axes:
+            _style_plot_axes(axis)
         price_axes, regime_axes = axes[:2]
         uncertainty_axes = axes[2]
         evidence_axes = (axes[2], axes[3]) if separate_scores else (axes[2], axes[2])
@@ -858,7 +871,7 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
         regime_axes.tick_params(axis="both", labelsize=PLOT_TICK_SIZE)
         regime_axes.grid(False)
         for spine in regime_axes.spines.values():
-            spine.set_color("#9fb1bd")
+            spine.set_color(PLOT_SPINE_COLOR)
             spine.set_linewidth(1.0)
         regime_axes.legend(
             handles=[
@@ -933,7 +946,7 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
             fontsize=PLOT_TITLE_SIZE,
         )
         price_axes.tick_params(axis="both", labelsize=PLOT_TICK_SIZE)
-        price_axes.grid(axis="y", alpha=0.2)
+        price_axes.grid(axis="y", alpha=0.28, color=PLOT_GRID_COLOR)
         self.draw_idle()
 
 
@@ -941,7 +954,9 @@ class _ConfusionCanvas(FigureCanvasQTAgg):
     """Show four readable matrices instead of nested-list text."""
 
     def __init__(self) -> None:
-        self.figure = Figure(figsize=(9, 6), layout="constrained")
+        self.figure = Figure(
+            figsize=(9, 6), layout="constrained", facecolor=PLOT_FIGURE_COLOR
+        )
         super().__init__(self.figure)
 
     def show_runs(self, first: ComparisonRun, second: ComparisonRun) -> None:
@@ -955,6 +970,7 @@ class _ConfusionCanvas(FigureCanvasQTAgg):
             for column, head in enumerate(("current", "anticipated")):
                 matrix = np.asarray(run.metrics[head]["confusion_matrix"], dtype=int)
                 target = axes[row, column]
+                _style_plot_axes(target)
                 target.imshow(matrix, cmap="Blues")
                 for human in range(3):
                     for predicted in range(3):
@@ -1075,8 +1091,8 @@ def _draw_candles(axes: Any, candles: pd.DataFrame) -> None:
         low_price = float(candle.low)
         close_price = float(candle.close)
         # Monochrome price direction stays distinct from the annotated regime colors.
-        color = "white" if close_price >= open_price else "black"
-        axes.vlines(position, low_price, high_price, color="black", linewidth=0.8)
+        color = "#edf2f4" if close_price >= open_price else "#111619"
+        axes.vlines(position, low_price, high_price, color="#c5d0d6", linewidth=0.8)
         bottom = min(open_price, close_price)
         # Keep doji geometry visible even when the mathematical candle body has zero height.
         height = max(abs(close_price - open_price), 1e-9)
@@ -1086,11 +1102,23 @@ def _draw_candles(axes: Any, candles: pd.DataFrame) -> None:
                 0.64,
                 height,
                 facecolor=color,
-                edgecolor="black",
+                edgecolor="#c5d0d6",
                 linewidth=0.8,
             )
         )
     axes.set_xlim(-1, len(candles))
+
+
+def _style_plot_axes(axes: Any) -> None:
+    """Keep Matplotlib panels consistent with the shared dark Qt theme."""
+
+    axes.set_facecolor(PLOT_AXES_COLOR)
+    axes.tick_params(colors=PLOT_TEXT_COLOR)
+    axes.xaxis.label.set_color(PLOT_TEXT_COLOR)
+    axes.yaxis.label.set_color(PLOT_TEXT_COLOR)
+    axes.title.set_color(PLOT_TEXT_COLOR)
+    for spine in axes.spines.values():
+        spine.set_color(PLOT_SPINE_COLOR)
 
 
 def _uncertainty_series(predictions: pd.DataFrame, *, head: str) -> np.ndarray:

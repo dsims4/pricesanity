@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from PySide6.QtCore import QDate, QPointF, QRectF, QSignalBlocker, Qt
+from PySide6.QtCore import QDate, QEvent, QPointF, QRectF, QSignalBlocker, QTimer, Qt
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
@@ -19,6 +19,7 @@ from PySide6.QtGui import (
     QTextCharFormat,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QCalendarWidget,
     QDateEdit,
     QFrame,
@@ -54,15 +55,17 @@ REGIME_SHORTCUT_OPTIONS = {
     "3": MarketRegime.RANGE,
 }
 
-# Reverse the shortcut map so saved regimes can show their original key.
-REGIME_KEYS = {regime: number_key for number_key, regime in REGIME_SHORTCUT_OPTIONS.items()}
-
 # Distinguish an untouched scalar from any of the three valid choices.
 UNSELECTED_REGIME_TEXT = "Not selected"
 
 
 class CalendarDateEdit(QDateEdit):
     """Draw a calendar glyph in the existing popup-button subcontrol."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.setMouseTracking(True)
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
@@ -117,6 +120,7 @@ class AnnotationWindow(QMainWindow):
 
         # Initialize Qt ownership before adding controls that the window must later release.
         super().__init__()
+        self.setWindowTitle("Market Regime Annotation")
 
         # Keep a private copy so the window cannot alter the source market data.
         self.all_candlestick_data = candlestick_data.copy()
@@ -239,7 +243,7 @@ class AnnotationWindow(QMainWindow):
 
         central_widget = QWidget(self)
         window_layout = QVBoxLayout(central_widget)
-        window_layout.addWidget(heading("Annotate market regimes"))
+        window_layout.addWidget(heading("Market Regime Annotation"))
 
         # Keep the date range above the chart so changing the loaded sessions
         # does not require closing or restarting the application.
@@ -351,18 +355,29 @@ class AnnotationWindow(QMainWindow):
         navigation_layout.setSpacing(CONTROL_SPACING)
         window_layout.addLayout(navigation_layout)
 
-        self.previous_candle_button = QPushButton("Previous candle · ←")
-        self.next_candle_button = QPushButton("Next candle · →")
+        self.previous_candle_button = QPushButton("Previous candle")
+        self.next_candle_button = QPushButton("Next candle")
         self.previous_candle_button.clicked.connect(self.move_to_previous_candlestick)
         self.next_candle_button.clicked.connect(self.move_to_next_candlestick)
-        navigation_layout.addWidget(self.previous_candle_button)
-        navigation_layout.addWidget(self.next_candle_button)
+        navigation_layout.addWidget(self.previous_candle_button, stretch=1)
+        navigation_layout.addWidget(self.next_candle_button, stretch=1)
 
         # Restore chart focus after navigation so number-key annotation can resume immediately.
         for button, navigation_action, tooltip in navigation_buttons:
             button.setToolTip(tooltip)
             button.clicked.connect(navigation_action)
-            navigation_layout.addWidget(button)
+            button.setProperty("compact", True)
+            navigation_layout.addWidget(button, stretch=1)
+
+        self.previous_candle_button.setProperty("compact", True)
+        self.next_candle_button.setProperty("compact", True)
+        # Keep the active candle's opening gap at the chart-side end of the compact row.
+        navigation_layout.addWidget(QLabel("Opening gap:"))
+        self.opening_gap_value = QLabel("")
+        self.opening_gap_value.setProperty("role", "openingGap")
+        self.opening_gap_value.setProperty("gapDirection", "neutral")
+        self.opening_gap_value.setMinimumWidth(90)
+        navigation_layout.addWidget(self.opening_gap_value)
 
         date_range_layout.addStretch()
 
@@ -370,29 +385,9 @@ class AnnotationWindow(QMainWindow):
         # operating system's window controls. Placing it after the stretch
         # keeps this terminating action separate at the top-right corner.
         self.stop_button = QPushButton("Stop")
+        self.stop_button.setProperty("largeAction", True)
         self.stop_button.clicked.connect(self.close)
         date_range_layout.addWidget(self.stop_button)
-
-        # Show which trading date is active while the arrow identifies its
-        # active candlestick below.
-        session_information_layout = QHBoxLayout()
-        session_information_layout.setSpacing(TIGHT_SPACING)
-        window_layout.addLayout(session_information_layout)
-        self.session_position_label = QLabel("")
-        session_information_layout.addWidget(self.session_position_label)
-        session_information_layout.addStretch()
-
-        # Display the normalized opening move for whichever candle the arrow
-        # currently identifies.
-        session_information_layout.addWidget(QLabel("Opening gap:"))
-        self.opening_gap_value = QLabel("")
-        self.opening_gap_value.setProperty("role", "openingGap")
-        self.opening_gap_value.setProperty("gapDirection", "neutral")
-        self.opening_gap_value.setFrameStyle(
-            QFrame.Shape.Panel | QFrame.Shadow.Sunken
-        )
-        self.opening_gap_value.setMinimumWidth(90)
-        session_information_layout.addWidget(self.opening_gap_value)
 
         # Give the plot a visible boundary while its layout continues to expand
         # and contract with the main window.
@@ -401,7 +396,7 @@ class AnnotationWindow(QMainWindow):
         self.chart_frame.setProperty("role", "chart")
         self.chart_frame.setLineWidth(2)
         chart_layout = QVBoxLayout(self.chart_frame)
-        chart_layout.setContentsMargins(0, 0, 0, 0)
+        chart_layout.setContentsMargins(2, 2, 2, 2)
 
         self.chart = CandlestickChart(
             self.chart_frame,
@@ -427,9 +422,7 @@ class AnnotationWindow(QMainWindow):
         self.current_regime_label = heading("CURRENT REGIME", role="muted")
         current_regime_layout.addWidget(self.current_regime_label)
         self.current_regime_value = QLabel(UNSELECTED_REGIME_TEXT)
-        self.current_regime_value.setFrameStyle(
-            QFrame.Shape.Panel | QFrame.Shadow.Sunken
-        )
+        self.current_regime_value.setProperty("role", "regimeValue")
         self.current_regime_value.setMinimumWidth(160)
         self.current_regime_value.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
@@ -447,9 +440,7 @@ class AnnotationWindow(QMainWindow):
         self.anticipated_regime_label = heading("ANTICIPATED REGIME", role="muted")
         anticipated_regime_layout.addWidget(self.anticipated_regime_label)
         self.anticipated_regime_value = QLabel(UNSELECTED_REGIME_TEXT)
-        self.anticipated_regime_value.setFrameStyle(
-            QFrame.Shape.Panel | QFrame.Shadow.Sunken
-        )
+        self.anticipated_regime_value.setProperty("role", "regimeValue")
         self.anticipated_regime_value.setMinimumWidth(160)
         self.anticipated_regime_value.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
@@ -472,7 +463,7 @@ class AnnotationWindow(QMainWindow):
             buttons.setSpacing(TIGHT_SPACING)
             target_layout.addLayout(buttons)
             for key, regime in REGIME_SHORTCUT_OPTIONS.items():
-                button = QPushButton(f"{regime.value.title()} · {key}")
+                button = QPushButton(f"{regime.value.title()} {key}")
                 button.setIcon(
                     regime_icon(
                         regime.value,
@@ -499,6 +490,12 @@ class AnnotationWindow(QMainWindow):
         window_layout.addWidget(self.commit_state)
         self.setCentralWidget(central_widget)
         apply_theme(self)
+
+        # Clicking anywhere except either date control returns keyboard shortcuts to the chart.
+        # Install the filter on existing descendants so buttons, cards, labels, and empty panel
+        # space all follow the same focus rule without intercepting their normal click behavior.
+        for widget in (central_widget, *central_widget.findChildren(QWidget)):
+            widget.installEventFilter(self)
 
         # Begin with the complete available range and its first trading session.
         self.annotation_store = AnnotationStore(self.database_path)
@@ -584,6 +581,29 @@ class AnnotationWindow(QMainWindow):
             self.is_selecting_current_regime = False
         self.select_regime(regime)
         self.chart.setFocus()
+
+    def eventFilter(self, watched, event):
+        """Return annotation focus to the chart after clicks outside either date input."""
+
+        if event.type() == QEvent.Type.MouseButtonPress:
+            clicked_widget = QApplication.widgetAt(
+                event.globalPosition().toPoint()
+            ) or watched
+            date_controls = (self.start_date_input, self.end_date_input)
+            is_date_control = any(
+                clicked_widget is control
+                or control.isAncestorOf(clicked_widget)
+                or clicked_widget is control.calendarWidget()
+                or control.calendarWidget().isAncestorOf(clicked_widget)
+                for control in date_controls
+            )
+            if not is_date_control:
+                QTimer.singleShot(
+                    0,
+                    lambda: self.chart.setFocus(Qt.FocusReason.MouseFocusReason),
+                )
+
+        return super().eventFilter(watched, event)
 
     @staticmethod
     def _configure_date_calendar(
@@ -807,9 +827,7 @@ class AnnotationWindow(QMainWindow):
         # Keep the current chart intact when the controls describe an invalid
         # range, allowing the user to correct the dates without losing context.
         if starting_date > ending_date:
-            self.session_position_label.setText(
-                "Starting date must not be after ending date."
-            )
+            self.statusBar().showMessage("Starting date must not be after ending date.")
 
             return
 
@@ -823,7 +841,7 @@ class AnnotationWindow(QMainWindow):
 
         # A range without eligible sessions cannot provide an active annotation candle.
         if not selected_session_dates:
-            self.session_position_label.setText(
+            self.statusBar().showMessage(
                 "No prepared trading sessions are inside this date range."
             )
 
@@ -859,14 +877,6 @@ class AnnotationWindow(QMainWindow):
         self.previous_day_button.setEnabled(self.active_session_position > 0)
         self.next_day_button.setEnabled(
             self.active_session_position < len(self.selected_session_dates) - 1
-        )
-
-        # Make session progress visible without assigning equal lengths to
-        # regular sessions and exchange-scheduled half days.
-        self.session_position_label.setText(
-            f"Session {active_session_date.isoformat()} "
-            f"({self.active_session_position + 1} of "
-            f"{len(self.selected_session_dates)})"
         )
 
         # Redraw the complete active day and restore any prior choices for the
@@ -989,7 +999,7 @@ class AnnotationWindow(QMainWindow):
         ]
         self.chart.set_regime_labels(
             current_regimes,
-            legend_title="human",
+            legend_title="",
         )
 
     def _active_candlestick_id(self) -> str:
@@ -1007,19 +1017,16 @@ class AnnotationWindow(QMainWindow):
 
     @staticmethod
     def _format_regime_choice(regime: MarketRegime) -> str:
-        """Format a saved regime with its matching number key.
+        """Format a saved regime for the annotation summary.
 
         Args:
             regime: Regime selected for one annotation scalar.
 
         Returns:
-            Number and regime shown in the GUI.
+            Regime name shown in the GUI.
         """
 
-        # Show both parts so the display confirms the exact key that was chosen.
-        number_key = REGIME_KEYS[regime]
-
-        return f"{number_key} - {regime.value.title()}"
+        return regime.value.title()
 
     def _load_active_annotation(self) -> None:
         """Display the saved choices for the active candlestick."""
@@ -1122,14 +1129,15 @@ class AnnotationWindow(QMainWindow):
         # movement so a first-time annotator can complete the workflow unaided.
         if self.is_selecting_current_regime:
             instruction = (
-                "Step 1 of 2: Click the chart, then press 1 for Bull, "
-                "2 for Bear, or 3 for Range to choose the current regime."
+                'Step 1 of 2: Click the chart. Press "1" for Bull, "2" for Bear, '
+                'or "3" for Range to select the current regime.'
             )
         else:
             instruction = (
-                "Step 2 of 2: Press 1 for Bull, 2 for Bear, or 3 for Range "
-                "to choose the anticipated regime. This saves both choices "
-                "and moves to the next candle. Backspace or Delete cancels this edit."
+                'Step 2 of 2: Press "1" for Bull, "2" for Bear, or "3" for Range '
+                "to select the anticipated regime. Both choices will be saved, "
+                "and the next candle will open automatically. Press Backspace or "
+                "Delete to cancel the pending edit."
             )
 
         self.selection_prompt.setText(instruction)
@@ -1148,10 +1156,7 @@ class AnnotationWindow(QMainWindow):
                 )
             )
 
-        # Progress counts use the complete eligible corpus, while the candle fraction uses the
-        # currently selected session so revisiting earlier work remains easy to orient.
-        # Progress counts committed pairs, independent of the active two-key choice. Keep the
-        # per-session bar and corpus completion text synchronized with the same saved-ID cache.
+        # Progress counts committed pairs independently from the active two-key choice.
         day = self.selected_session_dates[self.active_session_position]
         ids = self._session_ids_for_progress[day]
         saved = len(ids.intersection(self._saved_ids))
@@ -1159,8 +1164,7 @@ class AnnotationWindow(QMainWindow):
         total = len(self.available_session_dates)
         self.progress_label.setText(
             f"{day} · {completed:,} / {total:,} sessions complete "
-            f"({completed / total:.1%}) · {total - completed:,} remaining · "
-            f"Candle {self.active_candlestick_position + 1} / {len(ids)}"
+            f"({completed / total:.1%})"
         )
         self.session_progress.setRange(0, len(ids))
         self.session_progress.setValue(saved)
@@ -1233,10 +1237,14 @@ class AnnotationWindow(QMainWindow):
             is_current_session = session_position == self.active_session_position
             starting_position = 0 if direction > 0 else len(session_indices) - 1
 
-            # Exclude the current candle so repeated clicks always advance in the requested
-            # direction, even when its annotation has not yet been saved.
+            # Forward seeking stops on the earliest missing annotation, including the current
+            # candle. This prevents repeated clicks from skipping the first gap in the corpus.
             if is_current_session:
-                starting_position = self.active_candlestick_position + direction
+                starting_position = (
+                    self.active_candlestick_position
+                    if direction > 0
+                    else self.active_candlestick_position + direction
+                )
 
             candlestick_positions = range(
                 starting_position,
