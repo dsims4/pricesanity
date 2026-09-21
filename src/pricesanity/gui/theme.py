@@ -53,8 +53,8 @@ QLabel[gapDirection="positive"] { background: #233b34; color: #8fd3bd; }
 QLabel[gapDirection="negative"] { background: #432b30; color: #e4a1a8; }
 QLabel[gapDirection="neutral"] { background: #30383d; color: #c2cdd3; }
 QLabel[role="regimeValue"] {
-    background: #2d3439; color: #e4ebef; padding: 7px 10px;
-    border: 2px solid #11171b; border-radius: 5px;
+    background: transparent; color: #e4ebef; padding: 0px;
+    border: none; font-weight: 600;
 }
 QFrame[role="card"] {
     background: #2d3439; border: 2px solid #11171b; border-radius: 8px;
@@ -68,7 +68,7 @@ QPushButton, QToolButton {
 QPushButton:hover, QToolButton:hover { background: #46535b; border-color: #778b97; }
 QPushButton:pressed, QToolButton:pressed { background: #53636d; }
 QPushButton[compact="true"] { min-height: 32px; padding: 4px 9px; }
-QPushButton[largeAction="true"] { min-height: 52px; padding: 8px 16px; }
+QPushButton[wideAction="true"] { min-width: 112px; padding-left: 18px; padding-right: 18px; }
 QPushButton:checked { background: #1e5145; border: 2px solid #42a78b; font-weight: 600; }
 QPushButton[regime="bear"]:checked { background: #5a2c33; border-color: #d06b75; }
 QPushButton[regime="range"]:checked { background: #59451f; border-color: #c99745; }
@@ -198,9 +198,7 @@ def apply_theme(window) -> None:
     for button in window.findChildren(QPushButton):
         button.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         button.setMouseTracking(True)
-        if button.property("largeAction"):
-            button.setMinimumHeight(52)
-        elif button.property("compact"):
+        if button.property("compact"):
             button.setMinimumHeight(32)
         else:
             button.setMinimumHeight(PRIMARY_HEIGHT)

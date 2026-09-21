@@ -79,13 +79,25 @@ class CandlestickChart(FigureCanvasQTAgg):
         self.timeline_axes = figure.add_subplot(grid[1, 0], sharex=self.axes)
         self.time_axes = figure.add_subplot(grid[2, 0], sharex=self.axes)
         figure.subplots_adjust(left=0.025, right=0.90, top=0.985, bottom=0.115)
+
+        # Use the room freed below the price plot to move the complete lower chart stack up.
+        lower_axis_shift = 0.020
         bar_position = self.timeline_axes.get_position()
         self.timeline_axes.set_position(
             [
                 bar_position.x0,
-                bar_position.y0 - 0.012,
+                bar_position.y0 + lower_axis_shift,
                 bar_position.width,
                 bar_position.height,
+            ]
+        )
+        time_position = self.time_axes.get_position()
+        self.time_axes.set_position(
+            [
+                time_position.x0,
+                time_position.y0 + lower_axis_shift + 0.012,
+                time_position.width,
+                time_position.height,
             ]
         )
 
@@ -127,6 +139,7 @@ class CandlestickChart(FigureCanvasQTAgg):
         """Refresh responsive tick density after resizing."""
 
         super().resizeEvent(event)
+        self._style_price_plot()
         if self._display_timestamps:
             self._update_axis_ticks()
 
@@ -272,7 +285,7 @@ class CandlestickChart(FigureCanvasQTAgg):
 
         # Select a responsive number of readable clock divisions while retaining session anchors.
         self._update_axis_ticks()
-        self.axes.tick_params(axis="x", labelbottom=False)
+        self.axes.tick_params(axis="x", bottom=False, labelbottom=False)
 
         # Put session-local time below the chart and price values along its right
         # edge, matching the layout commonly used for market charts.
@@ -361,16 +374,8 @@ class CandlestickChart(FigureCanvasQTAgg):
                 midpoint_tick = round(((visible_low + visible_high) / 2) * 4) / 4
                 self.axes.set_yticks([midpoint_tick])
                 quarter_count = 0
-            candidate_counts = [
-                candidate
-                for candidate in range(1, min(8, quarter_count) + 1)
-                if quarter_count % candidate == 0
-            ]
-            if candidate_counts:
-                chosen_intervals = min(
-                    candidate_counts,
-                    key=lambda candidate: (abs(candidate - interval_count), -candidate),
-                )
+            if quarter_count:
+                chosen_intervals = min(interval_count, quarter_count)
                 step = (last_tick - first_tick) / chosen_intervals
                 self.axes.set_yticks(
                     [
@@ -627,7 +632,7 @@ class CandlestickChart(FigureCanvasQTAgg):
             labelsize=PLOT_TICK_SIZE,
             colors=PLOT_TEXT_COLOR,
             pad=5,
-            length=0,
+            length=5,
         )
         self.timeline_axes.tick_params(
             axis="y", labelsize=PLOT_TRACK_LABEL_SIZE, colors=PLOT_TEXT_COLOR
@@ -645,17 +650,7 @@ class CandlestickChart(FigureCanvasQTAgg):
     def _style_axes(self) -> None:
         """Restore the chart's high-contrast white plotting surface after clearing axes."""
 
-        self.axes.patch = FancyBboxPatch(
-            (0, 0),
-            1,
-            1,
-            transform=self.axes.transAxes,
-            boxstyle="round,pad=0,rounding_size=0.02",
-            facecolor="white",
-            edgecolor="black",
-            linewidth=2.5,
-            zorder=-1,
-        )
+        self._style_price_plot()
         self.axes.tick_params(colors=PLOT_TEXT_COLOR)
         self.axes.xaxis.label.set_color(PLOT_TEXT_COLOR)
         self.axes.yaxis.label.set_color(PLOT_TEXT_COLOR)
@@ -677,6 +672,26 @@ class CandlestickChart(FigureCanvasQTAgg):
         self.time_axes.yaxis.label.set_color(PLOT_TEXT_COLOR)
         for spine in self.time_axes.spines.values():
             spine.set_color("#11171b")
+
+    def _style_price_plot(self) -> None:
+        """Draw the white price plot with a display-pixel-symmetric rounded border."""
+
+        axes_bounds = self.axes.get_window_extent()
+        axes_width = max(float(axes_bounds.width), 1.0)
+        axes_height = max(float(axes_bounds.height), 1.0)
+        corner_radius = 8.0 / axes_width
+        self.axes.patch = FancyBboxPatch(
+            (0, 0),
+            1,
+            1,
+            transform=self.axes.transAxes,
+            boxstyle=f"round,pad=0,rounding_size={corner_radius}",
+            mutation_aspect=axes_width / axes_height,
+            facecolor="white",
+            edgecolor="black",
+            linewidth=2.5,
+            zorder=-1,
+        )
 
     def _create_crosshair(self) -> None:
         """Create the hidden Trade Tank-style crosshair and axis locator boxes."""

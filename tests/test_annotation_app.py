@@ -317,11 +317,10 @@ def test_chart_and_date_inputs_receive_click_focus(
     qt_application.processEvents()
     assert window.chart.hasFocus()
 
-    # Each lower value begins directly below its label, and the two compact
-    # columns stay together at the left edge instead of spanning the window.
-    assert window.current_regime_label.x() == window.current_regime_value.x()
-    assert window.anticipated_regime_label.x() == window.anticipated_regime_value.x()
-    assert window.anticipated_regime_value.x() - window.current_regime_value.x() < 180
+    # Selection state remains available internally without duplicating the chosen regime
+    # above the already-highlighted selection buttons.
+    assert window.current_regime_value.isHidden()
+    assert window.anticipated_regime_value.isHidden()
 
     window.close()
 
@@ -407,6 +406,8 @@ def test_stop_button_closes_annotation_window(
     qt_application.processEvents()
 
     assert window.stop_button.x() > window.width() // 2
+    assert window.stop_button.height() == window.previous_day_button.height()
+    assert window.stop_button.width() > window.previous_day_button.width()
 
     QTest.mouseClick(window.stop_button, Qt.MouseButton.LeftButton)
     qt_application.processEvents()

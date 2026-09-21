@@ -385,7 +385,7 @@ class AnnotationWindow(QMainWindow):
         # operating system's window controls. Placing it after the stretch
         # keeps this terminating action separate at the top-right corner.
         self.stop_button = QPushButton("Stop")
-        self.stop_button.setProperty("largeAction", True)
+        self.stop_button.setProperty("wideAction", True)
         self.stop_button.clicked.connect(self.close)
         date_range_layout.addWidget(self.stop_button)
 
@@ -415,19 +415,19 @@ class AnnotationWindow(QMainWindow):
         regime_layout.setSpacing(CONTROL_SPACING)
         window_layout.addLayout(regime_layout)
 
-        # Place each value below its label so their left edges remain aligned.
+        # Keep each target compact so the candlestick chart retains the vertical space.
         current_regime_layout = QVBoxLayout()
-        current_regime_layout.setContentsMargins(12, 10, 12, 12)
-        current_regime_layout.setSpacing(TIGHT_SPACING)
+        current_regime_layout.setContentsMargins(10, 5, 10, 7)
+        current_regime_layout.setSpacing(3)
         self.current_regime_label = heading("CURRENT REGIME", role="muted")
         current_regime_layout.addWidget(self.current_regime_label)
         self.current_regime_value = QLabel(UNSELECTED_REGIME_TEXT)
         self.current_regime_value.setProperty("role", "regimeValue")
-        self.current_regime_value.setMinimumWidth(160)
         self.current_regime_value.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
         current_regime_layout.addWidget(self.current_regime_value)
+        self.current_regime_value.hide()
         self.current_card = QFrame()
         self.current_card.setProperty("role", "card")
         self.current_card.setLayout(current_regime_layout)
@@ -435,17 +435,17 @@ class AnnotationWindow(QMainWindow):
 
         # A separate classification head is planned for this future target.
         anticipated_regime_layout = QVBoxLayout()
-        anticipated_regime_layout.setContentsMargins(12, 10, 12, 12)
-        anticipated_regime_layout.setSpacing(TIGHT_SPACING)
+        anticipated_regime_layout.setContentsMargins(10, 5, 10, 7)
+        anticipated_regime_layout.setSpacing(3)
         self.anticipated_regime_label = heading("ANTICIPATED REGIME", role="muted")
         anticipated_regime_layout.addWidget(self.anticipated_regime_label)
         self.anticipated_regime_value = QLabel(UNSELECTED_REGIME_TEXT)
         self.anticipated_regime_value.setProperty("role", "regimeValue")
-        self.anticipated_regime_value.setMinimumWidth(160)
         self.anticipated_regime_value.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
         anticipated_regime_layout.addWidget(self.anticipated_regime_value)
+        self.anticipated_regime_value.hide()
         self.anticipated_card = QFrame()
         self.anticipated_card.setProperty("role", "card")
         self.anticipated_card.setLayout(anticipated_regime_layout)

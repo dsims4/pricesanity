@@ -65,7 +65,7 @@ def test_draw_session_displays_all_candles_and_active_arrow(
     assert chart.axes.texts[0].xy == (1, 103.0)
     assert not chart.axes.texts[1].get_visible()
     assert chart.time_axes.get_xlabel() == "Time of day (New York)"
-    assert chart.axes.get_ylabel() == "Price"
+    assert chart.axes.get_ylabel() == "Price (U.S. Dollars)"
     assert chart.axes.yaxis.get_ticks_position() == "right"
     assert chart.time_axes.get_xticklabels()[0].get_text() == "09:30"
     assert chart.axes.get_facecolor() == (1.0, 1.0, 1.0, 1.0)
@@ -73,8 +73,15 @@ def test_draw_session_displays_all_candles_and_active_arrow(
     assert chart.axes.yaxis.get_major_formatter()(100.0) == "100.00"
     assert chart.axes.yaxis.label.get_color() == PLOT_TEXT_COLOR
     assert chart.axes.get_yticklabels()[0].get_color() == PLOT_TEXT_COLOR
-    assert chart.axes.spines["right"].get_edgecolor() == (0.0, 0.0, 0.0, 1.0)
+    assert isinstance(chart.axes.patch, FancyBboxPatch)
+    assert chart.axes.patch.get_edgecolor() == (0.0, 0.0, 0.0, 1.0)
+    assert not any(spine.get_visible() for spine in chart.axes.spines.values())
+    assert not any(line.get_visible() for line in chart.axes.xaxis.get_ticklines())
     assert chart.time_axes.spines["bottom"].get_edgecolor() != (0.0, 0.0, 0.0, 1.0)
+    assert any(
+        line.get_visible() and line.get_markersize() > 0
+        for line in chart.time_axes.xaxis.get_ticklines()
+    )
     assert chart.focusPolicy() == Qt.FocusPolicy.StrongFocus
 
     chart.close()
@@ -183,8 +190,12 @@ def test_navigation_reuses_candles_and_axis_layout(qt_application) -> None:
     assert time_labels[0] == "09:30"
     assert time_labels[-1] == "16:00"
     assert 5 <= len(chart.axes.get_yticks()) <= 9
-    assert chart.axes.get_yticks()[0] == chart.axes.get_ylim()[0]
-    assert chart.axes.get_yticks()[-1] == chart.axes.get_ylim()[1]
+    price_ticks = chart.axes.get_yticks()
+    assert price_ticks[0] > chart.axes.get_ylim()[0]
+    assert price_ticks[-1] < chart.axes.get_ylim()[1]
+    assert abs((price_ticks[0] * 4) - round(price_ticks[0] * 4)) < 1e-9
+    assert abs((price_ticks[-1] * 4) - round(price_ticks[-1] * 4)) < 1e-9
+    assert all((right - left) >= 0.25 for left, right in zip(price_ticks, price_ticks[1:]))
     chart.draw_session(data.iloc[:3], 2)
 
     assert len(chart.axes.patches) == 3
