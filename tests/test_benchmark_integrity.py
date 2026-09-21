@@ -45,11 +45,15 @@ def select_and_freeze(executor):
 
 
 def test_histogram_boosting_never_randomly_validates():
+    """The benchmark must supply chronological validation outside the estimator."""
+
     model = build_model("gradient_boosting", random_seed=42)
     assert model.estimator_factory().early_stopping is False
 
 
 def test_development_does_not_open_holdout_bytes(tmp_path, monkeypatch):
+    """Development stages must not read any sealed final-holdout artifact bytes."""
+
     original = _tiny_study(tmp_path)
     real_open = Path.open
 
@@ -89,6 +93,8 @@ def test_development_does_not_open_holdout_bytes(tmp_path, monkeypatch):
 
 
 def test_global_freeze_requires_every_track_and_blocks_mutation(tmp_path):
+    """A study freezes only when every track is selected and then becomes immutable."""
+
     executor = small_study(tmp_path)
     executor.tune_model(
         "logistic_regression",
@@ -124,6 +130,8 @@ def test_global_freeze_requires_every_track_and_blocks_mutation(tmp_path):
 
 @pytest.mark.parametrize("mutation", ["space", "protocol", "seed"])
 def test_optuna_resume_rejects_changed_identity(tmp_path, mutation):
+    """A persistent tuning study cannot resume under a different experiment identity."""
+
     executor = small_study(tmp_path)
     executor.tune_model(
         "logistic_regression",
@@ -150,6 +158,8 @@ def test_optuna_resume_rejects_changed_identity(tmp_path, mutation):
 
 
 def test_tabular_padding_excluded_and_indicators_unchanged():
+    """Standardization excludes padding while retaining binary history indicators."""
+
     mask = np.array([[False, True], [True, True], [False, True]])
     real = np.array(
         [
@@ -180,6 +190,8 @@ def test_tabular_padding_excluded_and_indicators_unchanged():
 
 
 def test_context_cache_keeps_exact_population_and_matches_rebuild(tmp_path):
+    """Cached context variants must preserve targets and equal a clean reconstruction."""
+
     from pricesanity.features.causal_window import build_causal_windows
 
     executor = small_study(tmp_path)
@@ -233,6 +245,8 @@ def test_crash_resume_preserves_timing_without_repeating_work(
     monkeypatch,
     crash_stage,
 ):
+    """Resume must retain completed timing evidence and rerun only unfinished work."""
+
     import pricesanity.benchmark.artifacts as artifacts
     import pricesanity.benchmark.runner as runner
     from pricesanity.models.sklearn_adapter import SklearnDualHeadAdapter
@@ -300,6 +314,8 @@ def test_crash_resume_preserves_timing_without_repeating_work(
 
 
 def test_bootstrap_matches_reference_draws():
+    """Optimized session bootstrap intervals must equal the direct row-level method."""
+
     rng = np.random.default_rng(55)
     labels = np.array(["bull", "bear", "range"])
     # Unequal lengths distinguish whole-session draws from candle resampling; nonconsecutive
@@ -351,6 +367,8 @@ def test_bootstrap_matches_reference_draws():
 
 
 def test_partial_resume_rejects_changed_source(tmp_path, monkeypatch):
+    """Interrupted benchmark state cannot resume after its source code identity changes."""
+
     import pricesanity.benchmark.artifacts as artifacts
     from test_benchmark_artifacts import _identity
 
@@ -366,6 +384,8 @@ def test_partial_resume_rejects_changed_source(tmp_path, monkeypatch):
 
 
 def test_seed_aggregation_rejects_same_count_with_wrong_seeds():
+    """A complete seed count is invalid when it is not the declared seed set."""
+
     from pricesanity.benchmark.aggregation import aggregate_seed_results
 
     rows = pd.DataFrame(
@@ -393,6 +413,8 @@ def test_seed_aggregation_rejects_same_count_with_wrong_seeds():
 
 
 def test_anticipated_transition_events_are_independent_of_current():
+    """Anticipated transitions must be scored from their own labels and predictions."""
+
     from pricesanity.benchmark.metrics import evaluate_benchmark_predictions
 
     metrics = evaluate_benchmark_predictions(
@@ -416,6 +438,8 @@ def test_anticipated_transition_events_are_independent_of_current():
 
 
 def test_report_before_final_and_single_session_uncertainty_are_honest(tmp_path):
+    """Pre-final reports and undersized samples must state missing evidence honestly."""
+
     from pricesanity.benchmark.notebook_reports import (
         error_analysis_tables,
         final_report_tables,
@@ -438,6 +462,8 @@ def test_report_before_final_and_single_session_uncertainty_are_honest(tmp_path)
 
 
 def test_explicit_unavailable_accelerator_is_rejected(tmp_path, monkeypatch):
+    """An explicitly selected unavailable device must fail instead of silently falling back."""
+
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
@@ -453,6 +479,8 @@ def test_explicit_unavailable_accelerator_is_rejected(tmp_path, monkeypatch):
 
 
 def test_snapshot_api_cannot_use_per_model_winner_as_global_seal(tmp_path):
+    """One model selection file cannot authorize access to the global holdout."""
+
     from pricesanity.benchmark.snapshot import load_sealed_holdout
 
     executor = small_study(tmp_path)
@@ -470,6 +498,8 @@ def test_snapshot_api_cannot_use_per_model_winner_as_global_seal(tmp_path):
 
 
 def test_paired_confusion_bootstrap_matches_reference_rows():
+    """Optimized paired comparisons must match direct session-resampled confusion scores."""
+
     from pricesanity.benchmark.analysis import paired_cluster_bootstrap_difference
 
     rng = np.random.default_rng(22)

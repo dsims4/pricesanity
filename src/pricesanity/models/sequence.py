@@ -27,6 +27,8 @@ class SequenceTrainingConfig:
     weight_decay: float = 1e-4
 
     def __post_init__(self) -> None:
+        """Reject optimization settings that cannot produce a valid training run."""
+
         if self.epochs <= 0 or self.batch_size <= 0 or self.learning_rate <= 0:
             raise ValueError("Sequence training duration, batch size, and rate must be positive.")
         if self.weight_decay < 0:
@@ -45,6 +47,8 @@ class CausalConvolutionBlock(nn.Module):
     """One residual temporal block padded only on the historical side."""
 
     def __init__(self, width: int, kernel_size: int, dilation: int) -> None:
+        """Create one left-padded residual convolution at the requested dilation."""
+
         super().__init__()
         if width <= 0 or kernel_size <= 0 or dilation <= 0:
             raise ValueError("TCN block dimensions must be positive.")
@@ -82,6 +86,8 @@ class RegimeTCN(nn.Module):
         layer_count: int = 3,
         regime_count: int = 3,
     ) -> None:
+        """Build a causal temporal stack and two independent regime heads."""
+
         super().__init__()
         if min(feature_count, channel_width, kernel_size, layer_count, regime_count) <= 0:
             raise ValueError("TCN dimensions must be positive.")
@@ -162,6 +168,8 @@ class RegimeGRU(nn.Module):
         layer_count: int = 1,
         regime_count: int = 3,
     ) -> None:
+        """Build a forward-only recurrent encoder and two regime heads."""
+
         super().__init__()
         if min(feature_count, hidden_size, layer_count, regime_count) <= 0:
             raise ValueError("GRU dimensions must be positive.")
@@ -197,6 +205,8 @@ class ExistingTransformerBridge(nn.Module):
     """Expose the production Transformer through the benchmark sequence contract."""
 
     def __init__(self, config: TransformerConfig) -> None:
+        """Wrap the project Transformer in the common benchmark output contract."""
+
         super().__init__()
         self.transformer = RegimeTransformer(config)
 
@@ -236,6 +246,8 @@ class TorchSequenceAdapter:
         cpu_worker_count: int,
         standardize: bool = True,
     ) -> None:
+        """Retain architecture, training, device, and reproducibility choices."""
+
         # Keep construction metadata beside fitted state so saved adapters can rebuild the
         # exact architecture without serializing Python construction callables.
         self.model_name = model_name
@@ -748,14 +760,20 @@ class _scoped_torch_seed:
     """Seed construction while restoring the caller's CPU RNG state afterward."""
 
     def __init__(self, seed: int) -> None:
+        """Prepare an isolated CPU random-number context for one seed."""
+
         self.seed = seed
         self._context = torch.random.fork_rng(devices=[])
 
     def __enter__(self) -> None:
+        """Enter the isolated context and activate the declared seed."""
+
         self._context.__enter__()
         torch.manual_seed(self.seed)
 
     def __exit__(self, exception_type, exception, traceback) -> None:
+        """Restore the CPU random-number state owned by the caller."""
+
         self._context.__exit__(exception_type, exception, traceback)
 
 
@@ -763,6 +781,8 @@ class _scoped_training_seed:
     """Isolate model-training RNG changes from the surrounding benchmark process."""
 
     def __init__(self, seed: int, device: torch.device) -> None:
+        """Capture NumPy and device RNG settings for one isolated training run."""
+
         self.seed = seed
         self.device = device
         cuda_devices = []
@@ -775,6 +795,8 @@ class _scoped_training_seed:
         self._deterministic_algorithms = torch.are_deterministic_algorithms_enabled()
 
     def __enter__(self) -> None:
+        """Activate deterministic seeded behavior supported by the selected device."""
+
         self._torch_context.__enter__()
         self._numpy_state = np.random.get_state()
         torch.manual_seed(self.seed)
@@ -790,6 +812,8 @@ class _scoped_training_seed:
             torch.mps.manual_seed(self.seed)
 
     def __exit__(self, exception_type, exception, traceback) -> None:
+        """Restore every random-number and determinism setting changed on entry."""
+
         if self._numpy_state is not None:
             np.random.set_state(self._numpy_state)
         if self.device.type == "cpu":

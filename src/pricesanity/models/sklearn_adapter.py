@@ -30,6 +30,8 @@ class SklearnDualHeadAdapter:
     output_kind: str = "probability_estimate"
 
     def __post_init__(self) -> None:
+        """Create explicit empty fitted-state slots without building estimators early."""
+
         # Estimators are constructed only during fit, keeping registry declarations cheap and
         # making an unfitted adapter state explicit.
         self._current_estimator: Any | None = None

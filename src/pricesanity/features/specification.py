@@ -15,6 +15,8 @@ class EvaluationUniverse:
     first_scored_candle_position: int
 
     def __post_init__(self) -> None:
+        """Reject an evaluation universe without the required prior candle."""
+
         # Persistence needs a preceding candle; every context shares that target population.
         if self.first_scored_candle_position < 1:
             raise ValueError("Evaluation must begin after a prior candle exists.")
@@ -33,6 +35,8 @@ class RepresentationSpec:
     feature_columns: tuple[str, ...]
 
     def __post_init__(self) -> None:
+        """Reject representation choices that cannot define stable model inputs."""
+
         if self.window_length <= 0:
             raise ValueError("Representation window length must be positive.")
         if not self.feature_columns or len(set(self.feature_columns)) != len(

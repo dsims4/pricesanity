@@ -63,8 +63,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         timestamp_column=config.data.timestamp_column,
     )
     window.setWindowTitle("Price Sanity Test Results")
-    window.resize(1400, 900)
-    window.show()
+    window.showMaximized()
     return application.exec()
 
 

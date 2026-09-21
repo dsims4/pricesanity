@@ -10,6 +10,7 @@ import pandas as pd
 
 from pricesanity.gui.theme import (
     CONTROL_SPACING,
+    apply_plot_typography,
     PLOT_AXES_COLOR,
     PLOT_FIGURE_COLOR,
     PLOT_GRID_COLOR,
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QSizePolicy,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -171,7 +173,7 @@ class ModelComparisonWindow(QMainWindow):
         self.status_label.setProperty("role", "readonly")
         self.status_label.setSizePolicy(
             QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Preferred,
         )
         layout.addWidget(self.status_label)
         self.tabs = QTabWidget()
@@ -240,10 +242,25 @@ class ModelComparisonWindow(QMainWindow):
         selectors.addWidget(QLabel("Model B"), 0, 1)
         self.model_a = QComboBox()
         self.model_b = QComboBox()
+        for selector in (self.model_a, self.model_b):
+            # Long artifact identities remain available in the popup without forcing the whole
+            # window wider than a multitasking layout.
+            selector.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+            )
+            selector.setMinimumContentsLength(14)
+            selector.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Fixed,
+            )
         selectors.addWidget(self.model_a, 1, 0)
         selectors.addWidget(self.model_b, 1, 1)
         selectors.addWidget(QLabel("Session"), 0, 2)
         self.session_selector = QComboBox()
+        self.session_selector.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         selectors.addWidget(self.session_selector, 1, 2)
         self.comparison_chart_frame = QFrame()
         self.comparison_chart_frame.setProperty("role", "chart")
@@ -261,7 +278,15 @@ class ModelComparisonWindow(QMainWindow):
             "Click a candle to inspect both models' saved evidence.",
             role="muted",
         )
-        comparison_layout.addWidget(self.candle_evidence)
+        # Long saved evidence may scroll independently; the primary chart stays visible.
+        self.comparison_details = QScrollArea()
+        self.comparison_details.setWidgetResizable(True)
+        details_widget = QWidget()
+        details_layout = QGridLayout(details_widget)
+        details_layout.setContentsMargins(4, 2, 4, 2)
+        details_layout.addWidget(self.candle_evidence, 0, 0, 1, 2)
+        self.comparison_details.setWidget(details_widget)
+        comparison_layout.addWidget(self.comparison_details)
         self.comparison_chart.candle_selected.connect(self.candle_evidence.setText)
         self.model_a_details = QLabel()
         self.model_b_details = QLabel()
@@ -271,8 +296,13 @@ class ModelComparisonWindow(QMainWindow):
         self.model_b_details.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        selectors.addWidget(self.model_a_details, 2, 0)
-        selectors.addWidget(self.model_b_details, 2, 1)
+        self.model_a_details.setWordWrap(True)
+        self.model_b_details.setWordWrap(True)
+        selectors.setColumnStretch(0, 2)
+        selectors.setColumnStretch(1, 2)
+        selectors.setColumnStretch(2, 1)
+        details_layout.addWidget(self.model_a_details, 1, 0)
+        details_layout.addWidget(self.model_b_details, 1, 1)
         self.tabs.addTab(comparison_page, "A/B Session Comparison")
 
         self.metrics_canvas = _ConfusionCanvas()
@@ -724,12 +754,14 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
     candle_selected = Signal(str)
 
     def __init__(self) -> None:
+        """Create an empty aligned comparison canvas with click selection enabled."""
+
         # Store only the currently displayed aligned session pair for click-to-candle lookup.
         self.figure = Figure(
-            figsize=(12, 7), layout="constrained", facecolor=PLOT_FIGURE_COLOR
+            figsize=(12, 7), facecolor=PLOT_FIGURE_COLOR
         )
         super().__init__(self.figure)
-        self.setMinimumHeight(460)
+        self.setMinimumHeight(260)
         self.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Expanding,
@@ -867,7 +899,7 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
         regime_axes.set_yticks(
             np.arange(len(regime_columns)), [row[2] for row in regime_columns]
         )
-        regime_axes.set_ylabel("Regime timelines", fontsize=PLOT_LABEL_SIZE)
+        # The six row names already identify the timeline; a second label would overlap them.
         regime_axes.tick_params(axis="both", labelsize=PLOT_TICK_SIZE)
         regime_axes.grid(False)
         for spine in regime_axes.spines.values():
@@ -886,7 +918,7 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
             ],
             loc="center left",
             bbox_to_anchor=(1.01, 0.5),
-            ncol=3,
+            ncol=1,
             frameon=False,
             fontsize=PLOT_LEGEND_SIZE,
         )
@@ -942,18 +974,73 @@ class _ABSessionCanvas(FigureCanvasQTAgg):
         axes[-1].set_xlabel("Candle position", fontsize=PLOT_LABEL_SIZE)
         session_date = str(first["session_date"].iloc[0])
         price_axes.set_title(
-            f"{session_date} — A: {first_name}\nB: {second_name}",
+            f"{session_date} — A/B comparison",
             fontsize=PLOT_TITLE_SIZE,
         )
         price_axes.tick_params(axis="both", labelsize=PLOT_TICK_SIZE)
         price_axes.grid(axis="y", alpha=0.28, color=PLOT_GRID_COLOR)
+        self._position_comparison_axes()
         self.draw_idle()
+
+
+    def draw(self) -> None:
+        """Use the same active density as the surrounding selectors and controls."""
+
+        self._position_comparison_axes()
+        super().draw()
+
+    def resizeEvent(self, event) -> None:
+        """Keep six regime rows legible while extra height goes to market prices."""
+
+        super().resizeEvent(event)
+        self._position_comparison_axes()
+
+    def _position_comparison_axes(self) -> None:
+        """Reserve intrinsic evidence heights instead of collapsing constrained subplots."""
+
+        axes = self.figure.axes
+        if len(axes) not in (3, 4):
+            return
+
+        height = max(self.height(), 1)
+        width = max(self.width(), 1)
+        apply_plot_typography(self)
+        renderer = self.get_renderer()
+        # Horizontal evidence titles need more room than short numeric tick labels.
+        label_width = max(
+            renderer.get_text_width_height_descent(
+                axis.get_ylabel(), axis.yaxis.label.get_fontproperties(), False,
+            )[0] for axis in axes
+        ) / self.device_pixel_ratio
+        left_pixels = max(185, label_width + 52)
+        left = left_pixels / width
+        plot_pixels = max(width - left_pixels - 130, 1)
+        plot_width = plot_pixels / width
+        bottom = 38
+
+        # Evidence scales stay separate. Horizontal labels fit short axes without intruding
+        # into adjacent rows; six categorical rows each retain room for their own text.
+        for axis in reversed(axes[2:]):
+            axis.set_position([left, bottom / height, plot_width, 30 / height])
+            bottom += 40
+        axes[1].set_position([left, bottom / height, plot_width, 78 / height])
+        bottom += 88
+        axes[0].set_position([
+            left, bottom / height, plot_width, max(height - bottom - 26, 20) / height,
+        ])
+        for axis in axes:
+            axis.yaxis.label.set_rotation(0)
+            axis.yaxis.label.set_horizontalalignment("right")
+            axis.yaxis.set_label_coords(-42 / plot_pixels, 0.5)
+
 
 
 class _ConfusionCanvas(FigureCanvasQTAgg):
     """Show four readable matrices instead of nested-list text."""
 
     def __init__(self) -> None:
+        """Create the canvas that holds both heads for two compared models."""
+
         self.figure = Figure(
             figsize=(9, 6), layout="constrained", facecolor=PLOT_FIGURE_COLOR
         )

@@ -719,6 +719,8 @@ def _select_stage_result(stage, reference, stage_reports, *, margin=SELECTION_MA
         # Context changes no parameter count, so that generic complexity measure cannot
         # distinguish 16 from 32 candles. Prefer the shortest comparable receptive field.
         def context_size(report):
+            """Return the effective context length used to rank comparable reports."""
+
             configured_length = report["settings"]["context_length"]
             return configured_length or report["model_config"]["maximum_session_length"]
 

@@ -326,6 +326,8 @@ class _ClassificationAccumulator:
     """Accumulate an exact confusion matrix across variable-sized batches."""
 
     def __init__(self, regime_count: int) -> None:
+        """Create an empty square confusion matrix for every regime class."""
+
         self._regime_count = regime_count
         self._confusion_matrix = torch.zeros(
             regime_count,

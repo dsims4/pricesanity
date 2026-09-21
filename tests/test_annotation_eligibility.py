@@ -4,7 +4,6 @@ from dataclasses import replace
 
 import pandas as pd
 import pytest
-from PySide6.QtWidgets import QApplication
 
 from pricesanity.config import load_config
 from pricesanity.data.pipeline import (
@@ -15,18 +14,11 @@ from pricesanity.gui.annotation_app import AnnotationWindow
 from pricesanity.gui.annotation_launcher import load_annotation_sessions
 
 
-@pytest.fixture(scope="module")
-def application():
-    """Keep one Qt application alive while testing real annotation windows."""
-
-    return QApplication.instance() or QApplication([])
-
-
 @pytest.mark.parametrize("friday_state", ["complete", "missing", "partial", "degraded"])
 @pytest.mark.parametrize("chunked", [False, True])
 def test_first_displayed_session_requires_previous_close(
     tmp_path,
-    application,
+    qt_application,
     friday_state,
     chunked,
 ):

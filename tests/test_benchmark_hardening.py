@@ -231,6 +231,8 @@ def test_svc_native_prediction_can_disagree_with_probability_argmax() -> None:
 
 
 def test_seed_aggregation_never_selects_one_lucky_seed() -> None:
+    """Stochastic models must rank by declared-seed means rather than their best run."""
+
     # Deliberately uneven scores make choosing the best seed differ from the required mean.
     rows = []
     for seed, current, anticipated in [(1, 0.2, 0.4), (2, 0.8, 0.6), (3, 0.5, 0.5)]:
@@ -296,6 +298,8 @@ def test_seed_timing_requires_complete_compatible_hardware(fingerprints, compara
 
 
 def test_session_bootstrap_is_reproducible_and_paired() -> None:
+    """Seeded paired resampling must preserve session alignment and reproducibility."""
+
     first = pd.DataFrame({"session_index": [1, 2, 3], "macro_f1": [0.6, 0.7, 0.8]})
     second = pd.DataFrame({"session_index": [1, 2, 3], "macro_f1": [0.5, 0.6, 0.7]})
     one = bootstrap_session_mean(first["macro_f1"].to_numpy(), repetitions=100)

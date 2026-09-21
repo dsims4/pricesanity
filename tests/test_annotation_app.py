@@ -24,36 +24,6 @@ from pricesanity.annotation.store import load_annotation, save_annotation
 from pricesanity.gui.annotation_app import AnnotationWindow
 
 
-@pytest.fixture(scope="module")
-def qt_application() -> QApplication:
-    """Reuse the Qt application required by the widget tests."""
-
-    return QApplication.instance() or QApplication([])
-
-
-@pytest.fixture
-def candlestick_data() -> pd.DataFrame:
-    """Provide a short session for testing navigation boundaries."""
-
-    return pd.DataFrame(
-        {
-            "candlestick_id": ["candle-1", "candle-2", "candle-3"],
-            "session_date": ["2026-09-09"] * 3,
-            "ts_event": pd.date_range(
-                "2026-09-09 13:30:00",
-                periods=3,
-                freq="5min",
-                tz="UTC",
-            ),
-            "open_gap": [0.001, -0.002, 0.0],
-            "open": [100.0, 101.0, 100.5],
-            "high": [101.5, 102.0, 101.0],
-            "low": [99.5, 100.0, 99.0],
-            "close": [101.0, 100.5, 99.5],
-        }
-    )
-
-
 def test_annotation_window_moves_between_candlesticks(
     qt_application: QApplication,
     candlestick_data: pd.DataFrame,
@@ -113,12 +83,15 @@ def test_regime_hotkeys_save_then_restore_both_choices(
     assert window.anticipated_regime_value.text() == "Not selected"
     assert window.selection_prompt.text().startswith("Step 2 of 2")
     assert "Both choices will be saved" in window.selection_prompt.text()
+    assert "choose anticipated" in window.commit_state.text()
+    assert window.session_progress.value() == 0
     assert load_annotation(database_path, "candle-1") is None
 
     # The second key completes, saves, and advances the annotation.
     window.regime_shortcuts["2"].activated.emit()
 
     assert window.active_candlestick_position == 1
+    assert window.session_progress.value() == 1
     assert window.current_regime_value.text() == "Not selected"
     assert window.anticipated_regime_value.text() == "Not selected"
 
@@ -135,71 +108,10 @@ def test_regime_hotkeys_save_then_restore_both_choices(
 
     assert window.current_regime_value.text() == "Bull"
     assert window.anticipated_regime_value.text() == "Bear"
+    assert "Pair saved" in window.commit_state.text()
+    assert "0 / 1 sessions complete" in window.progress_label.text()
 
     window.close()
-
-
-@pytest.mark.parametrize("key_name", ["Backspace", "Delete"])
-def test_cancel_key_restores_unsaved_first_choice(
-    qt_application: QApplication,
-    candlestick_data: pd.DataFrame,
-    tmp_path,
-    key_name: str,
-) -> None:
-    """Backspace and Delete cancel the pending in-memory half without saving it."""
-
-    database_path = tmp_path / f"{key_name}.db"
-    window = AnnotationWindow(candlestick_data, database_path)
-    try:
-        window.regime_shortcuts["1"].activated.emit()
-        assert window.selection_prompt.text().startswith("Step 2 of 2")
-
-        window.cancel_pending_shortcuts[key_name].activated.emit()
-
-        assert window.selection_prompt.text().startswith("Step 1 of 2")
-        assert window.current_regime_value.text() == "Not selected"
-        assert window.anticipated_regime_value.text() == "Not selected"
-        assert not any(button.isChecked() for button in window.regime_buttons.values())
-        assert load_annotation(database_path, "candle-1") is None
-    finally:
-        window.close()
-
-
-def test_cancel_pending_edit_never_deletes_persisted_annotation(
-    qt_application: QApplication,
-    candlestick_data: pd.DataFrame,
-    tmp_path,
-    monkeypatch,
-) -> None:
-    """Cancelling an edit restores the durable pair without making a database write."""
-
-    database_path = tmp_path / "persisted.db"
-    save_annotation(
-        database_path,
-        CandlestickAnnotation("candle-1", MarketRegime.BEAR, MarketRegime.RANGE),
-    )
-    window = AnnotationWindow(candlestick_data, database_path)
-    try:
-        monkeypatch.setattr(
-            window.annotation_store,
-            "save",
-            lambda annotation: pytest.fail("cancel attempted a database write"),
-        )
-        window.regime_shortcuts["1"].activated.emit()
-        window.cancel_pending_shortcuts["Delete"].activated.emit()
-
-        assert window.current_regime_value.text() == "Bear"
-        assert window.anticipated_regime_value.text() == "Range"
-        persisted = window.annotation_store.load("candle-1")
-        assert persisted == CandlestickAnnotation(
-            "candle-1", MarketRegime.BEAR, MarketRegime.RANGE
-        )
-
-        # With no pending edit, either key is a safe no-op.
-        window.cancel_pending_shortcuts["Backspace"].activated.emit()
-        assert window.current_regime_value.text() == "Bear"
-    finally:
-        window.close()
 
 
 @pytest.mark.parametrize(
@@ -209,15 +121,51 @@ def test_cancel_pending_edit_never_deletes_persisted_annotation(
         (Qt.Key.Key_Delete, "Delete"),
     ],
 )
-def test_real_cancel_key_is_chart_scoped_and_preserves_saved_pair(
+def test_cancel_key_is_chart_scoped_and_preserves_annotation_state(
     qt_application: QApplication,
     candlestick_data: pd.DataFrame,
     tmp_path,
+    monkeypatch,
     key: Qt.Key,
     key_name: str,
 ) -> None:
-    """Real cancel-key events affect pending chart edits, never fields or SQLite."""
+    """Real cancel keys clear pending work without changing fields or saved labels."""
 
+    # First exercise an untouched candle so cancellation cannot imply a default label or save.
+    empty_database_path = tmp_path / f"empty-{key_name}.db"
+    window = AnnotationWindow(candlestick_data, empty_database_path)
+    window.show()
+    try:
+        window.chart.setFocus(Qt.FocusReason.OtherFocusReason)
+        qt_application.processEvents()
+        QTest.keyClick(window.chart, Qt.Key.Key_1)
+        qt_application.processEvents()
+
+        assert window.selection_prompt.text().startswith("Step 2 of 2")
+
+        window.start_date_input.setFocus(Qt.FocusReason.OtherFocusReason)
+        qt_application.processEvents()
+        QTest.keyClick(window.start_date_input, key)
+        qt_application.processEvents()
+
+        # An editing field owns its key events, so the pending chart choice must remain.
+        assert window.selection_prompt.text().startswith("Step 2 of 2")
+        assert load_annotation(empty_database_path, "candle-1") is None
+
+        window.chart.setFocus(Qt.FocusReason.OtherFocusReason)
+        qt_application.processEvents()
+        QTest.keyClick(window.chart, key)
+        qt_application.processEvents()
+
+        assert window.selection_prompt.text().startswith("Step 1 of 2")
+        assert window.current_regime_value.text() == "Not selected"
+        assert window.anticipated_regime_value.text() == "Not selected"
+        assert not any(button.isChecked() for button in window.regime_buttons.values())
+        assert load_annotation(empty_database_path, "candle-1") is None
+    finally:
+        window.close()
+
+    # Repeat against a saved pair because cancellation must restore SQLite truth, not erase it.
     database_path = tmp_path / f"real-{key_name}.db"
     saved = CandlestickAnnotation(
         "candle-1",
@@ -228,6 +176,11 @@ def test_real_cancel_key_is_chart_scoped_and_preserves_saved_pair(
     window = AnnotationWindow(candlestick_data, database_path)
     window.show()
     try:
+        monkeypatch.setattr(
+            window.annotation_store,
+            "save",
+            lambda annotation: pytest.fail("cancel attempted a database write"),
+        )
         window.chart.setFocus(Qt.FocusReason.OtherFocusReason)
         qt_application.processEvents()
         QTest.keyClick(window.chart, Qt.Key.Key_1)
@@ -236,22 +189,17 @@ def test_real_cancel_key_is_chart_scoped_and_preserves_saved_pair(
         assert window.selection_prompt.text().startswith("Step 2 of 2")
         assert window.current_regime_value.text() == "Bull"
 
-        window.start_date_input.setFocus(Qt.FocusReason.OtherFocusReason)
-        qt_application.processEvents()
-        QTest.keyClick(window.start_date_input, key)
-        qt_application.processEvents()
-
-        assert window.selection_prompt.text().startswith("Step 2 of 2")
-        assert window.annotation_store.load("candle-1") == saved
-
-        window.chart.setFocus(Qt.FocusReason.OtherFocusReason)
-        qt_application.processEvents()
         QTest.keyClick(window.chart, key)
         qt_application.processEvents()
 
         assert window.selection_prompt.text().startswith("Step 1 of 2")
         assert window.current_regime_value.text() == "Bear"
         assert window.anticipated_regime_value.text() == "Range"
+        assert window.annotation_store.load("candle-1") == saved
+
+        # Repeating a cancel key with no pending choice is a safe no-op.
+        QTest.keyClick(window.chart, key)
+        qt_application.processEvents()
         assert window.annotation_store.load("candle-1") == saved
     finally:
         window.close()
@@ -346,7 +294,7 @@ def test_date_inputs_are_compact_and_enforce_corpus_boundaries(
         calendar = date_input.calendarWidget()
 
         assert date_input.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Fixed
-        assert date_input.width() == 150
+        assert date_input.width() == 128
         assert calendar.isNavigationBarVisible()
         assert date_input.minimumDate() == corpus_start
         assert date_input.maximumDate() == corpus_end
@@ -407,12 +355,48 @@ def test_stop_button_closes_annotation_window(
 
     assert window.stop_button.x() > window.width() // 2
     assert window.stop_button.height() == window.previous_day_button.height()
-    assert window.stop_button.width() > window.previous_day_button.width()
+    assert window.stop_button.width() >= window.stop_button.sizeHint().width()
 
     QTest.mouseClick(window.stop_button, Qt.MouseButton.LeftButton)
     qt_application.processEvents()
 
     assert not window.isVisible()
+
+
+def test_compact_navigation_keeps_every_action_and_opening_gap_visible(
+    qt_application: QApplication,
+    candlestick_data: pd.DataFrame,
+    tmp_path,
+) -> None:
+    """Compact windows retain ordered navigation and the complete opening-gap evidence."""
+
+    window = AnnotationWindow(candlestick_data, tmp_path / "annotations.db")
+    window.resize(window.minimumWidth(), window.minimumHeight())
+    window.show()
+    qt_application.processEvents()
+
+    assert window.previous_day_button.text() == "Prev day"
+    assert window.next_day_button.text() == "Next day"
+    assert window.next_day_button.x() < window.seek_back_button.x()
+    assert window.seek_back_button.x() < window.seek_forward_button.x()
+    assert window.seek_forward_button.x() < window.opening_gap_value.x()
+    assert (
+        window.opening_gap_value.x() + window.opening_gap_value.width()
+        <= window.centralWidget().width()
+    )
+    assert all(
+        button.width() > 0
+        for button in (
+            window.previous_candle_button,
+            window.next_candle_button,
+            window.previous_day_button,
+            window.next_day_button,
+            window.seek_back_button,
+            window.seek_forward_button,
+        )
+    )
+
+    window.close()
 
 
 def test_date_range_stays_open_while_navigation_crosses_sessions(

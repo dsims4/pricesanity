@@ -18,6 +18,8 @@ from PySide6.QtWidgets import QWidget
 
 
 from pricesanity.gui.theme import (
+    apply_plot_typography,
+    compact_plot,
     PLOT_AXES_COLOR,
     PLOT_FIGURE_COLOR,
     PLOT_LABEL_SIZE,
@@ -78,28 +80,6 @@ class CandlestickChart(FigureCanvasQTAgg):
         self.axes = figure.add_subplot(grid[0, 0])
         self.timeline_axes = figure.add_subplot(grid[1, 0], sharex=self.axes)
         self.time_axes = figure.add_subplot(grid[2, 0], sharex=self.axes)
-        figure.subplots_adjust(left=0.025, right=0.90, top=0.985, bottom=0.115)
-
-        # Use the room freed below the price plot to move the complete lower chart stack up.
-        lower_axis_shift = 0.020
-        bar_position = self.timeline_axes.get_position()
-        self.timeline_axes.set_position(
-            [
-                bar_position.x0,
-                bar_position.y0 + lower_axis_shift,
-                bar_position.width,
-                bar_position.height,
-            ]
-        )
-        time_position = self.time_axes.get_position()
-        self.time_axes.set_position(
-            [
-                time_position.x0,
-                time_position.y0 + lower_axis_shift + 0.012,
-                time_position.width,
-                time_position.height,
-            ]
-        )
 
         # Retain the configured timestamp field and timezone for display labels.
         self.timestamp_column = timestamp_column
@@ -125,7 +105,8 @@ class CandlestickChart(FigureCanvasQTAgg):
         super().__init__(figure)
 
         self.setParent(parent)
-        self.setMinimumHeight(360)
+        self.setMinimumHeight(220)
+        self._position_axes()
 
         # Allow a mouse click to give the chart keyboard focus so annotation
         # shortcuts remain inactive while the user is typing into date fields.
@@ -139,9 +120,57 @@ class CandlestickChart(FigureCanvasQTAgg):
         """Refresh responsive tick density after resizing."""
 
         super().resizeEvent(event)
+        self._position_axes()
         self._style_price_plot()
         if self._display_timestamps:
             self._update_axis_ticks()
+
+    def _position_axes(self) -> None:
+        """Keep the chart, regime bar, legend, clock ticks, and label in view."""
+
+        # Ratios use Qt logical dimensions so Retina scaling does not halve text clearance.
+        # Only the price region expands: each track and the legend keep an intrinsic height.
+        figure_height = max(float(self.height()), 1.0)
+        figure_width = max(float(self.width()), 1.0)
+        compact = compact_plot(self)
+        hide_time_title = compact and self.height() < 280
+        self.time_axes.xaxis.label.set_visible(not hide_time_title)
+        self.time_axes.xaxis.labelpad = 2
+        self.axes.yaxis.labelpad = 5 if compact else 10
+        if self.axes.get_ylabel():
+            self.axes.set_ylabel("Price (USD)" if compact else "Price (U.S. Dollars)")
+        time_bottom = (25.0 if hide_time_title else (42.0 if compact else 50.0)) / figure_height
+        time_height = (14.0 if compact else 21.0) / figure_height
+        timeline_bottom = time_bottom + time_height + 2.0 / figure_height
+        timeline_height = (12.0 if compact else 18.0) * max(
+            1, len(self._regime_tracks)
+        ) / figure_height
+        price_bottom = timeline_bottom + timeline_height + 5.0 / figure_height
+        price_top = 1.0 - 8.0 / figure_height
+        named_tracks = any(label.strip() for label, _ in self._regime_tracks)
+        left = (145.0 if named_tracks else 22.0) / figure_width
+        # Measure price text instead of assuming a fixed number of digits in market prices.
+        renderer = self.get_renderer()
+        tick_width = max(
+            (label.get_window_extent(renderer).width for label in self.axes.get_yticklabels()),
+            default=0,
+        ) / self.device_pixel_ratio
+        right = 1.0 - (tick_width + 42.0) / figure_width
+        width = max(right - left, 0.1)
+
+        self.axes.set_position([left, price_bottom, width, max(price_top - price_bottom, .1)])
+        self.timeline_axes.set_position(
+            [left, timeline_bottom, width, timeline_height]
+        )
+        self.time_axes.set_position([left, time_bottom, width, time_height])
+
+    def draw(self) -> None:
+        """Apply the active Qt tier after any artists have been recreated for a new session."""
+
+        apply_plot_typography(self)
+        self.timeline_axes.tick_params(labelsize=7 if compact_plot(self) else 8)
+        self._position_axes()
+        super().draw()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """Focus the chart before handling a mouse click.
@@ -330,7 +359,11 @@ class CandlestickChart(FigureCanvasQTAgg):
         if not self._display_timestamps:
             return
 
+        # Wider canvases can carry more labels without making either axis crowded.
         interval_count = self._preferred_axis_intervals()
+
+        # Locate the actual RTH endpoints so early or incomplete displays still use their
+        # available candle range instead of inventing off-screen clock positions.
         opening_position = next(
             (
                 position
@@ -350,6 +383,7 @@ class CandlestickChart(FigureCanvasQTAgg):
         if closing_position <= opening_position:
             closing_position = len(self._display_timestamps) - 1
 
+        # Divide the visible session evenly while retaining 09:30 and 16:00 as exact anchors.
         tick_positions = tuple(dict.fromkeys(
             round(
                 opening_position
@@ -363,6 +397,9 @@ class CandlestickChart(FigureCanvasQTAgg):
             for position in tick_positions
         )
         self.axes.set_xticks(self._tick_positions)
+
+        # Keep the first and last price labels just inside the rounded plot border and align
+        # those endpoints to ES quarter points.
         visible_low, visible_high = self.axes.get_ylim()
         if visible_high > visible_low:
             visible_range = visible_high - visible_low
@@ -375,16 +412,31 @@ class CandlestickChart(FigureCanvasQTAgg):
                 self.axes.set_yticks([midpoint_tick])
                 quarter_count = 0
             if quarter_count:
+                # Use the same responsive density as the time axis without creating increments
+                # smaller than one valid quarter point.
                 chosen_intervals = min(interval_count, quarter_count)
-                step = (last_tick - first_tick) / chosen_intervals
+                base_quarters, extra_quarters = divmod(
+                    quarter_count,
+                    chosen_intervals,
+                )
+                tick_quarters = [round(first_tick * 4)]
+                for interval_index in range(chosen_intervals):
+                    # Distribute indivisible quarters across intervals while ensuring every
+                    # displayed price remains an exact multiple of 0.25.
+                    interval_quarters = base_quarters + (
+                        interval_index < extra_quarters
+                    )
+                    tick_quarters.append(
+                        tick_quarters[-1] + interval_quarters
+                    )
                 self.axes.set_yticks(
-                    [
-                        first_tick + (step * division)
-                        for division in range(chosen_intervals + 1)
-                    ]
+                    [quarter / 4 for quarter in tick_quarters]
                 )
         else:
             self.axes.yaxis.set_major_locator(MaxNLocator(nbins=interval_count))
+
+        # The dedicated lower axis owns visible clock labels; the price axis shares positions
+        # only so crosshair and candle geometry remain aligned.
         if hasattr(self, "time_axes"):
             self.time_axes.set_xticks(self._tick_positions, self._tick_labels)
 
@@ -516,6 +568,8 @@ class CandlestickChart(FigureCanvasQTAgg):
     ) -> None:
         """Replace timeline rows with exact categorical spans, including missing labels."""
 
+        # Clear both lower axes together because their legend, labels, and crosshair share one
+        # representation of the currently displayed regime tracks.
         self.timeline_axes.clear()
         self.time_axes.clear()
         self._style_axes()
@@ -525,10 +579,13 @@ class CandlestickChart(FigureCanvasQTAgg):
         )
         self._regime_labels = self._regime_tracks[0][1]
         self._configure_timeline_axes(track_count=len(tracks))
+        self._position_axes()
         colors = {**REGIME_COLORS, None: "#d8e0e5"}
         names = {"bull": "Bull", "bear": "Bear", "range": "Range", None: "Missing"}
 
         for track_index, (_, regimes) in enumerate(tracks):
+            # Convert consecutive equal labels into one continuous span instead of drawing a
+            # separate bordered rectangle for every five-minute candle.
             row = len(tracks) - track_index - 1
             left_edge, right_edge = self.timeline_axes.get_xlim()
             track_strips = []
@@ -570,6 +627,8 @@ class CandlestickChart(FigureCanvasQTAgg):
                 strip.set_clip_path(track_outline)
             self._regime_artists.append(track_outline)
 
+        # One legend explains every track and leaves the narrow timeline rows entirely for
+        # candle-aligned regime colors.
         legend = self.time_axes.legend(
             handles=[
                 FancyBboxPatch(
@@ -584,7 +643,13 @@ class CandlestickChart(FigureCanvasQTAgg):
                 for regime in ("bull", "bear", "range", None)
             ],
             loc="upper center",
-            bbox_to_anchor=(0.5, 1.18),
+            bbox_to_anchor=(0.5, 1.0),
+            borderaxespad=0,
+            borderpad=0,
+            handleheight=0.7,
+            handlelength=1.2,
+            handletextpad=0.4,
+            columnspacing=1.0,
             ncol=4,
             frameon=False,
             fontsize=PLOT_LEGEND_SIZE,
@@ -602,6 +667,8 @@ class CandlestickChart(FigureCanvasQTAgg):
     def _configure_timeline_axes(self, *, track_count: int) -> None:
         """Restore the shared candle/time scale after clearing timeline artists."""
 
+        # All three axes use the same candle positions so regime boundaries and time labels
+        # remain directly beneath their source candlesticks.
         self.timeline_axes.set_xlim(-1, len(self._highs))
         self.time_axes.set_xlim(-1, len(self._highs))
         self.time_axes.set_xticks(self._tick_positions, self._tick_labels)
@@ -613,6 +680,7 @@ class CandlestickChart(FigureCanvasQTAgg):
         )
         self.timeline_axes.set_ylim(0, max(track_count, 1))
         if track_count:
+            # Reverse labels because Matplotlib numbers timeline rows from the bottom upward.
             labels = [label for label, _ in reversed(self._regime_tracks)]
             # During a redraw, use the incoming labels before _regime_tracks is replaced.
             if len(labels) != track_count:
@@ -625,6 +693,8 @@ class CandlestickChart(FigureCanvasQTAgg):
                 self.timeline_axes.set_yticks([])
         else:
             self.timeline_axes.set_yticks([])
+
+        # The final axis carries only session-local clock labels and the shared legend.
         self.time_axes.set_ylim(0, 1)
         self.time_axes.set_yticks([])
         self.time_axes.tick_params(
@@ -696,6 +766,8 @@ class CandlestickChart(FigureCanvasQTAgg):
     def _create_crosshair(self) -> None:
         """Create the hidden Trade Tank-style crosshair and axis locator boxes."""
 
+        # A session redraw invalidates every previous artist, so remove any surviving handles
+        # before attaching one crosshair to the newly cleared axes.
         for artist in (
             self._crosshair_vertical,
             self._crosshair_timeline_vertical,
@@ -709,6 +781,8 @@ class CandlestickChart(FigureCanvasQTAgg):
                 except (NotImplementedError, ValueError):
                     pass
 
+        # Dark lines remain visible over the white price plot; the linked timeline segment uses
+        # light text color because it crosses the dark regime area.
         line_style = {
             "color": "black",
             "alpha": 0.55,
@@ -723,6 +797,8 @@ class CandlestickChart(FigureCanvasQTAgg):
             0, **timeline_line_style
         )
         self._crosshair_horizontal = self.axes.axhline(0, **line_style)
+
+        # Locator boxes use fixed axis edges while their values follow the pointer.
         locator_box = {"boxstyle": "square,pad=0.25", "fc": "black", "ec": "black"}
         self._crosshair_price_label = self.axes.annotate(
             "",
@@ -758,6 +834,7 @@ class CandlestickChart(FigureCanvasQTAgg):
     def _update_crosshair(self, event) -> None:
         """Snap pointer movement to one candle and one visible quarter-point price."""
 
+        # Leaving the white price plot must remove every linked crosshair artist at once.
         if (
             event.inaxes is not self.axes
             or event.xdata is None
@@ -766,6 +843,8 @@ class CandlestickChart(FigureCanvasQTAgg):
             self._hide_crosshair()
             return
 
+        # Preserve smooth horizontal movement while preventing the locator from leaving the
+        # visible session bounds.
         chart_left, chart_right = self.axes.get_xlim()
         crosshair_position = min(
             chart_right,
@@ -773,6 +852,8 @@ class CandlestickChart(FigureCanvasQTAgg):
         )
         if event.ydata is None:
             return
+
+        # ES trades in quarter points, so the displayed locator cannot imply invalid prices.
         minimum_price, maximum_price = self.axes.get_ylim()
         minimum_tick = ceil(minimum_price * 4) / 4
         maximum_tick = floor(maximum_price * 4) / 4
@@ -781,6 +862,7 @@ class CandlestickChart(FigureCanvasQTAgg):
             max(minimum_tick, floor(float(event.ydata) * 4 + 0.5) / 4),
         )
 
+        # Move the price and regime segments together so both panels identify one time.
         for line in (self._crosshair_vertical, self._crosshair_timeline_vertical):
             line.set_xdata([crosshair_position, crosshair_position])
             line.set_visible(True)
@@ -789,6 +871,8 @@ class CandlestickChart(FigureCanvasQTAgg):
         self._crosshair_price_label.xy = (1.0, price)
         self._crosshair_price_label.set_text(f"{price:.2f}")
         self._crosshair_price_label.set_visible(True)
+        # Map any continuous pointer position to its enclosing five-minute candle for the clock
+        # label without snapping the vertical crosshair itself.
         candlestick_position = min(
             len(self._display_timestamps) - 1,
             max(0, floor(crosshair_position + 0.5)),
@@ -797,6 +881,8 @@ class CandlestickChart(FigureCanvasQTAgg):
         self._crosshair_time_label.xy = (crosshair_position, 0)
         self._crosshair_time_label.set_text(crosshair_timestamp.strftime("%H:%M"))
         self._crosshair_time_label.set_visible(True)
+
+        # Blitting only these moving artists keeps pointer feedback at display speed.
         self._blit_crosshair()
 
     def _hide_crosshair(self, event=None) -> None:

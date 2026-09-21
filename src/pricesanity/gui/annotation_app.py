@@ -63,11 +63,15 @@ class CalendarDateEdit(QDateEdit):
     """Draw a calendar glyph in the existing popup-button subcontrol."""
 
     def __init__(self, parent=None) -> None:
+        """Create a date editor that tracks pointer movement over its popup control."""
+
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self.setMouseTracking(True)
 
     def paintEvent(self, event) -> None:
+        """Draw the calendar indicator after Qt paints the native date editor."""
+
         super().paintEvent(event)
 
         # Include the divider in the painted button width so the glyph is visually centered.
@@ -249,6 +253,7 @@ class AnnotationWindow(QMainWindow):
         # does not require closing or restarting the application.
         date_range_layout = QHBoxLayout()
         date_range_layout.setSpacing(CONTROL_SPACING)
+        self.date_range_layout = date_range_layout
         window_layout.addLayout(date_range_layout)
 
         # Calendar bounds describe the requested corpus, while the initial selection uses dates
@@ -290,6 +295,7 @@ class AnnotationWindow(QMainWindow):
             QSizePolicy.Policy.Fixed,
         )
         self.start_date_input.setFixedWidth(150)
+        self.start_date_input.setProperty("responsiveDateInput", True)
         self.start_date_input.setDateRange(minimum_qdate, maximum_qdate)
         self._configure_date_calendar(
             self.start_date_input,
@@ -308,6 +314,7 @@ class AnnotationWindow(QMainWindow):
             QSizePolicy.Policy.Fixed,
         )
         self.end_date_input.setFixedWidth(150)
+        self.end_date_input.setProperty("responsiveDateInput", True)
         self.end_date_input.setDateRange(minimum_qdate, maximum_qdate)
         self._configure_date_calendar(
             self.end_date_input,
@@ -323,17 +330,12 @@ class AnnotationWindow(QMainWindow):
 
         # Match the existing native buttons while keeping all four navigation actions beside
         # the date controls. Only prepared sessions inside the applied range are reachable.
-        self.previous_day_button = QPushButton("Back one day")
-        self.next_day_button = QPushButton("Forward one day")
+        self.previous_day_button = QPushButton("Previous day")
+        self.next_day_button = QPushButton("Next day")
         self.seek_back_button = QPushButton("Seek back")
         self.seek_forward_button = QPushButton("Seek forward")
 
         navigation_buttons = (
-            (
-                self.seek_back_button,
-                partial(self._seek_unannotated_candlestick, -1),
-                "Find the previous unannotated candle in the applied date range.",
-            ),
             (
                 self.previous_day_button,
                 partial(self._move_session, -1),
@@ -345,6 +347,11 @@ class AnnotationWindow(QMainWindow):
                 "Open the next valid trading day's first candle.",
             ),
             (
+                self.seek_back_button,
+                partial(self._seek_unannotated_candlestick, -1),
+                "Find the previous unannotated candle in the applied date range.",
+            ),
+            (
                 self.seek_forward_button,
                 partial(self._seek_unannotated_candlestick, 1),
                 "Find the next unannotated candle in the applied date range.",
@@ -353,12 +360,15 @@ class AnnotationWindow(QMainWindow):
 
         navigation_layout = QHBoxLayout()
         navigation_layout.setSpacing(CONTROL_SPACING)
+        self.navigation_layout = navigation_layout
         window_layout.addLayout(navigation_layout)
 
         self.previous_candle_button = QPushButton("Previous candle")
         self.next_candle_button = QPushButton("Next candle")
         self.previous_candle_button.clicked.connect(self.move_to_previous_candlestick)
         self.next_candle_button.clicked.connect(self.move_to_next_candlestick)
+        self.previous_candle_button.setProperty("responsiveNav", True)
+        self.next_candle_button.setProperty("responsiveNav", True)
         navigation_layout.addWidget(self.previous_candle_button, stretch=1)
         navigation_layout.addWidget(self.next_candle_button, stretch=1)
 
@@ -367,15 +377,19 @@ class AnnotationWindow(QMainWindow):
             button.setToolTip(tooltip)
             button.clicked.connect(navigation_action)
             button.setProperty("compact", True)
+            button.setProperty("responsiveNav", True)
             navigation_layout.addWidget(button, stretch=1)
 
         self.previous_candle_button.setProperty("compact", True)
         self.next_candle_button.setProperty("compact", True)
         # Keep the active candle's opening gap at the chart-side end of the compact row.
-        navigation_layout.addWidget(QLabel("Opening gap:"))
+        self.opening_gap_label = QLabel("Opening gap:")
+        self.opening_gap_label.setProperty("responsiveEvidence", True)
+        navigation_layout.addWidget(self.opening_gap_label)
         self.opening_gap_value = QLabel("")
         self.opening_gap_value.setProperty("role", "openingGap")
         self.opening_gap_value.setProperty("gapDirection", "neutral")
+        self.opening_gap_value.setProperty("responsiveEvidence", True)
         self.opening_gap_value.setMinimumWidth(90)
         navigation_layout.addWidget(self.opening_gap_value)
 
@@ -413,6 +427,7 @@ class AnnotationWindow(QMainWindow):
         # most of the horizontal space and the paired judgment reads naturally.
         regime_layout = QHBoxLayout()
         regime_layout.setSpacing(CONTROL_SPACING)
+        self.regime_layout = regime_layout
         window_layout.addLayout(regime_layout)
 
         # Keep each target compact so the candlestick chart retains the vertical space.
@@ -575,6 +590,8 @@ class AnnotationWindow(QMainWindow):
             self.cancel_pending_shortcuts[key_name] = shortcut
 
     def _click_regime(self, head, regime, checked=False):
+        """Route one clicked regime button through the same two-step selection state."""
+
         if head == "current":
             self.is_selecting_current_regime = True
         elif self.selected_current_regime is not None:

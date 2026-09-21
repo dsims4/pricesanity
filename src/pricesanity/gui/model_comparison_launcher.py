@@ -30,8 +30,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
 
     window = ModelComparisonWindow(runs)
     window.setWindowTitle("Price Sanity Model Comparison")
-    window.resize(1400, 900)
-    window.show()
+    window.showMaximized()
 
     # Keep the window alive for navigation without invoking any training workflow.
     return application.exec()

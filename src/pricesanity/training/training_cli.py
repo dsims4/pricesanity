@@ -259,6 +259,8 @@ def _experiment_metadata(
     """Record temporal roles and artifact identities without opaque DataFrame slices."""
 
     def serialize_boundary(boundary: Any) -> dict[str, Any]:
+        """Convert one chronological boundary to portable ISO values."""
+
         # ISO dates keep the temporal partition legible and portable outside Python.
         boundary_data = asdict(boundary)
         boundary_data["start_date"] = boundary.start_date.isoformat()

@@ -21,6 +21,8 @@ class MajorityClassBaseline:
     name = "majority_class"
 
     def __init__(self) -> None:
+        """Create an unfitted baseline with separate state for both targets."""
+
         # None distinguishes an unfitted reference from the valid Bull class index zero.
         self._current_class: int | None = None
         self._anticipated_class: int | None = None

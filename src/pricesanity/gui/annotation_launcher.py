@@ -367,8 +367,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
     if application is None:
         application = QApplication([])
 
-    # Keep the window alive until Qt's event loop ends and give it enough room
-    # to show a complete regular session without crowding the label controls.
+    # Keep the window alive until Qt's event loop ends and use the complete available screen for
+    # the chart; responsive metrics still preserve every control if the window is restored.
     window = AnnotationWindow(
         candlestick_data,
         parsed_arguments.database,

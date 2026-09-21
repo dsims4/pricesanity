@@ -7,8 +7,6 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
-
 from pricesanity.benchmark.artifacts import (
     BenchmarkRunIdentity,
     canonical_sha256,
@@ -31,10 +29,9 @@ from pricesanity.gui.test_results import load_test_run
 from pricesanity.models.baselines import MajorityClassBaseline
 
 
-def test_comparison_gui_has_safe_empty_state(tmp_path) -> None:
+def test_comparison_gui_has_safe_empty_state(tmp_path, qt_application) -> None:
     """The model-comparison mode remains usable before benchmark models exist."""
 
-    application = QApplication.instance() or QApplication([])
     window = ModelComparisonWindow(load_comparison_runs(tmp_path))
     try:
         assert "No completed benchmark artifacts" in window.status_label.text()
@@ -198,10 +195,11 @@ def test_run_details_display_current_and_anticipated_transition_diagnostics() ->
     assert "Anticipated transitions within ±2 candles: 3" in details
 
 
-def test_ab_canvas_draws_exact_aligned_regimes_uncertainty_and_ohlc() -> None:
+def test_ab_canvas_draws_exact_aligned_regimes_uncertainty_and_ohlc(
+    qt_application,
+) -> None:
     """One aligned population should drive all three linked comparison panels."""
 
-    application = QApplication.instance() or QApplication([])
     timestamps = pd.date_range("2026-01-02T14:30:00Z", periods=3, freq="5min")
     base = pd.DataFrame({
         "candlestick_id": ["a", "b", "c"], "timestamp": timestamps,
@@ -234,10 +232,9 @@ def test_ab_canvas_draws_exact_aligned_regimes_uncertainty_and_ohlc() -> None:
         canvas.close()
 
 
-def test_gui_rejects_incomplete_stochastic_seed_set() -> None:
+def test_gui_rejects_incomplete_stochastic_seed_set(qt_application) -> None:
     """A partial stochastic result must remain visible but stay off the leaderboard."""
 
-    application = QApplication.instance() or QApplication([])
     classification = {
         "accuracy": 0.5, "macro_f1": 0.4,
         "per_class": {

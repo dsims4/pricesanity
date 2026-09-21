@@ -7,53 +7,23 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 import pandas as pd
+import pytest
 from PySide6.QtCore import QRect
 from PySide6.QtWidgets import QAbstractItemView, QPushButton
 
-from pricesanity.annotation.schema import MarketRegime
 from pricesanity.gui.annotation_app import AnnotationWindow
 from pricesanity.gui.model_comparison import ModelComparisonWindow, _ABSessionCanvas
 from pricesanity.gui.theme import STYLE, apply_theme, regime_icon
-from test_annotation_app import candlestick_data, qt_application
 
 
-def test_regime_buttons_save_pair_and_update_progress(
-    qt_application,
-    candlestick_data,
-    tmp_path,
-):
-    window = AnnotationWindow(candlestick_data, tmp_path / "annotations.db")
-    try:
-        assert window.property("pricesanityTheme") == "shared-v1"
-        assert all(
-            button.minimumHeight() >= (
-                32 if button.property("compact") else 40
-            )
-            for button in window.findChildren(QPushButton)
-        )
-        assert window.current_card is not window.anticipated_card
+def test_shared_theme_uses_native_fonts_icons_and_readonly_tables(qt_application):
+    """Shared visuals retain native typography, semantic icons, and read-only results."""
 
-        # The first click is intentionally incomplete: annotations are durable only after
-        # both heads have values, so progress must not advance yet.
-        window.regime_buttons["current", MarketRegime.BULL].click()
-        assert window.regime_buttons["current", MarketRegime.BULL].isChecked()
-        assert "choose anticipated" in window.commit_state.text()
-        assert window.session_progress.value() == 0
+    assert "font-family" not in STYLE
+    assert "font-size: 14px" in STYLE
+    assert 'QFrame[role="chart"]' in STYLE
+    assert "QCalendarWidget" in STYLE
 
-        window.regime_buttons["anticipated", MarketRegime.RANGE].click()
-        assert window.session_progress.value() == 1
-        assert window.active_candlestick_position == 1
-
-        # Revisiting a saved candle should restore the complete pair rather than presenting
-        # an apparently blank form that could overwrite one side accidentally.
-        window.move_to_previous_candlestick()
-        assert "Pair saved" in window.commit_state.text()
-        assert "0 / 1 sessions complete" in window.progress_label.text()
-    finally:
-        window.close()
-
-
-def test_icons_and_readonly_tables(qt_application):
     icon = regime_icon("bull", device_pixel_ratio=2)
     assert not icon.isNull()
 
@@ -64,24 +34,19 @@ def test_icons_and_readonly_tables(qt_application):
             == QAbstractItemView.EditTrigger.NoEditTriggers
         )
         assert window.property("pricesanityTheme") == "shared-v1"
+        assert window.minimumWidth() <= 900
+        assert window.minimumHeight() <= 640
     finally:
         window.close()
 
 
-def test_theme_inherits_qt_platform_font(qt_application):
-    """Avoid asking Qt to resolve a generic family that may not be installed."""
-
-    assert "font-family" not in STYLE
-    assert "font-size: 14px" in STYLE
-    assert 'QFrame[role="chart"]' in STYLE
-    assert "QCalendarWidget" in STYLE
-
-
-def test_annotation_fits_scaled_1080p(
+def test_annotation_layout_prioritizes_chart_at_compact_and_large_sizes(
     qt_application,
     candlestick_data,
     tmp_path,
 ):
+    """The shared theme keeps controls usable while added height belongs to the chart."""
+
     window = AnnotationWindow(candlestick_data, tmp_path / "scaled.db")
 
     class SmallScreen:
@@ -100,8 +65,24 @@ def test_annotation_fits_scaled_1080p(
         window.resize(1280, 700)
         window.show()
         qt_application.processEvents()
+        compact_height = window.chart_frame.height()
 
         assert window.height() <= 700
+        assert window.minimumSize().width() == 760
+        assert window.minimumSize().height() == 480
+        assert all(
+            button.minimumHeight() >= 30
+            for button in window.findChildren(QPushButton)
+        )
+        assert window.property("pricesanityTheme") == "shared-v1"
+        assert window.current_card is not window.anticipated_card
+
+        window.resize(1400, 900)
+        qt_application.processEvents()
+
+        assert compact_height >= 240
+        assert window.chart_frame.height() > compact_height
+        assert window.chart_frame.height() > window.current_card.height() * 2
         assert all(
             button.minimumHeight() >= 44
             for button in window.findChildren(QPushButton)
@@ -110,31 +91,10 @@ def test_annotation_fits_scaled_1080p(
         window.close()
 
 
-def test_chart_receives_resize_growth(
-    qt_application,
-    candlestick_data,
-    tmp_path,
-):
-    """The primary chart, rather than fixed controls, receives added window height."""
+@pytest.mark.parametrize("size", [(720, 260), (920, 300), (1240, 450)])
+def test_scores_get_separate_labeled_axes(qt_application, size):
+    """Probabilities and uncalibrated scores must not share a misleading visual scale."""
 
-    window = AnnotationWindow(candlestick_data, tmp_path / "resize.db")
-    try:
-        window.resize(1100, 700)
-        window.show()
-        qt_application.processEvents()
-        compact_height = window.chart_frame.height()
-
-        window.resize(1400, 900)
-        qt_application.processEvents()
-
-        assert compact_height >= 240
-        assert window.chart_frame.height() > compact_height
-        assert window.chart_frame.height() > window.current_card.height() * 2
-    finally:
-        window.close()
-
-
-def test_scores_get_separate_labeled_axes(qt_application):
     frame = pd.DataFrame(
         {
             "session_date": ["2026-01-05"] * 3,
@@ -165,6 +125,18 @@ def test_scores_get_separate_labeled_axes(qt_application):
             second_name="B",
             ohlc=None,
         )
+        canvas.resize(*size)
+        canvas.show()
+        qt_application.processEvents()
+        canvas.draw()
+        renderer = canvas.get_renderer()
+        for axis in canvas.figure.axes:
+            assert axis.bbox.height >= 12
+            for label in axis.get_yticklabels() + axis.get_xticklabels():
+                if label.get_visible():
+                    bounds = label.get_window_extent(renderer)
+                    assert bounds.x0 >= 0
+                    assert bounds.y0 >= 0
         assert len(canvas.figure.axes) == 4
         assert "probability" in canvas.figure.axes[2].get_ylabel()
         assert "uncalibrated score" in canvas.figure.axes[3].get_ylabel()
@@ -178,6 +150,8 @@ def test_populated_leaderboard_keeps_cells_in_their_rows(
     monkeypatch,
     tmp_path,
 ):
+    """Summary-only leaderboard loading must preserve every model's row alignment."""
+
     import pricesanity.gui.model_comparison as comparison
     from pricesanity.benchmark.metrics import evaluate_benchmark_predictions
     from pricesanity.gui.model_comparison import ComparisonRun
@@ -230,5 +204,137 @@ def test_populated_leaderboard_keeps_cells_in_their_rows(
         assert {
             window.leaderboard.item(row, 1).text() for row in range(2)
         } == {"logistic_regression", "gaussian_naive_bayes"}
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize("size", [(760, 480), (960, 540), (1280, 720),
+                                 (1440, 900), (1920, 1080)])
+def test_supported_window_sizes(qt_application, candlestick_data, tmp_path, size):
+    """Actual layout geometry must fit, not merely advertise a small minimum size."""
+
+    windows = [
+        AnnotationWindow(candlestick_data, tmp_path / "layout.db"),
+        ModelComparisonWindow(()),
+    ]
+    try:
+        for window in windows:
+            window.resize(1920, 1080)
+            window.show()
+            qt_application.processEvents()
+            window.resize(*size)
+            qt_application.processEvents()
+            qt_application.processEvents()
+            assert (window.width(), window.height()) == size
+            for button in window.findChildren(QPushButton):
+                if button.isVisible():
+                    bounds = button.mapTo(window, button.rect().bottomRight())
+                    assert bounds.x() < window.width()
+                    assert bounds.y() < window.height()
+            if hasattr(window, "chart"):
+                chart = window.chart
+                chart.draw()
+                renderer = chart.get_renderer()
+                for text in [chart.time_axes.xaxis.label, *chart.time_axes.get_xticklabels()]:
+                    bounds = text.get_window_extent(renderer)
+                    assert bounds.y0 >= 0
+                    assert bounds.x0 >= 0
+                    assert bounds.x1 <= chart.figure.bbox.width
+                assert chart.axes.bbox.height >= 65
+            else:
+                window.tabs.setCurrentIndex(1)
+                qt_application.processEvents()
+                assert window.comparison_chart.height() >= 220
+    finally:
+        for window in windows:
+            window.close()
+
+
+@pytest.mark.parametrize("entry", ["annotation", "test_results", "model_comparison"])
+def test_launchers_maximize_without_fullscreen(monkeypatch, entry):
+    """Each real CLI path requests an ordinary maximized window after loading its input."""
+
+    from importlib import import_module
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    launcher = import_module(f"pricesanity.gui.{entry}_launcher")
+    window = Mock()
+    application = Mock()
+    application.exec.return_value = 0
+    monkeypatch.setattr(launcher, "QApplication", SimpleNamespace(instance=lambda: application))
+    if entry == "model_comparison":
+        monkeypatch.setattr(launcher, "load_comparison_runs", lambda path: ())
+        monkeypatch.setattr(launcher, "ModelComparisonWindow", lambda *args: window)
+        arguments = []
+    else:
+        config = SimpleNamespace(data=SimpleNamespace(timestamp_column="ts_event"))
+        monkeypatch.setattr(launcher, "load_config", lambda path: config)
+        arguments = ["--config", "config.yaml"]
+        if entry == "annotation":
+            monkeypatch.setattr(launcher, "parse_corpus_date_bounds", lambda path: (None, None))
+            monkeypatch.setattr(launcher, "load_annotation_sessions", lambda *a, **k: None)
+            monkeypatch.setattr(launcher, "AnnotationWindow", lambda *a, **k: window)
+            arguments += ["--candlesticks", "ohlc.parquet", "--normalized", "norm.parquet"]
+        else:
+            monkeypatch.setattr(launcher, "load_test_run", lambda *a, **k: None)
+            monkeypatch.setattr(launcher, "TestResultsWindow", lambda *a, **k: window)
+            arguments += ["--run", "saved-run"]
+    assert launcher.main(arguments) == 0
+    window.showMaximized.assert_called_once_with()
+    window.showFullScreen.assert_not_called()
+
+
+def test_restored_geometry_uses_half_available_screen(qt_application):
+    """Available logical geometry, rather than physical monitor resolution, sets the target."""
+
+    window = ModelComparisonWindow(())
+    try:
+        screen = type("Screen", (), {"availableGeometry": lambda self: QRect(0, 0, 1920, 1080)})()
+        with patch.object(ModelComparisonWindow, "screen", return_value=screen):
+            apply_theme(window)
+        assert (window.width(), window.height()) == (960, 540)
+    finally:
+        window.close()
+
+
+def test_chart_and_navigation_follow_the_window_tier(
+    qt_application, candlestick_data, tmp_path,
+):
+    """Rendered bounds and text requirements protect the actual compact-window regression."""
+
+    window = AnnotationWindow(candlestick_data, tmp_path / "compact.db")
+    try:
+        window.resize(760, 480)
+        window.show()
+        qt_application.processEvents()
+        chart = window.chart
+        chart.draw()
+        renderer = chart.get_renderer()
+        compact_font = chart.axes.get_yticklabels()[0].get_fontsize()
+        assert compact_font == 8
+        assert chart.axes.bbox.height > chart.figure.bbox.height * 0.60
+        assert chart.axes.bbox.height > chart.timeline_axes.bbox.height * 4
+        for label in [chart.axes.yaxis.label, *chart.axes.get_yticklabels(),
+                      *chart.time_axes.get_xticklabels()]:
+            bounds = label.get_window_extent(renderer)
+            assert bounds.x0 >= 3
+            assert bounds.y0 >= 3
+            assert bounds.x1 <= chart.figure.bbox.width - 3
+            assert bounds.y1 <= chart.figure.bbox.height - 3
+        for button in window.findChildren(QPushButton):
+            if button.property("responsiveNav"):
+                assert button.width() >= button.sizeHint().width()
+        assert window.previous_candle_button.text() == "Prev candle"
+        assert chart.axes.get_ylabel() == "Price (USD)"
+        assert not chart.time_axes.xaxis.label.get_visible()
+
+        window.resize(1440, 900)
+        qt_application.processEvents()
+        chart.draw()
+        assert chart.axes.get_yticklabels()[0].get_fontsize() > compact_font
+        assert chart.time_axes.xaxis.label.get_visible()
+        assert chart.axes.get_ylabel() == "Price (U.S. Dollars)"
+        assert window.previous_candle_button.text() == "Previous candle"
     finally:
         window.close()

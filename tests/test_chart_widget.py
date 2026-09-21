@@ -1,7 +1,5 @@
 import os
 from types import SimpleNamespace
-from typing import cast
-
 import pandas as pd
 import pytest
 from matplotlib.patches import FancyBboxPatch, Rectangle
@@ -14,22 +12,6 @@ from PySide6.QtWidgets import QApplication
 
 from pricesanity.gui.chart_widget import CandlestickChart
 from pricesanity.gui.theme import PLOT_TEXT_COLOR
-
-
-@pytest.fixture(scope="module")
-def qt_application() -> QApplication:
-    """Reuse the Qt application required by the widget tests."""
-
-    # Reuse an existing application because Qt permits only one application
-    # object within a process.
-    application = QApplication.instance()
-
-    # Reuse pytest's existing Qt application because Qt permits only one application per
-    # process.
-    if application is None:
-        application = QApplication([])
-
-    return cast(QApplication, application)
 
 
 def test_draw_session_displays_all_candles_and_active_arrow(
@@ -193,8 +175,10 @@ def test_navigation_reuses_candles_and_axis_layout(qt_application) -> None:
     price_ticks = chart.axes.get_yticks()
     assert price_ticks[0] > chart.axes.get_ylim()[0]
     assert price_ticks[-1] < chart.axes.get_ylim()[1]
-    assert abs((price_ticks[0] * 4) - round(price_ticks[0] * 4)) < 1e-9
-    assert abs((price_ticks[-1] * 4) - round(price_ticks[-1] * 4)) < 1e-9
+    assert all(
+        abs((tick * 4) - round(tick * 4)) < 1e-9
+        for tick in price_ticks
+    )
     assert all((right - left) >= 0.25 for left, right in zip(price_ticks, price_ticks[1:]))
     chart.draw_session(data.iloc[:3], 2)
 
@@ -205,6 +189,52 @@ def test_navigation_reuses_candles_and_axis_layout(qt_application) -> None:
     # range marker.
     with pytest.raises(ValueError, match="outside"):
         chart.set_active_candlestick(3)
+
+    chart.close()
+
+
+def test_compact_chart_keeps_timeline_legend_and_time_label_in_view(
+    qt_application: QApplication,
+) -> None:
+    """Lower chart regions retain compact pixel gaps without clipping the clock label."""
+
+    data = pd.DataFrame(
+        {
+            "ts_event": pd.date_range(
+                "2026-09-09T13:30:00Z", periods=81, freq="5min"
+            ),
+            "open": [100.0] * 81,
+            "high": [102.0] * 81,
+            "low": [99.0] * 81,
+            "close": [101.0] * 81,
+        }
+    )
+    chart = CandlestickChart()
+    chart.resize(900, 240)
+    chart.show()
+    qt_application.processEvents()
+    chart.draw_session(data, 0)
+    chart.set_regime_labels(["range"] * len(data))
+    chart.draw()
+
+    figure_height = chart.figure.bbox.height / chart.device_pixel_ratio
+    time_position = chart.time_axes.get_position()
+    timeline_position = chart.timeline_axes.get_position()
+    price_position = chart.axes.get_position()
+    timeline_gap = (
+        timeline_position.y0 - (time_position.y0 + time_position.height)
+    ) * figure_height
+    price_gap = (
+        price_position.y0 - (timeline_position.y0 + timeline_position.height)
+    ) * figure_height
+    label_bounds = chart.time_axes.xaxis.label.get_window_extent(
+        chart.figure.canvas.get_renderer()
+    )
+
+    assert label_bounds.y0 >= 0
+    assert 1 <= timeline_gap <= 3
+    assert 4 <= price_gap <= 6
+    assert price_position.y0 > timeline_position.y1 > time_position.y1
 
     chart.close()
 

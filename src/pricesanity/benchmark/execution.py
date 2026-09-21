@@ -95,6 +95,8 @@ def _study_locked(method):
 
     @wraps(method)
     def locked(self, *args, **kwargs):
+        """Run one study mutation while holding its process-safe lock."""
+
         # Hold the study lock across checks and publication, not just the final write; another
         # process must not freeze selections while this invocation is still developing them.
         with _run_lock(self.paths.root / ".study.lock"):
@@ -431,6 +433,8 @@ class BenchmarkExecutor:
             )
 
         def objective(trial: Any) -> float:
+            """Return one candidate's mean chronological-fold validation score."""
+
             # Score one suggested configuration independently on every selected chronological fold;
             # the scalar objective is their equal mean, not the most favorable fold.
             parameters = _suggest_parameters(trial, space)
@@ -914,6 +918,8 @@ class BenchmarkExecutor:
                 self._representation_cache_bytes += size
 
         def trailing(corpus):
+            """Keep the latest causal history required by this context experiment."""
+
             # Retain the most recent causal history because every target sits at the window's final
             # position; leading history outside the selected context is deliberately discarded.
             if corpus.window_length == context_length:

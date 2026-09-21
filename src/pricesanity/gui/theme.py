@@ -1,11 +1,13 @@
 """Shared visual choices for long annotation sessions and read-only research views."""
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QEvent, QObject, QPointF, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QDateEdit,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QTableWidget,
     QToolButton,
 )
@@ -21,6 +23,11 @@ PANEL_MARGIN = 20
 SPACING = CONTROL_SPACING
 MARGIN = PANEL_MARGIN
 PRIMARY_HEIGHT = 44
+COMPACT_PRIMARY_HEIGHT = 30
+MINIMUM_WINDOW_WIDTH = 760
+MINIMUM_WINDOW_HEIGHT = 480
+PREFERRED_WINDOW_WIDTH = 1200
+PREFERRED_WINDOW_HEIGHT = 820
 PLOT_TITLE_SIZE = 14
 PLOT_LABEL_SIZE = 12
 PLOT_TICK_SIZE = 11
@@ -67,8 +74,8 @@ QPushButton, QToolButton {
     border-radius: 6px; padding: 6px 12px; font-weight: 550; }
 QPushButton:hover, QToolButton:hover { background: #46535b; border-color: #778b97; }
 QPushButton:pressed, QToolButton:pressed { background: #53636d; }
-QPushButton[compact="true"] { min-height: 32px; padding: 4px 9px; }
-QPushButton[wideAction="true"] { min-width: 112px; padding-left: 18px; padding-right: 18px; }
+QPushButton[compact="true"] { min-height: 24px; padding: 4px 9px; }
+QPushButton[wideAction="true"] { min-width: 90px; padding-left: 18px; padding-right: 18px; }
 QPushButton:checked { background: #1e5145; border: 2px solid #42a78b; font-weight: 600; }
 QPushButton[regime="bear"]:checked { background: #5a2c33; border-color: #d06b75; }
 QPushButton[regime="range"]:checked { background: #59451f; border-color: #c99745; }
@@ -174,34 +181,116 @@ def heading(text: str, *, role: str = "title") -> QLabel:
     return label
 
 
+class _ResponsiveWindowFilter(QObject):
+    """Reapply shared compact metrics whenever a themed window changes size."""
+
+    def eventFilter(self, watched, event):
+        """Update layout density after Qt commits a new window size."""
+
+        if event.type() == QEvent.Type.Resize:
+            _apply_responsive_metrics(watched)
+
+        return False
+
+
+def _configure_window_geometry(window) -> None:
+    """Choose a multitasking-friendly initial size without exceeding the screen."""
+
+    screen = window.screen()
+    if screen is None:
+        window.setMinimumSize(MINIMUM_WINDOW_WIDTH, MINIMUM_WINDOW_HEIGHT)
+        window.resize(PREFERRED_WINDOW_WIDTH, PREFERRED_WINDOW_HEIGHT)
+        return
+
+    available = screen.availableGeometry()
+    minimum_width = min(MINIMUM_WINDOW_WIDTH, available.width())
+    minimum_height = min(MINIMUM_WINDOW_HEIGHT, available.height())
+    window.setMinimumSize(minimum_width, minimum_height)
+
+    # This is the restored size; launchers maximize without losing normal window controls.
+    window.resize(
+        max(minimum_width, round(available.width() * 0.5)),
+        max(minimum_height, round(available.height() * 0.5)),
+    )
+
+
+def _apply_responsive_metrics(window) -> None:
+    """Adjust only spacing and minimum control sizes at compact window dimensions."""
+
+    compact = window.width() < 1100 or window.height() < 760
+    # Restyling only when density changes avoids repolishing every child on each resize.
+    if window.property("compactLayout") != compact:
+        window.setProperty("compactLayout", compact)
+        window.setStyleSheet(STYLE + (COMPACT_STYLE if compact else ""))
+
+    if window.centralWidget() and window.centralWidget().layout():
+        layout = window.centralWidget().layout()
+        margin = 4 if compact else 10
+        layout.setContentsMargins(margin, margin, margin, margin)
+        layout.setSpacing(3 if compact else CONTROL_SPACING)
+
+    # Dense annotation rows contract as a unit instead of allowing their final controls to be
+    # clipped when a maximized window is restored onto a smaller monitor.
+    for layout_name in ("date_range_layout", "navigation_layout", "regime_layout"):
+        child_layout = getattr(window, layout_name, None)
+        if child_layout is not None:
+            child_layout.setSpacing(4 if compact else CONTROL_SPACING)
+
+    for date_input in window.findChildren(QDateEdit):
+        if date_input.property("responsiveDateInput"):
+            date_input.setFixedWidth(128 if compact else 150)
+
+    # Both chart types retain most of the flexible height while yielding enough room for their
+    # controls on the supported minimum window size.
+    chart = getattr(window, "chart", None)
+    if chart is not None:
+        chart.setMinimumHeight(170 if compact else 340)
+    comparison_chart = getattr(window, "comparison_chart", None)
+    if comparison_chart is not None:
+        comparison_chart.setMinimumHeight(260 if compact else 400)
+
+    for button in window.findChildren(QPushButton):
+        # Every action in one window state keeps the same outer height; compact properties alter
+        # padding and width only, so Stop and navigation controls remain visually aligned.
+        button_height = COMPACT_PRIMARY_HEIGHT if compact else PRIMARY_HEIGHT
+        button.setMinimumHeight(button_height)
+        if button.property("responsiveNav"):
+            full_label = button.property("fullLabel") or button.text()
+            button.setProperty("fullLabel", full_label)
+            button.setText(full_label.replace("Previous", "Prev") if compact else full_label)
+            button.setMinimumWidth(button.sizeHint().width())
+            button.setSizePolicy(
+                QSizePolicy.Policy.Preferred,
+                QSizePolicy.Policy.Fixed,
+            )
+        if button.property("wideAction"):
+            button.setMinimumWidth(90 if compact else 112)
+
+    opening_gap_value = getattr(window, "opening_gap_value", None)
+    if opening_gap_value is not None:
+        opening_gap_value.setMinimumWidth(72 if compact else 90)
+
+    secondary_panel = getattr(window, "comparison_details", None)
+    if secondary_panel is not None:
+        secondary_panel.setMaximumHeight(65 if compact else 120)
+
+    for table in window.findChildren(QTableWidget):
+        table.verticalHeader().setDefaultSectionSize(32 if compact else 36)
+
+
 def apply_theme(window) -> None:
     """Apply shared styling and compact-screen sizing to one top-level window."""
 
     window.setProperty("pricesanityTheme", "shared-v1")
+    window.setProperty("compactLayout", None)
     window.setStyleSheet(STYLE)
-
-    # At 150% scaling, a 1080p screen has only 720 logical pixels. Recover space
-    # from margins and the chart before reducing the annotation hit targets.
-    screen = window.screen()
-    compact = screen is not None and screen.availableGeometry().height() < 900
-    if window.centralWidget() and window.centralWidget().layout():
-        layout = window.centralWidget().layout()
-        margin = TIGHT_SPACING if compact else PANEL_MARGIN
-        layout.setContentsMargins(margin, margin, margin, margin)
-        layout.setSpacing(TIGHT_SPACING if compact else CONTROL_SPACING)
-
-    if compact and getattr(window, "chart", None) is not None:
-        window.chart.setMinimumHeight(240)
+    _configure_window_geometry(window)
 
     # Enforce consistent hit targets and read-only result tables after each window has built
     # its children, avoiding duplicated widget policy in every GUI module.
     for button in window.findChildren(QPushButton):
         button.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         button.setMouseTracking(True)
-        if button.property("compact"):
-            button.setMinimumHeight(32)
-        else:
-            button.setMinimumHeight(PRIMARY_HEIGHT)
         button.setAccessibleName(button.text())
 
     # Qt tool buttons include the calendar popup controls. Explicit hover tracking keeps their
@@ -213,4 +302,56 @@ def apply_theme(window) -> None:
     for table in window.findChildren(QTableWidget):
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setAlternatingRowColors(True)
-        table.verticalHeader().setDefaultSectionSize(36)
+
+    # Qt layouts already distribute width and height; this filter changes only density thresholds
+    # as the user moves between a multitasking window and a larger workspace.
+    old_filter = getattr(window, "_pricesanity_responsive_filter", None)
+    if old_filter is not None:
+        window.removeEventFilter(old_filter)
+        old_filter.deleteLater()
+    responsive_filter = _ResponsiveWindowFilter(window)
+    window._pricesanity_responsive_filter = responsive_filter
+    window.installEventFilter(responsive_filter)
+    _apply_responsive_metrics(window)
+
+
+# Keep borders and semantic colors intact while reclaiming padding before chart space.
+COMPACT_STYLE = """
+QWidget { font-size: 12px; }
+QLabel[role="title"] { font-size: 18px; padding: 0; }
+QLabel[role="section"] { font-size: 14px; }
+QLabel[role="muted"] { font-size: 12px; }
+QLabel[role="readonly"] { padding: 3px; }
+QLabel[role="openingGap"] { font-size: 13px; padding: 2px 5px; }
+QPushButton, QToolButton { padding: 2px 6px; }
+QPushButton[compact="true"] { min-height: 22px; padding: 2px 4px; }
+QPushButton[wideAction="true"] { padding-left: 6px; padding-right: 6px; }
+QComboBox, QDateEdit, QSpinBox { min-height: 22px; padding: 2px 5px; }
+QTabBar::tab { padding: 6px 8px; }
+QHeaderView::section { padding: 5px; }
+QProgressBar { min-height: 14px; }
+"""
+
+
+def compact_plot(canvas) -> bool:
+    """Use the owning Qt window's density, including before a canvas is first displayed."""
+
+    tier = canvas.window().property("compactLayout")
+    return bool(tier) if tier is not None else canvas.height() < 450
+
+
+def apply_plot_typography(canvas) -> None:
+    """Scale every chart text category with the same compact decision as its Qt controls."""
+
+    compact = compact_plot(canvas)
+    for axis in canvas.figure.axes:
+        axis.tick_params(labelsize=8 if compact else 10, pad=2 if compact else 4)
+        for label in (axis.xaxis.label, axis.yaxis.label):
+            label.set_fontsize(9 if compact else 11)
+        axis.title.set_fontsize(10 if compact else 14)
+        for label in axis.texts:
+            label.set_fontsize(8 if compact else 10)
+        legend = axis.get_legend()
+        if legend is not None:
+            for label in legend.get_texts():
+                label.set_fontsize(8 if compact else 10)

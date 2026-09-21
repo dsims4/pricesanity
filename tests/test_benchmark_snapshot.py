@@ -39,6 +39,8 @@ def _sessions(count: int = 3, length: int = 5) -> list[pd.DataFrame]:
 
 
 def test_frozen_snapshot_is_immutable_after_live_sources_change(tmp_path) -> None:
+    """A frozen benchmark snapshot must not change with later live annotations."""
+
     sessions = _sessions()
     snapshot = freeze_benchmark_snapshot_from_sessions(
         sessions,

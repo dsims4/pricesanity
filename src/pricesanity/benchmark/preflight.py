@@ -24,6 +24,8 @@ class ScalabilityPreflight:
     warnings: tuple[str, ...]
 
     def to_dict(self) -> dict[str, object]:
+        """Return the complete workload estimate as serializable fields."""
+
         return asdict(self)
 
 

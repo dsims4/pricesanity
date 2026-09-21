@@ -12,8 +12,6 @@ import torch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
-
 from pricesanity.annotation.schema import CandlestickAnnotation, MarketRegime
 from pricesanity.annotation.store import AnnotationStore
 from pricesanity.config import load_config
@@ -220,7 +218,11 @@ def test_prediction_semantics_fail_before_display(bundle, damage) -> None:
         )
 
 
-def test_results_navigation_labels_timezone_and_read_only(bundle, monkeypatch) -> None:
+def test_results_navigation_labels_timezone_and_read_only(
+    bundle,
+    monkeypatch,
+    qt_application,
+) -> None:
     """Navigate saved evidence without SQL access, inference, or cross-session marker carryover."""
 
     predictions = pd.read_parquet(bundle / "run/test_predictions.parquet")
@@ -237,7 +239,6 @@ def test_results_navigation_labels_timezone_and_read_only(bundle, monkeypatch) -
 
     # The window receives its validated timezone explicitly through run metadata.
     test_run.metadata["session_timezone"] = "America/Chicago"
-    application = QApplication.instance() or QApplication([])
     database_checksum = file_sha256(bundle / "annotations.db")
 
     def forbidden_database(*args, **kwargs):
@@ -254,6 +255,8 @@ def test_results_navigation_labels_timezone_and_read_only(bundle, monkeypatch) -
     monkeypatch.setattr(RegimeTransformer, "forward", forbidden_navigation_work)
     window = ResultsWindow(test_run)
     try:
+        assert window.minimumWidth() <= 900
+        assert window.minimumHeight() <= 640
         assert window.model_current_label.text() == "Model current: Bull"
         assert window.chart.regime_change_markers == ((2, "range"),)
         assert "08:30 CST" in window.candle_information.text()
@@ -286,12 +289,15 @@ def test_results_navigation_labels_timezone_and_read_only(bundle, monkeypatch) -
         assert window.model_current_label.text() == "Model current: Range"
     finally:
         window.close()
-        application.processEvents()
+        qt_application.processEvents()
 
     assert file_sha256(bundle / "annotations.db") == database_checksum
 
 
-def test_human_timeline_preserves_missing_annotation_positions(bundle) -> None:
+def test_human_timeline_preserves_missing_annotation_positions(
+    bundle,
+    qt_application,
+) -> None:
     """Missing human labels remain neutral at their original candle indices."""
 
     test_run = load_test_run(
@@ -301,7 +307,6 @@ def test_human_timeline_preserves_missing_annotation_positions(bundle) -> None:
     )
     test_run.candlesticks.loc[1, "human_current_regime"] = None
     test_run.candlesticks.loc[2, "human_anticipated_regime"] = pd.NA
-    application = QApplication.instance() or QApplication([])
     window = ResultsWindow(test_run)
     try:
         window.show_human_annotations.setChecked(True)
@@ -325,7 +330,7 @@ def test_human_timeline_preserves_missing_annotation_positions(bundle) -> None:
         assert window.human_current_label.text() == "Human current: Missing"
     finally:
         window.close()
-        application.processEvents()
+        qt_application.processEvents()
 
 
 def test_resume_skips_only_valid_completed_runs(bundle, capsys) -> None:
@@ -529,3 +534,36 @@ def test_expansion_preserves_completed_history_and_refits_only_past_data(
         assert loaded.candlesticks["run_index"].eq(run_index).all()
         assert "majority_current" in checkpoint
         assert "confusion_matrix" in checkpoint["test"]["current"]
+
+
+@pytest.mark.parametrize("size", [(760, 480), (960, 540), (1280, 720),
+                                 (1440, 900), (1920, 1080)])
+def test_results_layout_keeps_all_tracks_visible(bundle, qt_application, size):
+    """Human evidence remains aligned and visible at the supported restored sizes."""
+
+    test_run = load_test_run(
+        bundle / "run", bundle / "ohlc.parquet",
+        config=load_config("configs/default.yaml"),
+    )
+    window = ResultsWindow(test_run)
+    try:
+        window.show_human_annotations.setChecked(True)
+        window.resize(*size)
+        window.show()
+        qt_application.processEvents()
+        qt_application.processEvents()
+        assert (window.width(), window.height()) == size
+        chart = window.chart
+        chart.draw()
+        renderer = chart.get_renderer()
+        labels = [chart.time_axes.xaxis.label, *chart.time_axes.get_xticklabels(),
+                  *chart.timeline_axes.get_yticklabels()]
+        for label in labels:
+            bounds = label.get_window_extent(renderer)
+            assert bounds.x0 >= 0
+            assert bounds.y0 >= 0
+            assert bounds.x1 <= chart.figure.bbox.width
+        assert len(chart.regime_tracks) == 3
+        assert chart.axes.bbox.height >= 65
+    finally:
+        window.close()

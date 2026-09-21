@@ -28,6 +28,8 @@ def test_benchmark_cli_refuses_accidental_execution() -> None:
 
 
 def test_benchmark_profile_command_measures_infrastructure_only(tmp_path, capsys) -> None:
+    """Profiling must measure benchmark infrastructure without opening model search."""
+
     output = tmp_path / "profile.json"
     result = main([
         "profile", "--synthetic", "--session-count", "4",

@@ -4,6 +4,8 @@ from pricesanity.benchmark.resources import controlled_thread_budget, hardware_f
 
 
 def test_thread_budget_is_scoped_and_hardware_metadata_records_it() -> None:
+    """Thread limits must remain scoped while persisted hardware records the budget."""
+
     original = torch.get_num_threads()
     with controlled_thread_budget(1):
         assert torch.get_num_threads() == 1
