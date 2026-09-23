@@ -99,6 +99,70 @@ pricesanity-benchmark run --all-models --track controlled \
   --mode tuning --session-count 2690 --dry-run
 ```
 
+## Development data sufficiency
+
+Measure the value of more annotated history before completing the permanent benchmark:
+
+```bash
+pricesanity-benchmark data-sufficiency \
+  --normalized data/processed/ES-v-0_2010-06-06_2026-09-12.parquet \
+  --candlesticks data/interim/ES-v-0_2010-06-06_2026-09-12_ohlc.parquet \
+  --database data/annotations/pricesanity.sqlite3 \
+  --project-config configs/default.yaml \
+  --model transformer --track controlled --train-sizes 100 200 300 400 500 \
+  --device mps --output-directory data/models/data_sufficiency/transformer_500
+```
+
+This is **development only**. Official initialization still requires 2,690 sessions, with
+2,190 development sessions and 500 sealed final sessions. The full prepared eligibility
+catalog establishes that boundary before feature or label queries. An existing official
+snapshot under the configured benchmark root also constrains development dates; use
+`--benchmark-snapshot PATH` for a snapshot elsewhere. Cropped prepared inputs require that
+partition evidence. The command never opens `sealed_holdout.parquet`.
+
+Only complete eligible annotated sessions are selected, chronologically. Training uses nested
+prefixes of 100/200/300/400/500 sessions. Every point evaluates exactly the same later candles:
+with 536 complete development sessions, evaluation is sessions 501–536, starting at candle
+position 15 under the existing controlled 16×4 representation. Fewer than 20 later sessions
+requires `--allow-small-evaluation` (at least two remain mandatory); 20–49 is preliminary.
+
+The registry adapters and metrics are unchanged. Four-feature scaling is fitted on unique
+training candles separately at each size. There is **no tuning or evaluation-based checkpoint
+selection**. The Transformer uses the benchmark incumbent; other families use registry defaults.
+`--fixed-config PATH` accepts a JSON mapping from every selected model name to its fixed
+conceptual parameters (for example `{"transformer": {"epochs": 20}}`). Unspecified parameters
+then use registry defaults, not incumbent values; the complete resolved settings are recorded.
+
+`--model` accepts several names, including `majority_class previous_regime logistic_regression
+ gradient_boosting mlp tcn gru transformer`; `--all-models` selects the full registry.
+Stochastic families use declared seeds 42/137/271; `--seeds 42` is a faster screening run with
+unmeasured seed stability. Deterministic families run once per size. Previous-regime predictions
+use prior human labels and remain a non-deployable reference.
+
+`curve.csv` records current, anticipated, and mean-head macro-F1, plus separate observed-seed
+SDs. `marginal_gains.json` reports adjacent gains and gains per additional 100 sessions.
+Paired 95% intervals resample **whole evaluation sessions**, using the same draws for both
+sizes and every seed, recomputing pooled F1 before averaging seed scores. These intervals
+measure session uncertainty conditional on the declared seeds, not combined seed uncertainty.
+
+`assessment.json` reports STILL_RISING, PLAUSIBLY_PLATEAUING, or INCONCLUSIVE. The configurable
+`--meaningful-gain 0.01` and `--small-gain 0.005` are practical absolute-F1 criteria per 100
+additional sessions, not scientific laws. Rising requires positive paired support and a
+material recent gain without a conflicting recent trend. Plateauing requires two small
+recent gains in both heads and small latest upper bounds. Wide intervals, substantial seed
+variation, fewer than 20 evaluation sessions, or one stochastic seed remain inconclusive.
+Reference baselines cannot establish data sufficiency. No 1,000-session projection is fitted.
+
+The output also contains an immutable development snapshot, source/configuration identities,
+exact session/candle populations, per-size scalers, and checksummed seed-level model,
+prediction, metric, software, hardware, and timing artifacts under `runs/`. `summary.json`
+provides the complete machine-readable report. Add `--resume` to the identical command to
+validate completed points and continue from an exact fitted checkpoint after interruption.
+Resume uses frozen annotations; newly annotated data requires a new output directory.
+Source/library/device changes require a new diagnostic as well. Completed evidence is never
+silently replaced. Repeated inspection can overfit this development block, and its recent
+market regimes cannot establish how performance will behave at 1,000 sessions.
+
 ## Models and results
 
 The registry contains majority and previous-regime baselines; Gaussian Naive Bayes; logistic

@@ -3,6 +3,7 @@
 import argparse
 from collections.abc import Sequence
 import json
+import sqlite3
 from pathlib import Path
 
 from pricesanity.benchmark.protocol import load_benchmark_config, plan_benchmark
@@ -54,6 +55,37 @@ def build_argument_parser() -> argparse.ArgumentParser:
     profile_parser.add_argument("--candles-per-session", type=int, default=81)
     profile_parser.add_argument("--artifact-root", type=Path)
     profile_parser.add_argument("--output", type=Path)
+
+    diagnostic = subparsers.add_parser(
+        "data-sufficiency", help="Development-only fixed-population data-value diagnostic.",
+    )
+    for source in ("normalized", "candlesticks", "database", "project-config"):
+        diagnostic.add_argument("--" + source, type=Path, required=True)
+    diagnostic.add_argument("--output-directory", type=Path, required=True)
+    selection = diagnostic.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--model", nargs="+", choices=[
+        family.name for family in list_model_families()
+    ])
+    selection.add_argument("--all-models", action="store_true")
+    diagnostic.add_argument("--track", choices=("controlled",), default="controlled")
+    diagnostic.add_argument(
+        "--train-sizes", nargs="+", type=int, default=[100, 200, 300, 400, 500],
+    )
+    diagnostic.add_argument("--seeds", nargs="+", type=int)
+    diagnostic.add_argument("--device", choices=("cpu", "mps", "cuda"), default="cpu")
+    diagnostic.add_argument(
+        "--fixed-config", type=Path,
+        help="JSON mapping each selected model name to fixed conceptual parameters; never tuned.",
+    )
+    diagnostic.add_argument(
+        "--benchmark-snapshot", type=Path,
+        help="Optional official snapshot directory proving the development/final boundary.",
+    )
+    diagnostic.add_argument("--allow-small-evaluation", action="store_true")
+    diagnostic.add_argument("--meaningful-gain", type=float, default=0.01)
+    diagnostic.add_argument("--small-gain", type=float, default=0.005)
+    diagnostic.add_argument("--bootstrap-repetitions", type=int, default=2000)
+    diagnostic.add_argument("--resume", action="store_true")
 
     # Snapshot initialization and global freezing each have their own evidence requirements;
     # neither accepts the model-specific execution options below.
@@ -181,6 +213,28 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return 0
 
     config = load_benchmark_config(parsed.config)
+    if parsed.command == "data-sufficiency":
+        from pricesanity.benchmark.data_sufficiency import run_data_sufficiency
+
+        try:
+            run_data_sufficiency(
+                normalized_path=parsed.normalized, candlestick_path=parsed.candlesticks,
+                database_path=parsed.database, app_config=load_config(parsed.project_config),
+                benchmark_config=config, output_directory=parsed.output_directory,
+                model_names=tuple(
+                    family.name for family in list_model_families()
+                ) if parsed.all_models else tuple(parsed.model),
+                train_sizes=tuple(parsed.train_sizes),
+                seeds=None if parsed.seeds is None else tuple(parsed.seeds),
+                device=parsed.device, fixed_config=parsed.fixed_config,
+                benchmark_snapshot=parsed.benchmark_snapshot,
+                allow_small_evaluation=parsed.allow_small_evaluation,
+                meaningful_gain=parsed.meaningful_gain, small_gain=parsed.small_gain,
+                bootstrap_repetitions=parsed.bootstrap_repetitions, resume=parsed.resume,
+            )
+        except (ValueError, OSError, RuntimeError, sqlite3.Error) as error:
+            parser.error(str(error))
+        return 0
     if parsed.command == "profile":
         report = profile_synthetic_infrastructure(
             session_count=parsed.session_count,
@@ -193,7 +247,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0
     if parsed.command == "initialize":
-        # Initialization is the only command allowed to read mutable annotations; every later
+        # Official initialization reads mutable annotations; every later official
         # study action consumes the resulting immutable snapshot.
         snapshot = freeze_benchmark_snapshot(
             normalized_path=parsed.normalized,
