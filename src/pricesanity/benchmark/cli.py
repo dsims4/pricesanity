@@ -1,18 +1,24 @@
-"""Inspect and validate benchmark infrastructure without launching expensive searches."""
+"""Inspect, freeze, and execute chronological benchmark studies at the available corpus size."""
 
 import argparse
+from dataclasses import replace
 from collections.abc import Sequence
 import json
 import sqlite3
 from pathlib import Path
 
-from pricesanity.benchmark.protocol import load_benchmark_config, plan_benchmark
+from pricesanity.benchmark.protocol import (
+    load_benchmark_config, plan_benchmark, resolve_benchmark_config, describe_protocol,
+)
 from pricesanity.benchmark.protocol import BenchmarkTrack
 from pricesanity.benchmark.registry import list_model_families
 from pricesanity.benchmark.preflight import build_scalability_preflight
 from pricesanity.benchmark.search_spaces import load_search_spaces
-from pricesanity.benchmark.snapshot import freeze_benchmark_snapshot, load_benchmark_snapshot
-from pricesanity.benchmark.execution import BenchmarkExecutor
+from pricesanity.benchmark.snapshot import load_benchmark_snapshot
+from pricesanity.benchmark.population import discover_population, freeze_population
+from pricesanity.benchmark.artifacts import canonical_sha256
+from pricesanity.benchmark.orchestration import execute_suite
+from pricesanity.benchmark.execution import BenchmarkExecutor, validate_training_support
 from pricesanity.benchmark.profile import (
     profile_synthetic_infrastructure,
     write_profile_report,
@@ -55,6 +61,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     profile_parser.add_argument("--candles-per-session", type=int, default=81)
     profile_parser.add_argument("--artifact-root", type=Path)
     profile_parser.add_argument("--output", type=Path)
+    publish_parser = subparsers.add_parser(
+        "publish-results", help="Export one deterministic, allowlisted public result bundle."
+    )
+    publish_parser.add_argument("--run", type=Path, required=True)
+    publish_parser.add_argument("--output", type=Path, required=True)
 
     diagnostic = subparsers.add_parser(
         "data-sufficiency", help="Development-only fixed-population data-value diagnostic.",
@@ -102,6 +113,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     initialize_parser.add_argument("--project-config", type=Path, required=True)
     initialize_parser.add_argument("--study-directory", type=Path, required=True)
+    initialize_parser.add_argument("--session-count", type=int)
     freeze_parser = subparsers.add_parser(
         "freeze-development",
         help="Seal winners across both declared tracks before final access.",
@@ -165,25 +177,29 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     run_parser = subparsers.add_parser(
         "run",
-        help="Validate one benchmark action without launching model execution.",
+        help="Freeze the available corpus, tune both tracks, and evaluate the complete selected suite.",
     )
-    model_selection = run_parser.add_mutually_exclusive_group(required=True)
+    model_selection = run_parser.add_mutually_exclusive_group()
     model_selection.add_argument("--model", choices=[
         family.name for family in list_model_families()
     ])
     model_selection.add_argument("--all-models", action="store_true")
     run_parser.add_argument(
-        "--track", choices=("controlled", "best_of_family"), required=True
+        "--track", choices=("controlled", "best_of_family"),
+        help="Optional single-track study; default runs both tracks."
     )
-    run_parser.add_argument(
-        "--mode", choices=("tuning", "final", "learning_curve"), required=True
-    )
-    run_parser.add_argument("--session-count", type=int, required=True)
+    run_parser.add_argument("--session-count", type=int, help="Use the first N complete eligible sessions; default uses all.")
+    for source in ("normalized", "candlesticks", "database", "project-config"):
+        run_parser.add_argument("--" + source, type=Path)
+    run_parser.add_argument("--artifact-root", type=Path)
+    run_parser.add_argument("--study-directory", type=Path, help="Resume this exact frozen population without rediscovery.")
+    run_parser.add_argument("--device", choices=("cpu", "mps", "cuda"), default="cpu")
+    run_parser.add_argument("--acknowledge-scaling-risk", action="store_true")
     run_parser.add_argument("--resume", action="store_true")
     run_parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Required for this validation-only command; never launches training.",
+        help="Print the derived population and preflights without writing artifacts or training.",
     )
     run_parser.add_argument(
         "--search-spaces",
@@ -210,6 +226,17 @@ def main(arguments: Sequence[str] | None = None) -> int:
             else smoke_devices(device=parsed.device, compare=parsed.compare)
         )
         print(json.dumps(report, indent=2, default=str))
+        return 0
+
+    # WHY: exporting verified summaries needs neither private data nor benchmark configuration.
+    if parsed.command == "publish-results":
+        from pricesanity.benchmark.publication import publish_benchmark_results
+
+        try:
+            output = publish_benchmark_results(parsed.run, parsed.output)
+        except (ValueError, OSError) as error:
+            parser.error(str(error))
+        print(f"Published deterministic public benchmark result: {output}")
         return 0
 
     config = load_benchmark_config(parsed.config)
@@ -249,15 +276,16 @@ def main(arguments: Sequence[str] | None = None) -> int:
     if parsed.command == "initialize":
         # Official initialization reads mutable annotations; every later official
         # study action consumes the resulting immutable snapshot.
-        snapshot = freeze_benchmark_snapshot(
-            normalized_path=parsed.normalized,
-            annotation_database_path=parsed.database,
-            app_config=load_config(parsed.project_config),
-            output_directory=parsed.study_directory / "snapshot",
-            expected_session_count=config.expected_session_count,
-            candlestick_path=parsed.candlesticks,
-            development_session_count=config.development_session_count,
+        population = discover_population(
+            normalized_path=parsed.normalized, candlestick_path=parsed.candlesticks,
+            database_path=parsed.database, app_config=load_config(parsed.project_config),
+            config=config, session_count=parsed.session_count,
         )
+        snapshot = freeze_population(
+            population, parsed.study_directory,
+            timestamp_column=load_config(parsed.project_config).data.timestamp_column,
+        )
+        print(json.dumps(describe_protocol(population.config), indent=2))
         print(
             f"Frozen {snapshot.session_count} sessions and {snapshot.row_count} candles "
             f"as snapshot {snapshot.identity_sha256}."
@@ -324,27 +352,59 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return 0
 
     if parsed.command == "run":
-        # This legacy planning surface intentionally cannot fit models. Requiring --dry-run
-        # keeps its execution-shaped arguments from being mistaken for a training command.
-        if not parsed.dry_run:
-            parser.error(
-                "Full benchmark execution is intentionally disabled until annotation is "
-                "complete; use --dry-run to validate the planned command."
-            )
+        selected_models = ([parsed.model] if parsed.model else [family.name for family in list_model_families()])
+        if parsed.model:
+            config = replace(config, model_tuning_budgets={parsed.model: config.model_tuning_budgets[parsed.model]})
+        tracks = (parsed.track,) if parsed.track else tuple(track.value for track in BenchmarkTrack)
         try:
-            plan_benchmark(parsed.session_count, config)
-            load_search_spaces(parsed.search_spaces)
-        except ValueError as error:
+            spaces = load_search_spaces(parsed.search_spaces)
+            if parsed.study_directory is not None:
+                if (not parsed.resume or parsed.session_count is not None
+                        or parsed.artifact_root is not None or any(getattr(parsed, key) is not None
+                            for key in ("normalized", "candlesticks", "database", "project_config"))):
+                    raise ValueError("--study-directory requires --resume and no live sources, artifact root, or new cap.")
+                snapshot = load_benchmark_snapshot(parsed.study_directory / "snapshot")
+                config = resolve_benchmark_config(snapshot.session_count, config)
+                study_directory = parsed.study_directory
+            elif all(getattr(parsed, key) is not None for key in (
+                "normalized", "candlesticks", "database", "project_config"
+            )):
+                app_config = load_config(parsed.project_config)
+                population = discover_population(
+                    normalized_path=parsed.normalized, candlestick_path=parsed.candlesticks,
+                    database_path=parsed.database, app_config=app_config,
+                    config=config, session_count=parsed.session_count,
+                )
+                config = population.config
+                validate_training_support(config, population.sessions, spaces, tracks)
+                fingerprint = canonical_sha256({"population": population.identity_sha256,
+                                                "search_spaces": spaces, "tracks": tracks})
+                study_directory = (parsed.artifact_root or config.output_root) / (
+                    f"generalized_{config.expected_session_count}_{fingerprint[:16]}"
+                )
+                if not parsed.dry_run:
+                    snapshot = freeze_population(population, study_directory,
+                        timestamp_column=app_config.data.timestamp_column, resume=parsed.resume)
+            elif parsed.dry_run and parsed.session_count is not None and not any(
+                getattr(parsed, key) is not None for key in ("normalized", "candlesticks", "database", "project_config")
+            ):
+                config = resolve_benchmark_config(parsed.session_count, config)
+                study_directory = None
+            else:
+                raise ValueError("run requires --normalized, --candlesticks, --database, and --project-config.")
+            print(json.dumps(describe_protocol(config), indent=2))
+            print("Models: " + ", ".join(selected_models))
+            print("Tracks: " + ", ".join(tracks))
+            if study_directory is not None:
+                print(f"Study: {study_directory}")
+            if not parsed.dry_run:
+                executor = BenchmarkExecutor(snapshot=snapshot, config=config, search_spaces=spaces,
+                    study_root=study_directory, device=parsed.device, declared_tracks=tracks)
+                paths = execute_suite(executor, acknowledge_scaling_risk=parsed.acknowledge_scaling_risk)
+                print(f"Completed {len(paths)} final runs. Report with pricesanity-benchmark-report --artifact-root {study_directory}")
+                return 0
+        except (ValueError, OSError, RuntimeError, sqlite3.Error) as error:
             parser.error(str(error))
-        selected_models = (
-            [family.name for family in list_model_families()]
-            if parsed.all_models
-            else [parsed.model]
-        )
-        print(f"Track: {parsed.track}")
-        print(f"Mode: {parsed.mode}")
-        print("Models: " + ", ".join(selected_models))
-        print(f"Resume: {'enabled' if parsed.resume else 'disabled'}")
         for selected_model in selected_models:
             family = next(
                 family for family in list_model_families()
@@ -377,9 +437,11 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return 0
 
     try:
+        config = resolve_benchmark_config(parsed.session_count, config)
         plan = plan_benchmark(parsed.session_count, config)
     except ValueError as error:
         parser.error(str(error))
+    print(json.dumps(describe_protocol(config), indent=2))
     print(
         "Development: "
         f"sessions {plan.development.start_index + 1}-"

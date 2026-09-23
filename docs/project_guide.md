@@ -81,7 +81,7 @@ WSL filesystem guidance, and tested-environment limitations live in
 one-minute source candles, five-minute target candles, a maximum 09:30–16:15 America/New_York RTH
 window, and the `relative_ohlc_v1` feature scheme.
 
-`configs/benchmark/default.yaml` describes the full-corpus split, validation folds, learning-curve
+`configs/benchmark/default.yaml` describes proportional split/fold rules, learning-curve
 prefixes, final seeds, worker budget, model budgets, and incumbent Transformer configuration.
 `configs/benchmark/search_spaces.yaml` is the bounded, readable best-of-family search policy.
 Changing either benchmark file changes scientific identity and must produce a distinct study.
@@ -204,10 +204,17 @@ distance, likelihood, margin, or dense gradients do.
 
 ## Benchmark protocol
 
-The configured corpus contains 2,690 eligible sessions: 2,190 development sessions followed by a
-500-session final holdout. Configuration validation refuses a different count or a fold that
-reaches the holdout. Five expanding chronological development folds select configurations. Fixed
-development sessions 2,101–2,190 evaluate the configured learning-curve prefixes.
+The `generalized_chronological_90_10_v1` protocol discovers N complete eligible annotated sessions.
+Its last `ceil(0.10 × N)` sessions are test; all earlier sessions are development. At N=550 this
+is 495/55; at N=2690 it is 2421/269. Five expanding folds start at half of development and validate
+successive later blocks, ending before the last 10% of development reserved for learning curves.
+Curve prefixes use 10/25/50/75/100% of the history before that fixed evaluation block. See the
+[protocol rules and minimum](benchmark_protocol.md#generated-development-folds-and-minimum).
+
+`run` freezes the discovered population, tunes every family on both tracks, runs development
+learning curves, seals all selections, then evaluates the test population. The same command applies
+as annotation grows. Runs default to interim interpretation; previously inspected trailing blocks
+must not be claimed as permanently untouched. A terminal corpus uses identical mechanics.
 
 The primary objective is:
 
@@ -224,8 +231,8 @@ candle rows.
 `initialize` makes a format-2 snapshot with physically separate `development.parquet` and
 `sealed_holdout.parquet`. Development loading does not open or hash holdout bytes. Tuning and
 learning curves consume only development. `freeze-development` verifies and binds every declared
-family and track selection. Only `final --confirm-final-holdout` can open the final file after that
-global seal exists.
+family and track selection. The final stage, invoked by full `run` or `final --confirm-final-holdout`, can open the
+final file only after that global seal exists.
 
 ## Model reference
 
@@ -442,14 +449,15 @@ Global `--config` defaults to `configs/benchmark/default.yaml`. Subcommands are:
 | `device-smoke` | device; optional compare | temporary synthetic fit/save/reload; no study mutation | `pricesanity-benchmark device-smoke --device mps --compare` |
 | `models` | none | read-only registry list | `pricesanity-benchmark models` |
 | `profile` | `--synthetic`; optional sizes/artifact root/output | profile representations; writes only optional report/output probes | `pricesanity-benchmark profile --synthetic` |
-| `initialize` | normalized, database, OHLC, project config, study directory | write immutable snapshot and manifest; requires full configured corpus | `pricesanity-benchmark initialize --normalized N --candlesticks C --database A --project-config configs/default.yaml --study-directory STUDY` |
+| `publish-results` | completed `--run` or sealed study; new `--output` directory | read verified summaries and write a deterministic allowlisted public bundle; never reads prediction rows | `pricesanity-benchmark publish-results --run STUDY --output results/benchmark/RESULT` |
+| `initialize` | normalized, database, OHLC, project config, study directory | discover complete eligible sessions; write immutable 90/10 snapshot and manifest | `pricesanity-benchmark initialize --normalized N --candlesticks C --database A --project-config configs/default.yaml --study-directory STUDY` |
 | `pilot` | study, model selection, track; optional device/search spaces | write one development diagnostic run; holdout remains sealed | `pricesanity-benchmark pilot --study-directory STUDY --model transformer --track controlled` |
 | `tune` | study, model selection, track; optional device/search spaces/fold/risk acknowledgement | mutate development Optuna/fold artifacts and selected winner | `pricesanity-benchmark tune --study-directory STUDY --all-models --track controlled` |
 | `learning-curve` | study, model selection, track; optional device/search spaces | write fixed-development-evaluation curve runs | `pricesanity-benchmark learning-curve --study-directory STUDY --model gru --track best_of_family` |
 | `freeze-development` | study; optional search spaces | write global seal; permanently block study development mutation | `pricesanity-benchmark freeze-development --study-directory STUDY` |
 | `final` | study, model selection, track, confirmation; optional device/search spaces | open sealed bytes and write final runs; only after global freeze | `pricesanity-benchmark final --study-directory STUDY --all-models --track controlled --confirm-final-holdout` |
 | `plan` | session count | read-only split validation | `pricesanity-benchmark plan --session-count 2690` |
-| `run` | model selection, track, mode, count, dry-run | read-only action/preflight validation; does not train | `pricesanity-benchmark run --all-models --track controlled --mode tuning --session-count 2690 --dry-run` |
+| `run` | normalized, OHLC, database, project config; optional cap/device/root/resume/dry-run | discover and freeze population; run complete suite on both tracks | `pricesanity-benchmark run --normalized N --candlesticks C --database A --project-config configs/default.yaml --acknowledge-scaling-risk` |
 
 For `pilot`, `tune`, `learning-curve`, and `final`, model selection is exactly one of `--model` or
 `--all-models`; track is `controlled` or `best_of_family`; study devices are `cpu`, `mps`, or

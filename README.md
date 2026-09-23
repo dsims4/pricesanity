@@ -31,8 +31,10 @@ prices never justify a historical fallback. See the [data pipeline](docs/project
 
 ## Benchmark design
 
-The configured corpus has **2,690 eligible sessions**: 2,190 for development and 500 later sessions
-for final evaluation. Two tracks answer different questions:
+Price Sanity uses a chronological **90/10 benchmark protocol** over the complete eligible
+annotated corpus supplied to a run. The last `ceil(0.10 × N)` whole sessions are held-out test;
+the earlier sessions support development, model selection, and final training. For 550 sessions
+this is 495/55; for 2,690 it is 2,421/269. Two tracks answer different questions:
 
 - **Controlled:** every learned family receives the same 16 candles × four values.
 - **Best-of-family:** each learned family selects causal context on development folds while
@@ -82,9 +84,8 @@ with the study rather than treating one tested machine as a universal compatibil
    `pricesanity-estimate` and the cost-guarded `pricesanity-download`.
 2. Run `pricesanity-prepare` to publish aligned validated OHLC and normalized Parquet.
 3. Use `pricesanity-annotate` to save atomic current/anticipated label pairs in SQLite.
-4. Use `pricesanity-train` for the standalone Transformer workflow, or complete annotation
-   and follow the benchmark lifecycle: initialize, pilot, tune both tracks, learning curves,
-   global freeze, then explicitly confirmed final evaluation.
+4. Use `pricesanity-train` for the standalone Transformer workflow, or `pricesanity-benchmark run`
+   for the full model suite on the currently available complete eligible annotations.
 5. Inspect saved results with `pricesanity-test`, `pricesanity-benchmark-report`, and
    `pricesanity-compare`. Viewers never retrain or infer during navigation.
 
@@ -94,10 +95,50 @@ benchmark configuration without training:
 
 ```bash
 pricesanity-benchmark models
-pricesanity-benchmark plan --session-count 2690
-pricesanity-benchmark run --all-models --track controlled \
-  --mode tuning --session-count 2690 --dry-run
+pricesanity-benchmark plan --session-count 550
+pricesanity-benchmark run --session-count 550 --dry-run
 ```
+
+Run the complete suite on both tracks with the same command as annotation grows:
+
+```bash
+pricesanity-benchmark run \
+  --normalized data/processed/ES-v-0_2010-06-06_2026-09-12.parquet \
+  --candlesticks data/interim/ES-v-0_2010-06-06_2026-09-12_ohlc.parquet \
+  --database data/annotations/pricesanity.sqlite3 \
+  --project-config configs/default.yaml --device cuda \
+  --artifact-root data/models/benchmark --acknowledge-scaling-risk --resume
+```
+
+Use the supported device for your machine. Add `--dry-run` to discover and print the actual
+population without training or writing artifacts. An optional `--session-count N` selects the
+first N complete eligible sessions; no cap uses all available. Incomplete annotations are omitted.
+Every invocation freezes its exact population before training. Population fingerprints separate
+studies beneath the artifact root; `--resume` continues a matching study. To continue an older
+frozen population after annotations grow, use `run --study-directory STUDY --resume --device cuda
+--acknowledge-scaling-risk` without source arguments.
+
+Runs while the corpus grows are **interim development benchmarks**, recorded as `corpus_status:
+interim`. Their inspected trailing blocks are not permanently untouched holdouts. The same command
+and split rules apply when a terminal corpus is chosen; terminal interpretation does not create a
+separate implementation. Full `run` completes selection and learning curves across both tracks,
+seals development globally, then evaluates each selected model on the frozen test sessions.
+
+Publish a completed run or sealed completed study as a deterministic, Git-safe summary:
+
+```bash
+pricesanity-benchmark publish-results \
+  --run data/models/benchmark/generalized_550_POPULATION \
+  --output results/benchmark/PUBLIC_RESULT
+```
+
+The exporter uses an explicit field allowlist. It includes protocol and population hashes,
+configuration/tuning evidence, seed-aggregated metrics, both heads' exact / ±1 / ±2 transition
+diagnostics, safe environment metadata, and learning curves when present. It never copies models,
+prediction rows, exact session or candlestick IDs, annotations, databases, features, or licensed
+market data. Repeating the same export is byte-identical; a different existing destination is not
+overwritten.
+
 
 ## Development data sufficiency
 
@@ -113,12 +154,12 @@ pricesanity-benchmark data-sufficiency \
   --device mps --output-directory data/models/data_sufficiency/transformer_500
 ```
 
-This is **development only**. Official initialization still requires 2,690 sessions, with
-2,190 development sessions and 500 sealed final sessions. The full prepared eligibility
-catalog establishes that boundary before feature or label queries. An existing official
-snapshot under the configured benchmark root also constrains development dates; use
-`--benchmark-snapshot PATH` for a snapshot elsewhere. Cropped prepared inputs require that
-partition evidence. The command never opens `sealed_holdout.parquet`.
+This is **development only** and answers a different question: does more training history help
+on one fixed later population? The complete prepared eligibility catalog establishes its 90/10
+development boundary before feature or label queries. Known official snapshots under the configured
+benchmark root further restrict allowable dates; use `--benchmark-snapshot PATH` for a snapshot
+elsewhere. The command never opens `sealed_holdout.parquet`. This catalog-based diagnostic remains
+separate from `run`, which splits the currently complete annotated population.
 
 Only complete eligible annotated sessions are selected, chronologically. Training uses nested
 prefixes of 100/200/300/400/500 sessions. Every point evaluates exactly the same later candles:

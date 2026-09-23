@@ -1,67 +1,81 @@
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
 from pricesanity.benchmark.learning_curve import plan_learning_curve
-from pricesanity.benchmark.protocol import load_benchmark_config, plan_benchmark
+from pricesanity.benchmark.protocol import (
+    load_benchmark_config, plan_benchmark, resolve_benchmark_config, minimum_session_count,
+)
 
 
-def test_benchmark_plan_keeps_final_holdout_out_of_development() -> None:
-    """Configured tuning folds end before the separately locked final history."""
-
-    config = load_benchmark_config("configs/benchmark/default.yaml")
-    plan = plan_benchmark(2690, config)
-
-    assert list(plan.development_indices()) == list(range(2190))
-    assert plan.final_holdout.start_index == 2190
-    assert plan.final_holdout.end_index == 2690
-    assert all(
-        fold.validation.end_index <= plan.development.end_index
-        for fold in plan.chronological_validation_folds
-    )
+@pytest.mark.parametrize("count,development,test", [(550, 495, 55), (551, 495, 56),
+                                                    (1000, 900, 100), (2690, 2421, 269)])
+def test_dynamic_chronological_split_and_folds(count, development, test):
+    config = resolve_benchmark_config(count, load_benchmark_config("configs/benchmark/default.yaml"))
+    plan = plan_benchmark(count, config)
+    assert list(plan.development_indices()) == list(range(development))
+    assert plan.final_holdout.session_count == test
     with pytest.raises(PermissionError, match="unavailable"):
         plan.holdout_indices()
-    assert list(plan.holdout_indices(final_evaluation=True)) == list(range(2190, 2690))
+    holdout = list(plan.holdout_indices(final_evaluation=True))
+    assert holdout == list(range(development, count))
+    assert list(plan.development_indices()) + holdout == list(range(count))
+    previous = 0
+    for fold in plan.chronological_validation_folds:
+        assert fold.training.start_index == 0
+        assert previous < fold.training.end_index == fold.validation.start_index
+        assert fold.validation.end_index <= config.learning_curve_evaluation_range[0] < development
+        previous = fold.training.end_index
+    assert len(plan.chronological_validation_folds) == 5
+    points = plan_learning_curve(config.learning_curve_session_counts,
+        development_session_count=development, evaluation_range=config.learning_curve_evaluation_range)
+    assert len(set(config.learning_curve_session_counts)) == len(points)
+    assert {point.evaluation_end_index for point in points} == {development}
+    assert all(point.training_start_index == 0 and point.training_end_index <= point.evaluation_start_index
+               for point in points)
 
 
-def test_benchmark_plan_refuses_unaccounted_sessions_and_holdout_folds() -> None:
-    """Changing corpus size or leaking a validation fold requires deliberate config edits."""
-
-    config = load_benchmark_config("configs/benchmark/default.yaml")
-    with pytest.raises(ValueError, match="accounts for 2690"):
-        plan_benchmark(2689, config)
-
-    invalid = replace(
-        config,
-        chronological_validation_folds=((2190, 2190, 2290),),
-    )
+def test_resolved_population_cannot_change_and_invalid_folds_are_rejected():
+    config = resolve_benchmark_config(550, load_benchmark_config("configs/benchmark/default.yaml"))
+    with pytest.raises(ValueError, match="rebound"):
+        plan_benchmark(551, config)
     with pytest.raises(ValueError, match="final holdout"):
-        plan_benchmark(2690, invalid)
-
+        plan_benchmark(550, replace(config, chronological_validation_folds=((495, 495, 510),)))
     with pytest.raises(ValueError):
-        plan_learning_curve(
-            (250, 2200), development_session_count=2190,
-            evaluation_range=(2090, 2190),
-        )
+        plan_learning_curve((250, 496), development_session_count=495, evaluation_range=(445, 495))
 
 
-def test_learning_curve_uses_development_prefixes_only() -> None:
-    """Every learning-curve point begins at the oldest development session."""
-
-    points = plan_learning_curve(
-        (250, 500, 1000, 2000),
-        development_session_count=2190,
-        evaluation_range=(2100, 2190),
-    )
-    assert [(point.training_start_index, point.training_end_index) for point in points] == [
-        (0, 250), (0, 500), (0, 1000), (0, 2000)
-    ]
-    assert {
-        (point.evaluation_start_index, point.evaluation_end_index)
-        for point in points
-    } == {(2100, 2190)}
-
+def test_minimum_and_rounded_duplicate_checkpoints():
     config = load_benchmark_config("configs/benchmark/default.yaml")
-    assert config.learning_curve_evaluation_range[0] >= max(
-        fold[2] for fold in config.chronological_validation_folds
-    )
+    minimum = minimum_session_count(config.rules)
+    assert minimum < 550
+    for count in range(1, minimum):
+        with pytest.raises(ValueError, match=f"at least {minimum} complete eligible sessions"):
+            plan_benchmark(count, config)
+    for count in range(minimum, minimum + 100):
+        plan_benchmark(count, config)
+    config = replace(config, rules=replace(config.rules, learning_curve_fractions=(.1, .101, .5, 1.0)))
+    counts = resolve_benchmark_config(minimum, config).learning_curve_session_counts
+    assert len(counts) == 3
+    assert tuple(sorted(set(counts))) == counts
+
+
+@pytest.mark.parametrize("changes", [{"test_fraction": .2}, {"version": "other"},
+    {"initial_training_fraction": .95}, {"learning_evaluation_fraction": 0},
+    {"fold_count": 0}, {"learning_curve_fractions": (.1, .1, 1.)},
+    {"learning_curve_fractions": (.1, float("nan"), 1.)}])
+def test_invalid_rules_fail(changes):
+    config = load_benchmark_config("configs/benchmark/default.yaml")
+    with pytest.raises(ValueError):
+        plan_benchmark(550, replace(config, rules=replace(config.rules, **changes)))
+
+
+def test_absolute_format_one_configuration_is_rejected(tmp_path):
+    """New studies must derive boundaries from the current generalized protocol."""
+
+    current = Path("configs/benchmark/default.yaml").read_text(encoding="utf-8")
+    legacy = tmp_path / "legacy.yaml"
+    legacy.write_text(current.replace("format_version: 2", "format_version: 1", 1))
+    with pytest.raises(ValueError, match="format 2 is required"):
+        load_benchmark_config(legacy)

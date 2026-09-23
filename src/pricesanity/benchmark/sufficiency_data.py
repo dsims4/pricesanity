@@ -10,7 +10,7 @@ import pyarrow.parquet as parquet
 
 from pricesanity.annotation.schema import CandlestickAnnotation, MarketRegime
 from pricesanity.benchmark.artifacts import canonical_sha256
-from pricesanity.benchmark.protocol import BenchmarkConfig
+from pricesanity.benchmark.protocol import BenchmarkConfig, resolve_benchmark_config
 from pricesanity.benchmark.snapshot import load_benchmark_snapshot
 from pricesanity.config import AppConfig
 from pricesanity.data.annotation_evidence import (
@@ -51,6 +51,8 @@ def load_development_sessions(
     if not opens.is_monotonic_increasing or len(set(dates)) != len(dates):
         raise ValueError("Prepared session catalog must be uniquely chronological.")
 
+    catalog_config = resolve_benchmark_config(len(records), benchmark_config)
+
     # The full catalog is metadata, not a read of future feature/target rows. Without it or
     # an official partition, an arbitrary 500-day late-history export is not proven development.
     allowed_dates = None
@@ -68,9 +70,10 @@ def load_development_sessions(
                 "Official partition evidence must physically separate the sealed holdout."
             )
         snapshot = load_benchmark_snapshot(directory)
-        if snapshot.development_session_count != benchmark_config.development_session_count:
+        snapshot_config = resolve_benchmark_config(snapshot.session_count, benchmark_config)
+        if snapshot.development_session_count != snapshot_config.development_session_count:
             raise ValueError("Official snapshot does not match the development partition.")
-        if snapshot.session_count != benchmark_config.expected_session_count:
+        if snapshot.session_count != snapshot_config.expected_session_count:
             raise ValueError("Official snapshot does not match the benchmark corpus count.")
         # Only the physically separate development file is allowed here, including when a
         # sealed_holdout.parquet sits beside it. Never fall back to a mixed legacy snapshot.
@@ -82,8 +85,8 @@ def load_development_sessions(
         )
         partition_identities.append(snapshot.identity_sha256)
 
-    if len(records) == benchmark_config.expected_session_count:
-        prefix_dates = set(dates[:benchmark_config.development_session_count])
+    if len(records) == catalog_config.expected_session_count:
+        prefix_dates = set(dates[:catalog_config.development_session_count])
         allowed_dates = prefix_dates if allowed_dates is None else allowed_dates & prefix_dates
     elif allowed_dates is None:
         raise ValueError(
@@ -149,7 +152,7 @@ def load_development_sessions(
         "annotation_database_path": str(database_path.resolve()),
         "partition_snapshot_identities": partition_identities,
         "last_allowed_session": str(max(allowed_dates)),
-        "development_session_limit": benchmark_config.development_session_count,
+        "development_session_limit": len(allowed_dates),
         "prepared_catalog_sha256": canonical_sha256([str(day) for day in dates]),
         "annotation_rows_sha256": canonical_sha256(sorted([
             (value.candlestick_id, value.current_regime.value, value.anticipated_regime.value)

@@ -5,11 +5,11 @@ from pricesanity.benchmark.search_spaces import load_search_spaces
 
 
 def test_benchmark_cli_dry_run_validates_without_training(capsys) -> None:
-    """Future execution options are visible while this pass remains preparation only."""
+    """Dry-run plans remain usable without private data or model execution."""
 
     result = main([
         "run", "--model", "logistic_regression", "--track", "controlled",
-        "--mode", "tuning", "--session-count", "2690", "--dry-run",
+        "--session-count", "2690", "--dry-run",
     ])
     output = capsys.readouterr().out
     assert result == 0
@@ -18,13 +18,20 @@ def test_benchmark_cli_dry_run_validates_without_training(capsys) -> None:
 
 
 def test_benchmark_cli_refuses_accidental_execution() -> None:
-    """The preparation CLI cannot launch the incomplete full study."""
+    """Execution requires actual source inputs and cannot rely on a declared count."""
 
     with pytest.raises(SystemExit):
         main([
             "run", "--model", "logistic_regression", "--track", "controlled",
-            "--mode", "final", "--session-count", "2690",
+            "--session-count", "2690",
         ])
+
+
+def test_benchmark_cli_rejects_removed_legacy_mode() -> None:
+    """Stage selection belongs to the dedicated tune/final/learning-curve commands."""
+
+    with pytest.raises(SystemExit):
+        main(["run", "--mode", "tuning", "--session-count", "2690", "--dry-run"])
 
 
 def test_benchmark_profile_command_measures_infrastructure_only(tmp_path, capsys) -> None:

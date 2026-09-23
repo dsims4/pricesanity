@@ -1,4 +1,4 @@
-format_version: 1
+format_version: 2
 output_root: data/models/benchmark
 
 dataset:
@@ -12,40 +12,21 @@ dataset:
     - low_from_close
 
 protocol:
-  # Strict scheduled-status evidence, available condition, complete grid, and the existing
-  # prior-close trust chain define eligibility. Historical fallback is intentionally retired.
-  # Reverify this count with the current pipeline before freezing the fully annotated corpus.
-  # The validated corpus currently has 2,690 annotation-eligible sessions. Every session is
-  # accounted for: the first 2,190 are development history and the last 500 stay untouched.
-  expected_session_count: 2690
-  development_session_count: 2190
-  final_holdout_session_count: 500
+  # Eligibility remains strict: scheduled-status evidence, available condition, complete grid,
+  # and the existing prior-close trust chain. Only complete annotations enter this population.
+  rules:
+    version: generalized_chronological_90_10_v1
+    test_fraction: 0.10
+    initial_training_fraction: 0.50
+    learning_evaluation_fraction: 0.10
+    fold_count: 5
+    learning_curve_fractions: [0.10, 0.25, 0.50, 0.75, 1.0]
+    minimum_training_sessions: 30
+    minimum_validation_sessions: 5
+    minimum_test_sessions: 5
+    minimum_curve_sessions: 3
   controlled_first_scored_candle_position: 15
-  # Masked left padding lets every context score from the second candle, including early closes.
   best_of_family_first_scored_candle_position: 1
-  # Learning curves share one late-development evaluation block so increasing training history
-  # changes the fitted evidence without also changing which target candles receive scores.
-  learning_curve_evaluation_start: 2100
-  learning_curve_evaluation_end: 2190
-  # Each fold expands training forward and validates only on the immediately later block.
-  # No future fold may contribute preprocessing statistics or labels to an earlier fit.
-  chronological_validation_folds:
-    - training_end: 1000
-      validation_start: 1000
-      validation_end: 1100
-    - training_end: 1250
-      validation_start: 1250
-      validation_end: 1350
-    - training_end: 1500
-      validation_start: 1500
-      validation_end: 1600
-    - training_end: 1750
-      validation_start: 1750
-      validation_end: 1850
-    - training_end: 2000
-      validation_start: 2000
-      validation_end: 2100
-  learning_curve_session_counts: [250, 500, 1000, 1500, 2000, 2100]
 
 tuning:
   primary_metric: mean_head_macro_f1

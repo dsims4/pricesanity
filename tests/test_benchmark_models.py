@@ -41,10 +41,10 @@ def test_registry_contains_each_requested_family_once() -> None:
 
 
 def test_histogram_boosting_is_seed_invariant_at_benchmark_scale() -> None:
-    """No configured HGB random path is active for the benchmark's maximum fit size."""
+    """A representative fit below the histogram subsampling threshold is seed invariant."""
 
-    # WHY: 2,190 development sessions have at most 80 scored five-minute candles each,
-    # staying below sklearn's 200,000-row randomized histogram-binning threshold.
+    # This legacy-sized fixture deliberately stays below sklearn's 200,000-row
+    # randomized histogram-binning threshold; it is not a protocol population limit.
     sample_count = 2_190 * 80
     generator = np.random.default_rng(20260915)
     features = generator.normal(size=(sample_count, 4)).astype(np.float32)

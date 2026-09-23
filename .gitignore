@@ -249,6 +249,11 @@ data/annotations/*
 # Run metadata and predictions belong with local model artifacts, not source control.
 data/models/
 
+# Sanitized allowlisted summaries are intentionally reviewable and trackable.
+!results/
+!results/benchmark/
+!results/benchmark/**
+
 # Local source-review archives
 Archive.zip
 pricesanity-source.zip

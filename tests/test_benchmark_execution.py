@@ -7,7 +7,9 @@ import pandas as pd
 import pytest
 
 from pricesanity.benchmark.execution import BenchmarkExecutor
-from pricesanity.benchmark.protocol import BenchmarkTrack, load_benchmark_config
+from pricesanity.benchmark.protocol import (
+    BenchmarkTrack, load_benchmark_config, resolve_benchmark_config,
+)
 from pricesanity.benchmark.report import collect_aggregated_runs
 from pricesanity.benchmark.snapshot import freeze_benchmark_snapshot_from_sessions
 
@@ -46,14 +48,7 @@ def _fixed(value):
 def _tiny_study(tmp_path):
     """Build the smallest study that still exercises every benchmark lifecycle stage."""
 
-    sessions = tuple(_session(index) for index in range(10))
-    snapshot = freeze_benchmark_snapshot_from_sessions(
-        sessions,
-        output_directory=tmp_path / "study" / "snapshot",
-        expected_session_count=10,
-        development_session_count=8,
-        source_identities={"kind": "tiny_acceptance"},
-    )
+    sessions = tuple(_session(index) for index in range(9))
     base = load_benchmark_config("configs/benchmark/default.yaml")
     incumbent = {
         "context_length": 3,
@@ -69,22 +64,38 @@ def _tiny_study(tmp_path):
     }
     # Shrink the corpus while preserving the real separation between tuning validation,
     # fixed learning-curve evaluation, and the sealed final holdout.
-    config = replace(
-        base,
-        window_length=3,
-        expected_session_count=10,
-        development_session_count=8,
-        final_holdout_session_count=2,
-        chronological_validation_folds=((3, 3, 4), (5, 5, 6)),
-        learning_curve_session_counts=(2, 4),
-        learning_curve_evaluation_range=(6, 8),
-        controlled_first_scored_candle_position=2,
-        best_of_family_first_scored_candle_position=1,
-        final_seeds=(11, 12),
-        tuning_seed=5,
-        inference_timing_repetitions=1,
-        transformer_incumbent=incumbent,
-        model_tuning_budgets={name: 1 for name in MODEL_NAMES},
+    rules = replace(
+        base.rules,
+        initial_training_fraction=0.40,
+        learning_evaluation_fraction=0.25,
+        fold_count=2,
+        learning_curve_fractions=(0.34, 0.67, 1.0),
+        minimum_training_sessions=1,
+        minimum_validation_sessions=1,
+        minimum_test_sessions=1,
+        minimum_curve_sessions=1,
+    )
+    config = resolve_benchmark_config(
+        9,
+        replace(
+            base,
+            rules=rules,
+            window_length=3,
+            controlled_first_scored_candle_position=2,
+            best_of_family_first_scored_candle_position=1,
+            final_seeds=(11, 12),
+            tuning_seed=5,
+            inference_timing_repetitions=1,
+            transformer_incumbent=incumbent,
+            model_tuning_budgets={name: 1 for name in MODEL_NAMES},
+        ),
+    )
+    snapshot = freeze_benchmark_snapshot_from_sessions(
+        sessions,
+        output_directory=tmp_path / "study" / "snapshot",
+        expected_session_count=9,
+        development_session_count=config.development_session_count,
+        source_identities={"kind": "tiny_acceptance"},
     )
     # Fixed candidate spaces exercise persistence and resume cheaply; they do not replace
     # production search budgets or claim meaningful model-performance evidence.

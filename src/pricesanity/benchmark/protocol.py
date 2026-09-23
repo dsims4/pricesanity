@@ -1,6 +1,8 @@
-"""Define the additional full-corpus research protocol and its holdout boundary."""
+"""Define corpus-independent chronological research rules and immutable resolved boundaries."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from fractions import Fraction
+import math
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -42,6 +44,25 @@ class ChronologicalValidationFold:
     validation: SessionRange
 
 
+PROTOCOL_VERSION = "generalized_chronological_90_10_v1"
+
+
+@dataclass(frozen=True)
+class ProtocolRules:
+    """Corpus-independent chronological population and development rules."""
+
+    version: str = PROTOCOL_VERSION
+    test_fraction: float = 0.10
+    initial_training_fraction: float = 0.50
+    learning_evaluation_fraction: float = 0.10
+    fold_count: int = 5
+    learning_curve_fractions: tuple[float, ...] = (0.10, 0.25, 0.50, 0.75, 1.0)
+    minimum_training_sessions: int = 30
+    minimum_validation_sessions: int = 5
+    minimum_test_sessions: int = 5
+    minimum_curve_sessions: int = 3
+
+
 @dataclass(frozen=True)
 class BenchmarkConfig:
     """Validated corpus accounting, representation, and execution policy."""
@@ -50,9 +71,9 @@ class BenchmarkConfig:
     output_root: Path
     window_length: int
     feature_columns: tuple[str, ...]
-    expected_session_count: int
-    development_session_count: int
-    final_holdout_session_count: int
+    expected_session_count: int | None
+    development_session_count: int | None
+    final_holdout_session_count: int | None
     chronological_validation_folds: tuple[tuple[int, int, int], ...]
     learning_curve_session_counts: tuple[int, ...]
     learning_curve_evaluation_range: tuple[int, int]
@@ -67,6 +88,7 @@ class BenchmarkConfig:
     transformer_incumbent: dict[str, Any]
     primary_metric: str
     model_tuning_budgets: dict[str, int]
+    rules: ProtocolRules
 
 
 @dataclass(frozen=True)
@@ -110,20 +132,14 @@ def load_benchmark_config(path: str | Path) -> BenchmarkConfig:
         dataset = _require_mapping(raw_config, "dataset")
         protocol = _require_mapping(raw_config, "protocol")
         tuning = _require_mapping(raw_config, "tuning")
-        fold_rows = protocol["chronological_validation_folds"]
-        if not isinstance(fold_rows, list):
-            raise ValueError("Chronological validation folds must be a list.")
-
-        # Store folds as compact half-open boundary triples. They become typed SessionRange objects
-        # only after the complete configuration passes cross-field validation.
-        folds = tuple(
-            (
-                int(_require_mapping({"fold": fold}, "fold")["training_end"]),
-                int(fold["validation_start"]),
-                int(fold["validation_end"]),
+        if int(raw_config["format_version"]) != 2:
+            raise ValueError("Benchmark configuration format 2 is required.")
+        rule_values = dict(_require_mapping(protocol, "rules"))
+        if "learning_curve_fractions" in rule_values:
+            rule_values["learning_curve_fractions"] = tuple(
+                rule_values["learning_curve_fractions"]
             )
-            for fold in fold_rows
-        )
+        rules = ProtocolRules(**rule_values)
         budgets = {
             str(model_name): int(candidate_count)
             for model_name, candidate_count in _require_mapping(
@@ -138,17 +154,12 @@ def load_benchmark_config(path: str | Path) -> BenchmarkConfig:
             output_root=Path(str(raw_config["output_root"])),
             window_length=int(dataset["window_length"]),
             feature_columns=tuple(str(value) for value in dataset["feature_columns"]),
-            expected_session_count=int(protocol["expected_session_count"]),
-            development_session_count=int(protocol["development_session_count"]),
-            final_holdout_session_count=int(protocol["final_holdout_session_count"]),
-            chronological_validation_folds=folds,
-            learning_curve_session_counts=tuple(
-                int(value) for value in protocol["learning_curve_session_counts"]
-            ),
-            learning_curve_evaluation_range=(
-                int(protocol["learning_curve_evaluation_start"]),
-                int(protocol["learning_curve_evaluation_end"]),
-            ),
+            expected_session_count=None,
+            development_session_count=None,
+            final_holdout_session_count=None,
+            chronological_validation_folds=(),
+            learning_curve_session_counts=(),
+            learning_curve_evaluation_range=(0, 0),
             controlled_first_scored_candle_position=int(
                 protocol["controlled_first_scored_candle_position"]
             ),
@@ -164,6 +175,7 @@ def load_benchmark_config(path: str | Path) -> BenchmarkConfig:
             transformer_incumbent=dict(tuning["transformer_incumbent"]),
             primary_metric=str(tuning["primary_metric"]),
             model_tuning_budgets=budgets,
+            rules=rules,
         )
     except (KeyError, TypeError, ValueError) as error:
         # Preserve deliberate benchmark validation messages; wrap raw YAML shape/type errors with
@@ -184,7 +196,7 @@ def plan_benchmark(
 
     # Revalidate direct dataclass callers; YAML loading is not the only public construction
     # path, and a malformed in-memory plan must not bypass the final-holdout boundary.
-    _validate_benchmark_config(config)
+    config = resolve_benchmark_config(session_count, config)
     expected_session_count = config.expected_session_count
 
     # Every corpus session must belong to development or the final holdout. Silent surplus or
@@ -230,24 +242,14 @@ def _validate_benchmark_config(config: BenchmarkConfig) -> None:
     """Reject settings that could mix tuning history with the final holdout."""
 
     # Validate format and representation basics before reasoning about dependent split boundaries.
-    if config.format_version != 1:
-        raise ValueError("Unsupported benchmark configuration format version.")
+    if config.format_version != 2:
+        raise ValueError("Benchmark configuration format 2 is required.")
     if config.window_length <= 0:
         raise ValueError("Benchmark window length must be positive.")
     if not config.feature_columns or len(set(config.feature_columns)) != len(
         config.feature_columns
     ):
         raise ValueError("Benchmark feature columns must be unique and nonempty.")
-    if (
-        config.development_session_count <= 0
-        or config.final_holdout_session_count <= 0
-    ):
-        raise ValueError("Development and final-holdout counts must be positive.")
-    if config.expected_session_count != (
-        config.development_session_count + config.final_holdout_session_count
-    ):
-        raise ValueError("Expected sessions must equal development plus final holdout.")
-
     # Operational measurements require positive worker, repetition, and safety values; zero would
     # disable evidence collection or acknowledgement gates rather than represent a valid choice.
     if config.cpu_worker_count <= 0 or config.inference_timing_repetitions <= 0:
@@ -269,6 +271,30 @@ def _validate_benchmark_config(config: BenchmarkConfig) -> None:
         raise ValueError("Final benchmark seeds must be unique and nonempty.")
     if any(candidate_count < 0 for candidate_count in config.model_tuning_budgets.values()):
         raise ValueError("Model tuning budgets cannot be negative.")
+
+    _validate_rules(config.rules)
+    if config.expected_session_count is None:
+        if (config.development_session_count is not None
+                or config.final_holdout_session_count is not None
+                or config.chronological_validation_folds
+                or config.learning_curve_session_counts
+                or config.learning_curve_evaluation_range != (0, 0)):
+            raise ValueError("Unresolved benchmark rules cannot contain instance boundaries.")
+        return
+    if config.development_session_count is None or config.final_holdout_session_count is None:
+        raise ValueError("Resolved benchmark counts are required.")
+    if (
+        config.development_session_count <= 0
+        or config.final_holdout_session_count <= 0
+    ):
+        raise ValueError("Development and final-holdout counts must be positive.")
+    if config.expected_session_count != (
+        config.development_session_count + config.final_holdout_session_count
+    ):
+        raise ValueError("Expected sessions must equal development plus final holdout.")
+
+    if not config.chronological_validation_folds:
+        raise ValueError("Benchmark requires chronological validation folds.")
 
     previous_validation_end = 0
 
@@ -314,3 +340,105 @@ def _validate_benchmark_config(config: BenchmarkConfig) -> None:
             "Learning-curve evaluation must be one fixed development block after every "
             "hyperparameter-validation fold."
         )
+
+
+def _validate_rules(rules: ProtocolRules) -> None:
+    if rules.version != PROTOCOL_VERSION or rules.test_fraction != 0.10:
+        raise ValueError("Benchmark requires generalized_chronological_90_10_v1 and test_fraction 0.10.")
+    if not (0 < rules.initial_training_fraction < 1 - rules.learning_evaluation_fraction < 1):
+        raise ValueError("Benchmark development fractions must leave later validation and evaluation blocks.")
+    fractions = rules.learning_curve_fractions
+    if (not fractions or tuple(sorted(set(fractions))) != fractions
+            or any(not 0 < value <= 1 for value in fractions) or fractions[-1] != 1):
+        raise ValueError("Benchmark learning fractions must increase uniquely through 1.0.")
+    for name in ("fold_count", "minimum_training_sessions", "minimum_validation_sessions",
+                 "minimum_test_sessions", "minimum_curve_sessions"):
+        value = getattr(rules, name)
+        minimum = 2 if name == "fold_count" else 1
+        if type(value) is not int or value < minimum:
+            raise ValueError(f"Benchmark {name} must be at least {minimum}.")
+
+
+def _generated_boundaries(count: int, rules: ProtocolRules) -> dict[str, Any]:
+    # Rational arithmetic avoids binary floating-point surprises at integer boundaries.
+    test = math.ceil(count * Fraction(str(rules.test_fraction)))
+    development = count - test
+    evaluation_start = development - math.ceil(
+        development * Fraction(str(rules.learning_evaluation_fraction))
+    )
+    initial = math.floor(development * Fraction(str(rules.initial_training_fraction)))
+    endpoints = tuple(initial + (evaluation_start - initial) * index // rules.fold_count
+                      for index in range(rules.fold_count + 1))
+    return {
+        "expected_session_count": count,
+        "development_session_count": development,
+        "final_holdout_session_count": test,
+        "chronological_validation_folds": tuple(
+            (start, start, end) for start, end in zip(endpoints, endpoints[1:])
+        ),
+        "learning_curve_session_counts": tuple(sorted({
+            math.floor(evaluation_start * Fraction(str(fraction)))
+            for fraction in rules.learning_curve_fractions
+        })),
+        "learning_curve_evaluation_range": (evaluation_start, development),
+    }
+
+
+def _sufficient(boundaries: dict[str, Any], rules: ProtocolRules) -> bool:
+    folds = boundaries["chronological_validation_folds"]
+    start, end = boundaries["learning_curve_evaluation_range"]
+    return (folds[0][0] >= rules.minimum_training_sessions
+            and all(b - a >= rules.minimum_validation_sessions for _, a, b in folds)
+            and end - start >= rules.minimum_validation_sessions
+            and boundaries["final_holdout_session_count"] >= rules.minimum_test_sessions
+            and boundaries["learning_curve_session_counts"][0] >= rules.minimum_curve_sessions)
+
+
+def minimum_session_count(rules: ProtocolRules) -> int:
+    """Find the first corpus satisfying every required session-level population size."""
+    _validate_rules(rules)
+    count = 1
+    while not _sufficient(_generated_boundaries(count, rules), rules):
+        count += 1
+    return count
+
+
+def resolve_benchmark_config(session_count: int, config: BenchmarkConfig) -> BenchmarkConfig:
+    """Bind rules once to an immutable corpus; never rebind an existing instance."""
+    _validate_benchmark_config(config)
+    if type(session_count) is not int or session_count <= 0:
+        raise ValueError("Benchmark session count must be a positive integer.")
+    boundaries = _generated_boundaries(session_count, config.rules)
+    if not _sufficient(boundaries, config.rules):
+        raise ValueError(
+            f"This protocol requires at least {minimum_session_count(config.rules)} complete "
+            "eligible sessions: expanding training needs "
+            f"{config.rules.minimum_training_sessions}, each validation/evaluation block "
+            f"{config.rules.minimum_validation_sessions}, test {config.rules.minimum_test_sessions}, "
+            f"and every three-class learning prefix {config.rules.minimum_curve_sessions} sessions."
+        )
+    if config.expected_session_count is not None and any(
+        getattr(config, key) != value for key, value in boundaries.items()
+    ):
+        raise ValueError("Resolved benchmark protocol boundary cannot be rebound to a different population.")
+    resolved = replace(config, **boundaries)
+    _validate_benchmark_config(resolved)
+    return resolved
+
+
+def describe_protocol(config: BenchmarkConfig) -> dict[str, Any]:
+    """Public population description shared by plans, snapshots, and run reports."""
+    if config.expected_session_count is None:
+        raise ValueError("Resolve the corpus before describing its protocol.")
+    return {
+        "protocol_version": config.rules.version,
+        "total_session_count": config.expected_session_count,
+        "development_session_count": config.development_session_count,
+        "test_session_count": config.final_holdout_session_count,
+        "test_fraction": config.rules.test_fraction,
+        "rounding_rule": "ceil(test_fraction * N)",
+        "corpus_status": "interim",
+        "chronological_validation_folds": config.chronological_validation_folds,
+        "learning_curve_session_counts": config.learning_curve_session_counts,
+        "learning_curve_evaluation_range": config.learning_curve_evaluation_range,
+    }

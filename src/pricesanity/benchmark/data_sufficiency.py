@@ -124,10 +124,11 @@ def run_data_sufficiency(
         FEATURE_COLUMNS
     ) or benchmark_config.controlled_first_scored_candle_position != 15:
         raise ValueError("This diagnostic requires the existing controlled 16 x 4 contract.")
-    plan_learning_curve(
-        train_sizes, development_session_count=benchmark_config.development_session_count,
-        evaluation_range=(max(train_sizes, default=0), benchmark_config.development_session_count),
-    )
+    if benchmark_config.development_session_count is not None:
+        plan_learning_curve(
+            train_sizes, development_session_count=benchmark_config.development_session_count,
+            evaluation_range=(max(train_sizes, default=0), benchmark_config.development_session_count),
+        )
 
     parameters = {name: {} for name in model_names}
     if fixed_config is not None:
@@ -182,7 +183,7 @@ def run_data_sufficiency(
         )
         plan_data_sufficiency(
             len(sessions), train_sizes,
-            development_limit=benchmark_config.development_session_count,
+            development_limit=sources["development_session_limit"],
             allow_small_evaluation=allow_small_evaluation,
         )
     environment = resume_environment_fingerprint(device=device)
@@ -223,7 +224,7 @@ def run_data_sufficiency(
         sessions = load_snapshot_sessions(snapshot)
         points = plan_data_sufficiency(
             len(sessions), train_sizes,
-            development_limit=benchmark_config.development_session_count,
+            development_limit=snapshot.source_identities["development_session_limit"],
             allow_small_evaluation=allow_small_evaluation,
         )
         evaluation_count = len(sessions) - train_sizes[-1]

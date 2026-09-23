@@ -108,6 +108,12 @@ def aggregate_seed_results(
         # Begin with the canonical group identity, then attach statistics and provenance. This
         # makes every leaderboard row independently traceable to its frozen evaluation inputs.
         row = dict(zip(identity_keys, keys, strict=True))
+        for field in ("protocol_version", "total_session_count", "development_session_count",
+                      "test_session_count", "test_fraction", "rounding_rule", "corpus_status"):
+            if field in group:
+                if group[field].nunique(dropna=False) != 1:
+                    raise ValueError(f"Runs disagree about {field}.")
+                row[field] = group[field].iloc[0]
         row.update(
             {
                 "seed_count": len(group),

@@ -45,6 +45,10 @@ def collect_completed_runs(artifact_root: str | Path) -> pd.DataFrame:
                     "label_mapping_sha256",
                 )
             },
+            **{key: metadata.get("dataset", {}).get(key) for key in (
+                "protocol_version", "total_session_count", "development_session_count",
+                "test_session_count", "test_fraction", "rounding_rule", "corpus_status",
+            )},
             "declared_final_seeds": metadata.get("dataset", {}).get("declared_final_seeds"),
             "current_macro_f1": metrics["current"]["macro_f1"],
             "anticipated_macro_f1": metrics["anticipated"]["macro_f1"],
@@ -123,7 +127,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     # Make an unfinished corpus explicit in terminal output rather than printing an ambiguous
     # blank table that could be mistaken for a filtering error.
     if leaderboard.empty:
-        print("No completed benchmark runs. Infrastructure is awaiting the full corpus.")
+        print("No completed final benchmark runs for this artifact root.")
         return 0
     print(
         leaderboard.sort_values(

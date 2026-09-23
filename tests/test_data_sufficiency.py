@@ -13,7 +13,9 @@ from pricesanity.annotation.schema import CandlestickAnnotation, MarketRegime
 from pricesanity.annotation.store import AnnotationStore
 from pricesanity.benchmark.analysis import paired_cluster_bootstrap_difference
 from pricesanity.benchmark.data_sufficiency import plan_data_sufficiency, run_data_sufficiency
-from pricesanity.benchmark.protocol import load_benchmark_config, plan_benchmark
+from pricesanity.benchmark.protocol import (
+    load_benchmark_config, plan_benchmark, resolve_benchmark_config,
+)
 from pricesanity.benchmark.snapshot import freeze_benchmark_snapshot_from_sessions
 from pricesanity.benchmark.sufficiency_analysis import (
     SCORE_NAMES, assess_curve, paired_curve_difference, summarize_curve_point,
@@ -26,7 +28,7 @@ from test_benchmark_snapshot import _sessions
 
 
 def test_nested_prefixes_fixed_later_population():
-    points = plan_data_sufficiency(536, (100, 200, 300, 400, 500), development_limit=2190)
+    points = plan_data_sufficiency(536, (100, 200, 300, 400, 500), development_limit=2421)
     for smaller, larger in zip(points, points[1:]):
         assert set(range(smaller.training_end_index)) < set(range(larger.training_end_index))
     assert {(point.evaluation_start_index, point.evaluation_end_index) for point in points} == {
@@ -36,20 +38,19 @@ def test_nested_prefixes_fixed_later_population():
 
 
 @pytest.mark.parametrize("count,sizes", [(500, (500,)), (519, (500,)), (536, (200, 100)),
-                                        (536, (100, 100)), (2200, (500,))])
+                                        (536, (100, 100)), (2422, (500,))])
 def test_invalid_or_tiny_plans_fail(count, sizes):
     with pytest.raises(ValueError):
-        plan_data_sufficiency(count, sizes, development_limit=2190)
+        plan_data_sufficiency(count, sizes, development_limit=2421)
 
 
 def test_small_evaluation_requires_override_and_two_sessions():
     assert plan_data_sufficiency(
-        510, (500,), development_limit=2190, allow_small_evaluation=True,
+        510, (500,), development_limit=2421, allow_small_evaluation=True,
     )[0].evaluation_end_index == 510
     with pytest.raises(ValueError):
-        plan_data_sufficiency(501, (500,), development_limit=2190, allow_small_evaluation=True)
-    with pytest.raises(ValueError):
-        plan_benchmark(536, load_benchmark_config("configs/benchmark/default.yaml"))
+        plan_data_sufficiency(501, (500,), development_limit=2421, allow_small_evaluation=True)
+    assert plan_benchmark(536, load_benchmark_config("configs/benchmark/default.yaml")).final_holdout.session_count == 54
 
 
 def prediction_frame(seed=3):
@@ -146,10 +147,25 @@ def test_thresholds_seed_noise_and_small_blocks_limit_claims():
 def inputs(tmp_path):
     config = load_config("configs/default.yaml")
     config = replace(config, session=replace(config.session, end_time="11:10"))
-    benchmark = replace(
-        load_benchmark_config("configs/benchmark/default.yaml"),
-        expected_session_count=7, development_session_count=6, final_holdout_session_count=1,
-        output_root=tmp_path / "official",
+    base = load_benchmark_config("configs/benchmark/default.yaml")
+    rules = replace(
+        base.rules,
+        initial_training_fraction=0.20,
+        learning_evaluation_fraction=0.25,
+        fold_count=2,
+        learning_curve_fractions=(0.50, 0.75, 1.0),
+        minimum_training_sessions=1,
+        minimum_validation_sessions=1,
+        minimum_test_sessions=1,
+        minimum_curve_sessions=1,
+    )
+    benchmark = resolve_benchmark_config(
+        7,
+        replace(
+            base,
+            rules=rules,
+            output_root=tmp_path / "official",
+        ),
     )
     timestamps = pd.DatetimeIndex([
         timestamp for day in pd.bdate_range("2016-01-04", periods=7)
@@ -345,7 +361,7 @@ def test_window_reuse_matches_unique_candle_scaling_and_ignores_evaluation(
     for session in sessions[3:]:
         session.loc[:, list(FEATURE_COLUMNS)] *= 1000
     monkeypatch.setattr(diagnostic, "load_development_sessions",
-                        lambda *a, **k: (sessions, {"kind": "synthetic"}))
+                        lambda *a, **k: (sessions, {"kind": "synthetic", "development_session_limit": 6}))
     original_run = diagnostic.run_model_once
     observed_means = []
 

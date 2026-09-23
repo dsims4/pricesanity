@@ -37,6 +37,8 @@ from pricesanity.benchmark.protocol import (
     BenchmarkTrack,
     ChronologicalValidationFold,
     plan_benchmark,
+    resolve_benchmark_config,
+    describe_protocol,
 )
 from pricesanity.benchmark.registry import (
     build_model,
@@ -90,6 +92,27 @@ def study_paths(root: str | Path) -> BenchmarkStudyPaths:
     )
 
 
+def validate_training_support(config, sessions, search_spaces, tracks) -> None:
+    """Keep every declared neighbor candidate valid even on the smallest curve prefix."""
+    if "knn" not in config.model_tuning_budgets:
+        return
+    prefix = min(config.learning_curve_session_counts[0],
+                 config.chronological_validation_folds[0][0])
+    for track in tracks:
+        space = track_search_space("knn", search_spaces.get("knn", {}), track)
+        neighbors = space.get("n_neighbors", {"type": "fixed", "value": 15})
+        maximum = (max(neighbors["values"]) if neighbors["type"] == "categorical"
+                   else neighbors.get("high", neighbors.get("value")))
+        first = (config.controlled_first_scored_candle_position if track == "controlled"
+                 else config.best_of_family_first_scored_candle_position)
+        rows = sum(max(0, len(session) - first) for session in sessions[:prefix])
+        if rows < maximum:
+            raise ValueError(
+                f"The {track} smallest training prefix has {rows} scored candles; the unchanged "
+                f"kNN search requires at least {maximum}. Supply more complete eligible sessions."
+            )
+
+
 def _study_locked(method):
     """Serialize study-level mutations while allowing independent process launches."""
 
@@ -122,6 +145,7 @@ class BenchmarkExecutor:
 
         # Keep the snapshot, protocol, search spaces, and root together for the executor's entire
         # lifetime; allowing any one of them to drift would change the study between stages.
+        config = resolve_benchmark_config(snapshot.session_count, config)
         self.snapshot = snapshot
         self.config = config
         self.search_spaces = search_spaces
@@ -138,6 +162,9 @@ class BenchmarkExecutor:
         # Capture source state once so a long-running executor cannot mix code revisions
         # between candidate fitting, recovery, and final artifact publication.
         self.execution_source = source_identity()
+        frozen_source = snapshot.source_identities.get("source")
+        if frozen_source is not None and frozen_source != self.execution_source:
+            raise ValueError("Frozen population source identity differs from the execution source.")
         self._representation_cache = OrderedDict()
         self._representation_cache_bytes = 0
 
@@ -153,6 +180,10 @@ class BenchmarkExecutor:
                 "matching the protocol."
             )
 
+        expected = snapshot.source_identities.get("protocol_configuration_sha256")
+        if expected is not None and expected != canonical_sha256(asdict(config)):
+            raise ValueError("Snapshot protocol configuration differs from the requested protocol.")
+
         # The executor only loads development rows. Final rows remain in the sealed file until
         # the explicit final path validates the global development freeze.
         self.sessions = load_snapshot_sessions(snapshot)
@@ -160,6 +191,7 @@ class BenchmarkExecutor:
         # Derive all chronological ranges once from the frozen corpus and protocol. Later stages
         # refer to this plan rather than independently recalculating split boundaries.
         self.plan = plan_benchmark(snapshot.session_count, config)
+        validate_training_support(config, self.sessions, search_spaces, declared_tracks)
 
         # Create only lifecycle containers. Individual run directories remain identity-bound and
         # are reserved atomically by the artifact layer when work actually begins.
@@ -1039,6 +1071,7 @@ class BenchmarkExecutor:
             "snapshot_path": str(self.snapshot.data_path),
             "snapshot_sha256": self.snapshot.identity_sha256,
             **self.snapshot.source_identities,
+            **describe_protocol(self.config),
             "declared_final_seeds": (
                 list(self.config.final_seeds)
                 if get_model_family(model_name).stochastic
@@ -1213,6 +1246,8 @@ class BenchmarkExecutor:
             "model_name": model_name,
             "track": track.value,
             "parameters": parameters,
+            "tuning_budget": self.config.model_tuning_budgets[model_name],
+            "tuning_seed": self.config.tuning_seed,
             "fold_indices": [index + 1 for index in fold_indices],
             "fold_count": len(fold_indices),
             "all_development_folds": all_development_folds,
